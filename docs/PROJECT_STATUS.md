@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-12 (Task 005). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-12 (Task 006). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -138,10 +138,38 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 ## Release blockers (до публічного production-запуску)
 
-1. **Мережева політика PostgreSQL потребує обмеження** (спостереження Task 004: спроба входу з чужої адреси, відхилена HBA). Обмеження у firewall провайдера відкладено користувачем до фінального етапу; у Task 005 firewall/HBA не змінювались. Відкрито.
-2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; нові схеми лише з явними `properties` і `additionalProperties: false`.
-3. Nginx + HTTPS + домен для API/frontend ще немає; `AUTH_ALLOWED_ORIGINS` у production порожній → login вимкнено (fail closed).
-4. Адміністратора в production не створено (email/пароль не надано) — інструкція в DEPLOYMENT «Bootstrap адміністратора».
+1. **Мережева політика PostgreSQL потребує обмеження** (з Task 004: зовнішні спроби входу, відхилені HBA). Обмеження у firewall провайдера відкладено користувачем до фінального етапу; firewall/HBA не змінювались. Відкрито.
+2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
+3. **Публічний сайт `control.example.com`** (`/etc/nginx/conf.d/control.example.com.conf`, Certbot, створений 2026-10-12 18:40 UTC поза задачами Node Control) віддає `current/frontend/dist` і проксює `/api/` на API. Після Task 006 UI доступний публічно за цим доменом — за явним рішенням користувача («деплоїти, сайт не чіпати»). Вхід там неможливий: `AUTH_ALLOWED_ORIGINS` порожній (login → 403), адміністратора немає. Конфіг сайту не входить у репозиторій і не перевірявся задачами Node Control (заголовки безпеки, кеш, `X-Forwarded-*`); перед відкриттям входу — привести до контракту `deploy/nginx` і погодити `AUTH_ALLOWED_ORIGINS=https://control.example.com`.
+4. Адміністратора в production не створено (email/пароль не надано) — DEPLOYMENT «Bootstrap адміністратора».
+
+## Task 006 — React/Vite frontend і спільний деплой (2026-10-12)
+
+**Active code revision на сервері: `fd16acb9259c0bdc9f0a855fe3553cee92f4ffe6`** (`feat(frontend): add authenticated React app and static deployment`); previous — `be432c0`. `git merge-base --is-ancestor bfe784e fd16acb` — так: фікс Codex Task 005.1 (`bfe784e`, retry dummy hash) задеплоєно разом із цим релізом. Цей звіт — пізніший docs-commit, на сервер не деплоївся.
+
+Реалізовано (ADR-012): React 19 + React Router 8 + Vite 8 UI українською — вхід, огляд, Сервери/Застосунки (чесні порожні стани), Журнал аудиту (keyset-пагінація, лише `audit:read`), користувач/роль/вихід; стани loading/empty/error/forbidden/unavailable; адаптивний layout, доступність (labels, `aria-invalid`/`aria-describedby`, фокус, skip-link). Сесія лише в пам'яті, епохи проти гонок, API-клієнт із timeout/cancel/runtime-валідацією. Артефакт тепер містить `frontend/dist` і `deploy/nginx`; ізольований loopback-сайт `127.0.0.1:3101`.
+
+| Перевірка (поточна сесія) | Результат |
+|---|---|
+| `npm run check:local` (системний Node 24.14) | exit 0: secrets OK, node:test 82/82, typecheck (backend/frontend/e2e), lint, backend 234/234, smoke 10/10, frontend 50/50, збірка UI |
+| Node v22.23.3 | backend 234/234, frontend 50/50, smoke 10/10, node:test 82/82 |
+| `test:backend:db` (тестова БД, тунель 15432) | 27/27 |
+| Playwright E2E (тестова БД, per-run схема) | 8/8: login → reload → me → audit → logout; viewer/operator — без навігації й 403 на прямий `/audit`; невірний пароль; expired і revoked сесії; прямі SPA URL; `/api/*` 404 JSON. Після прогону 0 схем `nc_test_*`; `test-results/` видалено |
+| Bundle | `assertBundleClean`: без `.map`, серверних імен конфігурації й секретних шаблонів; `VITE_*` не використовується |
+| Nginx-шаблон | синтаксис перевірено на сервері в ізольованому prefix до встановлення |
+| Git | `fd16acb` запушено (`bfe784e..fd16acb`) |
+| Артефакт | 34 файли, SHA-256 `db1e4657…8576e4ee`; `sha256sum -c` OK; production `npm ls --omit=dev`: `fastify`, `node-pg-migrate`, `pg` (порожні scope-каталоги dev-пакетів від npm, 0 файлів) |
+| Міграції | `status` з нового релізу як `nodecontrol`: applied=2, pending=0 — схема не змінювалась; `api.env` не змінювався |
+| Активація | `current` → `fd16acb`, previous `be432c0`; restart лише `node-control-api`; процес `nodecontrol` |
+| Nginx | `nginx -t` baseline OK; нові файли (backup-каталог `/root/node-control-backups/nginx-20261012T185439Z`, змінюваних файлів не було): snippet заголовків, `sites-available/goit-node-control-loopback.conf` + symlink; `nginx -t` OK → reload |
+| API | live/ready 200; `/api/auth/me` 401 `no-store` + `x-request-id` |
+| Loopback-сайт `127.0.0.1:3101` | `/` 200 `no-cache` + CSP/`X-Frame-Options`/`nosniff`/`Referrer-Policy`; `/assets/*.js` `max-age=31536000, immutable`; відсутній asset 404; `/servers` → index.html; `/api/auth/me` 401; `/api/does-not-exist` → JSON 404; login з loopback-origin → 403 (fail closed) |
+| Браузер через SSH forwarding | headless Chromium: `/audit` → `/login`, `me` 401, 0 помилок консолі, 0 порушень CSP |
+| Мережа | listeners `127.0.0.1:3100`, `127.0.0.1:3101`; ззовні 3100/3101 недоступні; публічний `https://control.example.com/` → 200 (UI, див. release blockers) |
+| Journal / логи | warn лише очікувані (порожній allowlist; власний 403-запит); паролів 0; власний error log Nginx порожній |
+| Сторонні служби | PostgreSQL/Nginx/Docker active, failed 0, менеджер секретів up/200; `users` — 0 рядків |
+
+Rollback підготовлено, не застосовувався: `server-release.js rollback` (→ `be432c0`, узгоджена пара UI/API через одну `current`; у `be432c0` немає `frontend/dist`, тож loopback-сайт віддаватиме 404 на статику) + `systemctl restart node-control-api`; для Nginx — видалити symlink `sites-enabled/goit-node-control-loopback.conf` (і за потреби snippet/site), `nginx -t`, `systemctl reload nginx`. БД/дані не змінювались.
 
 ## Task 005 — authentication, RBAC, audit (2026-10-12)
 
@@ -207,8 +235,8 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 005 (auth/RBAC/audit) задеплоєно на `be432c0`; очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 006 (frontend + спільний деплой із `bfe784e`) задеплоєно на `fd16acb`; очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
-Next Task: після review Task 005 — **Task 006**: React/Vite frontend (login, навігація, захищені сторінки) на auth-контракті README/ADR-011; далі Agent і API серверів/процесів. Перед публічним запуском — release blockers вище (5432, NC-SEC-001, Nginx/HTTPS, bootstrap адміністратора).
+Next Task: після review Task 006 — Agent (Node.js, systemd, вихідне захищене з'єднання) і API серверів/процесів з authorization + Audit Log. Перед публічним запуском — release blockers (5432, NC-SEC-001, публічний сайт/origins, bootstrap адміністратора).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.
