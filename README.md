@@ -2,7 +2,7 @@
 
 Централізована платформа для моніторингу та керування Node.js-проєктами на декількох серверах.
 
-> Task 001 — сервер і PostgreSQL; Task 002/003 — Central API (health) + деплой через systemd; Task 004 — тестова БД і міграції; Task 005 — authentication, RBAC, audit log (backend). Frontend (Task 006) і Agent ще не реалізовані; публічного production-запуску немає.
+> Task 001 — сервер і PostgreSQL; Task 002/003 — Central API + деплой через systemd; Task 004 — тестова БД і міграції; Task 005 — authentication, RBAC, audit log; Task 006 — React/Vite frontend. Agent і API серверів/процесів ще не реалізовані; публічний production-запуск не погоджено.
 
 Task 001 підтверджений файлами та локальними unit-тестами, але серверний стан незалежно не підтверджено. Актуальні результати й проблеми — [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
 
@@ -37,8 +37,9 @@ Task 001 підтверджений файлами та локальними uni
 ├── agent/            # майбутній агент на керованих серверах
 ├── backend/          # Central API: TypeScript + Fastify (src/, test/, dist/ — збірка, не в Git)
 │   └── migrations/   # версійні SQL-міграції (node-pg-migrate)
-├── frontend/         # майбутній UI
-├── deploy/systemd/   # node-control-api.service (systemd unit)
+├── frontend/         # React + Vite UI (src/, test/, dist/ — збірка, не в Git)
+├── e2e/              # Playwright E2E (реальний backend + UI, тестова БД)
+├── deploy/           # systemd/ (unit), nginx/ (loopback-сайт, заголовки безпеки)
 ├── docs/
 │   └── server-audit.md
 ├── scripts/
@@ -122,7 +123,7 @@ npm run backend:start     # node backend/dist/main.js
 
 Пріоритет: **process environment > `.env`**. Некоректна конфігурація зупиняє startup з exit code 1; повідомлення називає лише ключі та правила, без значень. Пул: max 5 з'єднань; таймаути connect/query/statement — 2 с, idle — 10 с, readiness — 2,5 с, shutdown — 10 с (константи в `backend/src/config.ts`). Логується лише `nodeEnv/host/port/logLevel`.
 
-Порт 3100 обрано як непривілейований і вільний на машині розробника (перевірено `lsof` перед запуском); на сервері порт ще не узгоджено.
+Порт `127.0.0.1:3100` затверджено й використовується на сервері (Task 003, systemd `node-control-api.service`).
 
 ### Health endpoints (публічні навмисно, без authentication)
 
@@ -248,32 +249,43 @@ npm run db:check          # SELECT 1 через .env, без виводу пар
 
 `npm run test:integration` (node:test) читає production `.env` і з Task 004 лише читає: перевірки прав #9/#10 виконуються через каталоги PostgreSQL, без DDL/DML. Серверні перевірки (`pg_authid`, `pg_hba.conf`, systemd) потребують root на хості PostgreSQL; локально пропускаються. Тести із записом — тільки `npm run test:backend:db` проти ізольованої тестової БД.
 
-## Робота через VS Code
+## Frontend (React + Vite)
 
-Проєкт розробляється в локальному checkout. За історичним звітом сервер не мав доступу до GitHub; поточний доступ не перевірено. Наявний workflow перенесення коду наведено нижче; перед `--delete` обов'язково перевірити dry-run, backup і scope. Поточна інтеграція AI-контексту не включає деплой:
+`frontend/` — React 19 + React Router 8 + Vite 8, TypeScript strict (ADR-012). Інтерфейс українською: вхід, огляд, Сервери/Застосунки (чесні порожні стани — Agent ще не підключено), Журнал аудиту (лише `audit:read`), інформація про користувача й вихід. Стани loading / empty / error / forbidden / unavailable; адаптивний layout (sidebar на desktop, меню на мобільних), skip-link, видимий фокус.
 
-```bash
-# деплой коду (без .env, node_modules, .git)
-# --include має стояти ДО --exclude '.env.*' (rsync застосовує перше правило, що збіглося)
-rsync -az --delete --no-owner --no-group --include .env.example \
-  --exclude .git --exclude node_modules --exclude backend/dist --exclude '.env' --exclude '.env.*' \
-  ./ root@203.0.113.10:/etc/pm2-dashboard/
-ssh root@203.0.113.10 'cd /etc/pm2-dashboard && npm ci && npm run backend:build'
-# Повний npm run check — лише у виділеному тестовому середовищі, не проти production-даних.
-```
-
-Отримати `.env` локально — лише через SSH, ніколи через Git чи месенджери:
+- **API-клієнт** (`frontend/src/api/`): лише відносні `/api`, `credentials: 'same-origin'`, timeout 10 с і скасування, без автоматичних повторів, runtime-валідація відповідей, `Retry-After` для 429/503; повідомлення формує UI, текст сервера не показується.
+- **Сесія** (`frontend/src/auth/`): стан лише в пам'яті React — без localStorage/sessionStorage/URL; cookie керує браузер (HttpOnly); `csrfToken` з `login`/`me` у пам'яті; пароль очищається після запиту. «Епохи» сесії: відповідь `me`/`login`, що прийшла після logout/expiry, ігнорується. 401 від будь-якого запиту → приватні дані скидаються.
+- **Права в UI** — лише UX (приховування розділів, перевірка прямого URL); авторизацію виконує backend.
 
 ```bash
-(umask 077 && scp root@203.0.113.10:/etc/pm2-dashboard/.env .env) && chmod 600 .env
+npm run frontend:dev        # Vite на 127.0.0.1:5173, /api → 127.0.0.1:3100 (той самий origin)
+npm run frontend:build      # статична збірка frontend/dist (без source maps)
+npm run test:frontend       # Vitest + jsdom: API-клієнт, auth-гонки, маршрути, audit, XSS
+npm run test:e2e            # Playwright: реальний backend + збірка UI, лише тестова БД (див. нижче)
 ```
 
-Локальне підключення до БД — через SSH-тунель (порт 5432 ззовні закритий, і так має лишатися):
+## Робота через VS Code (локальна розробка)
+
+Розробка — у локальному checkout. **Записи лише в ізольовану тестову БД**; production `.env` для розробки не використовувати.
 
 ```bash
-ssh -N -L 5432:127.0.0.1:5432 root@203.0.113.10
-npm run db:check
+# 1. Тунель до тестової БД (окремий термінал) і credentials тестової ролі
+ssh -N -L 15432:127.0.0.1:5432 root@203.0.113.10
+(umask 077 && scp root@203.0.113.10:/root/.config/goit-node-control/test-db.env .env.test) && chmod 600 .env.test
+
+# 2. .env.dev (600, ігнорується Git): DB_* = значення TEST_DB_* з .env.test (DB_PORT=15432), плюс
+#    NODE_ENV=development, AUTH_COOKIE_SECURE=false, AUTH_ALLOWED_ORIGINS=http://127.0.0.1:5173
+npm run backend:build && ENV_FILE=.env.dev npm run db:migrate:up          # схема public тестової БД
+ENV_FILE=.env.dev node backend/dist/bootstrap-admin.js --email dev@example.test
+
+# 3. Backend + UI (два термінали), відкрити http://127.0.0.1:5173 (саме 127.0.0.1, не localhost — інший origin)
+ENV_FILE=.env.dev npm run backend:dev
+npm run frontend:dev
 ```
+
+E2E (`npm run test:e2e`) сам створює per-run схему `nc_test_<ms>_<hex8>` у тестовій БД, застосовує міграції, створює admin/operator/viewer із випадковими паролями (лише в пам'яті процесу), запускає скомпільований backend (`127.0.0.1:41300`) і `vite preview` збірки (`127.0.0.1:41730`) та після прогону видаляє лише свою схему. Потрібні `TEST_DB_ENV_FILE=.env.test TEST_DB_PORT=15432` і `npx playwright install chromium`. Traces/screenshots/video вимкнені; `test-results/` ігнорується Git і видаляється після прогону.
+
+Production-деплой — лише артефактом із запушеного commit (docs/DEPLOYMENT.md). Історичний rsync у `/etc/pm2-dashboard` (Task 001/002) **більше не використовується**.
 
 Не зберігайте паролі у `.vscode/settings.json` чи конфігурації розширень (файл ігнорується Git).
 
@@ -281,16 +293,14 @@ npm run db:check
 
 - TLS PostgreSQL — self-signed сертифікат: віддалені клієнти можуть використовувати `sslmode=require`, але не `verify-full`.
 - Це параметри з історичного серверного аудиту; поточний стан потребує повторної перевірки. Node-клієнт `pg` у цьому коді не задає `ssl`, а SCRAM не доводить використання TLS.
-- Віддалений доступ (`hostssl ... 0.0.0.0/0`) підготовлено, але **не активовано**: 5432 ззовні фільтрується (ймовірно, firewall провайдера); host firewall — див. приватні нотатки. Відкривати порт — лише окремим рішенням і бажано для конкретних IP.
-- `.env` на сервері належить `root`, бо окремого користувача сервісу ще немає.
+- **Мережева політика PostgreSQL потребує обмеження** (зафіксовано з Task 004: зовнішні спроби входу, відхилені HBA); host firewall — див. приватні нотатки. Обмеження джерел у firewall провайдера відкладено користувачем до фінального етапу — **release blocker**.
+- API працює під системним користувачем `nodecontrol` з конфігом `/etc/goit-node-control/api.env` (`600 nodecontrol`); історичний `/etc/pm2-dashboard/.env` (`root`) сервісом не використовується.
 - Парсер `pg_hba.conf` не підтримує значення в лапках із пробілами (на сервері таких немає).
 
 ## Наступні етапи
 
-1. Окремий системний користувач для backend + systemd unit; перевласнити `.env`.
-2. Task 006 — React/Vite frontend (login, навігація, захищені сторінки) на auth-контракті — після review Task 005.
-3. Агент для збору стану Node.js/PM2-процесів на серверах.
-4. Frontend, Nginx reverse proxy з TLS.
-5. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики. Зовнішній доступ до 5432 не відкривати без окремого підтвердження.
+1. Agent (Node.js, systemd) і API серверів/процесів — наступне завдання.
+2. Перед публічним запуском — release blockers (PROJECT_STATUS): обмеження 5432, NC-SEC-001, рішення щодо публічного HTTPS-сайту та `AUTH_ALLOWED_ORIGINS`, bootstrap адміністратора.
+3. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики.
 
 Контейнеризація API/Agents — окрема фаза після стабілізації MVP за новим завданням. Зараз Docker-файли, залежності та контейнери не створювати. PostgreSQL/Nginx залишаються на хості.

@@ -4,7 +4,7 @@
 
 ## Реалізовано
 
-ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/`, `agent/` — лише `.gitkeep`. Є версійні міграції (`users`, `sessions`, `audit_log`). UI, агенти, process/server endpoints і Nginx-конфігурації проєкту відсутні.
+ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/` — React/Vite UI (Task 006); `agent/` — лише `.gitkeep`. Є версійні міграції (`users`, `sessions`, `audit_log`). UI, агенти, process/server endpoints і Nginx-конфігурації проєкту відсутні.
 
 | Шлях | Фактична відповідальність |
 |---|---|
@@ -26,6 +26,11 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `backend/migrations/` | Версійні SQL-міграції: `1791900000000_create-users`, `1791900000001_auth-foundation` (role, sessions, audit_log) |
 | `backend/src/auth/` | `password` (scrypt, limiter), `tokens` (session/CSRF/cookie), `rbac`, `rate-limit`, `email`, `store` (SQL + транзакції з audit), `plugin` (hooks + `/api/auth/*`, `/api/audit`), `bootstrap` |
 | `backend/src/bootstrap-cli.ts`, `bootstrap-admin.ts` | CLI створення першого адміністратора (без HTTP) |
+| `frontend/src/api/` | API-клієнт (timeout, cancel, runtime-валідація) і типи контракту |
+| `frontend/src/auth/` | `AuthContext` (сесія в пам'яті, епохи проти гонок), guards (`RequireAuth`, `RequirePermission`, безпечний redirect) |
+| `frontend/src/pages/`, `components/` | Login, Огляд, Сервери/Застосунки (порожні стани), Журнал аудиту; Layout із навігацією за правами |
+| `e2e/` | Playwright: реальний backend + збірка UI на тестовій БД |
+| `deploy/nginx/` | Шаблони loopback-сайту й заголовків безпеки |
 | `backend/test/support/test-db.ts` | Guard real-DB тестів: лише `TEST_DB_*`, відхилення production, per-run схема |
 | `scripts/setup-test-db.js` | Root: ізольована `node_control_test_db`/`node_control_test_user` |
 | `backend/test/` | Vitest: unit/API (inject), `smoke/` (скомпільований dist), `db/` (opt-in реальна БД, лише SELECT 1) |
@@ -74,7 +79,7 @@ MVP1 охоплює кілька серверів, моніторинг, лог�
 
 API та Agent: Node.js 22 через systemd, без root за замовчуванням. PM2 використовується лише для керованих Node.js-проєктів; API/Agent не запускати через PM2. Agent залишається незалежним від PM2, обмежується дозволеними процесами, Linux-користувачем та PM2_HOME.
 
-Frontend збирається у статичні файли й обслуговується host Nginx; окремий production Node.js-процес не потрібен. Nginx через systemd забезпечує HTTPS, статику, reverse proxy і WebSocket proxy. Порти API, домен та шлях build ще не затверджені.
+Frontend збирається у статичні файли (`current/frontend/dist`) й обслуговується host Nginx; окремий production Node.js-процес не потрібен. API — `127.0.0.1:3100`; ізольований loopback-сайт UI — `127.0.0.1:3101` (Task 006). Публічний домен/HTTPS — окреме рішення власника (див. DEPLOYMENT, «Зовнішній публічний сайт»).
 
 Central API забезпечує RBAC; метрики застосунків включають CPU/RAM, uptime і restart count, серверів — CPU/RAM, диск і навантаження. Slack: також налаштування порогів і захист від alert spam. Використовувати існуючі Jenkins/менеджер секретів через API, не створювати новий Jenkins і не переписувати pipelines без потреби.
 

@@ -8,6 +8,8 @@
 
 Прикладний SQL — параметризований, пов'язані операції — транзакційні. Наявні setup SQL builders обмежують identifiers/екранують literals; це не заміна параметризованих запитів API. Agent: авторизація кожної команди, Audit Log керуючих дій, мінімальні права та явні дозволи на процеси з урахуванням Linux-користувача/PM2_HOME. Remote execution endpoint заборонений.
 
+Frontend (Task 006): нові екрани — компонентні тести (стани loading/empty/error/forbidden/unavailable), без HTML з API, без web storage для сесійних даних; auth-сценарії — Playwright E2E лише проти тестової БД. Dev-backend для UI — `NODE_ENV=development`, `AUTH_COOKIE_SECURE=false` лише на loopback, `AUTH_ALLOWED_ORIGINS=http://127.0.0.1:5173`.
+
 Auth/RBAC (Task 005): кожен новий `/api`-маршрут декларує `config.access`; тести — позитивні, 401, 403 (матриця ролей) і для state-changing — Origin/CSRF; API-тести використовують `FakeAuthStore` (атомарна семантика), SQL-семантика — `backend/test/db/auth.test.ts` у тестовій БД. Request-схеми лише з явними `properties` і `additionalProperties: false` (NC-SEC-001 відкрито).
 
 Для нового коду використовувати Vitest для unit/integration, якщо відступ не обґрунтований. Існуючий node:test зберегти: чинні скрипти вже покриті ним. Frontend E2E може використовувати Playwright. Endpoint: позитивні, негативні та authorization tests; адміністративна дія: дозволені й заборонені сценарії. Критичні компоненти (authentication, RBAC, Agent commands, process management, DB access, deploy, Audit Logs) мають орієнтир 100% покриття.
@@ -27,6 +29,9 @@ Auth/RBAC (Task 005): кожен новий `/api`-маршрут деклару
 | `npm run db:migrate:status` / `db:migrate:up` | CLI міграцій зі зібраного `backend/dist` (`ENV_FILE` або `DB_*`); production `up` — лише за процедурою DEPLOYMENT |
 | `node scripts/setup-test-db.js` | Root на сервері: створення/перевірка ізольованої тестової БД і ролі |
 | `node backend/dist/bootstrap-admin.js` | Створення першого адміністратора (лише оператор; у тестах — тестова БД) |
+| `npm run frontend:dev` / `frontend:build` / `frontend:preview` | Vite лише на 127.0.0.1; `/api` проксюється на 127.0.0.1:3100 без зміни Origin |
+| `npm run test:frontend` | Vitest + jsdom: API-клієнт, auth/гонки, маршрути, audit |
+| `npm run test:e2e` | Playwright: реальний backend + збірка UI; лише `TEST_DB_*`, per-run схема, без traces/screenshots |
 | `npm run check:local` | Secrets → старі unit → typecheck → lint → backend → smoke; без production-connected тестів |
 
 Обов'язкова цільова перевірка — Node.js 22 LTS. Старий `tests/integration` (node:test, `.env`, production `node_control_db`) з Task 004 **лише read-only**: перевірки прав #9/#10 виконуються через каталоги PostgreSQL, без CREATE/INSERT/DROP. Тести із записом — тільки `backend/test/db/*` проти `node_control_test_db` у власній схемі `nc_test_<ms>_<hex8>`; cleanup видаляє лише цю схему, ніколи БД. Привілейований suite потребує root на хості PostgreSQL (`runuser`, `psql`, systemd); локально пропускається з поясненням. Успіх локально не замінює серверну перевірку.
@@ -50,8 +55,8 @@ Commit має описувати фактичну зміну. Push — у пот
 3. Виконати лише погоджені зміни. Nginx: конфігурація в `/etc/nginx/`, перед застосуванням `nginx -t`. Backend/agents: systemd, мінімальні права. `db:setup` — мутація з root, не перевірка стану.
 4. Перевірити systemd status, health endpoint (коли буде реалізовано), логи, доступність, сторонні сервіси й критичні помилки. При невдачі — rollback за планом і повторна перевірка.
 
-Поточний README містить історичний rsync workflow. `--delete` видаляє файли на приймачі: перед використанням перевірити dry-run, виключення `.env` та scope. Ця документаційна задача не включає деплой або запуск setup. Власник `.env` повинен відповідати користувачу застосунку; `--env-owner` не гарантує зміну власника вже валідного файлу без його перезапису.
+Деплой — лише versioned-артефактом (`scripts/deploy/build-release.js` → `server-release.js`, DEPLOYMENT). Історичний rsync у `/etc/pm2-dashboard` не використовується. Конфіг сервісу — `/etc/goit-node-control/api.env` (`600 nodecontrol`).
 
-Перед commit запускати `npm run typecheck` і `npm run lint` (backend); для старих JS-скриптів lint не налаштований. За актуальним bootstrap-запитом документаційний push дозволений після успішних релевантних перевірок документів, unit-тестів і секретів із чесним зазначенням недоступності БД. Це не дозвіл на деплой із failing tests.
+Перед commit запускати `npm run typecheck` і `npm run lint` (backend, frontend, e2e); для старих JS-скриптів lint не налаштований. За актуальним bootstrap-запитом документаційний push дозволений після успішних релевантних перевірок документів, unit-тестів і секретів із чесним зазначенням недоступності БД. Це не дозвіл на деплой із failing tests.
 
 Фактичний workflow та backward-compatible rollback міграцій — [DEPLOYMENT](DEPLOYMENT.md).

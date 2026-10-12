@@ -22,7 +22,7 @@
 - Звуження поточного `0.0.0.0/0` HBA-правила, перевірка зовнішнього firewall, довірений TLS і режим клієнта. Публічний доступ до PostgreSQL не схвалено; рішення не застосовувати автоматично.
 - Модель ролей, authentication, ідентифікація/ротація credentials agents, протокол команд і streaming.
 - Схема/retention метрик, логів та Audit Logs, міграційний інструмент, пороги Slack.
-- Сервісний користувач, точні systemd sandbox-параметри, схема backup/rollback.
+- ~~Сервісний користувач, systemd sandbox, backup/rollback~~ — вирішено в ADR-008/009 (Task 003/004).
 
 Перед вибором вивчити наявний код, залежності та експлуатаційні вимоги; зміни рішень записувати з причиною й наслідками.
 
@@ -52,7 +52,7 @@
 
 - Fastify 5.12 (офіційно Node 20/22), TypeScript 6.0 strict + `exactOptionalPropertyTypes`, Vitest 5 (Node ≥ 22.12), ESLint 10 + typescript-eslint 8 `strictTypeChecked`, tsx для dev. TypeScript 7 не взято: typescript-eslint 8.71 підтримує лише `<6.1`. Версії зафіксовані точно в `package.json` і lockfile.
 - Без нового package manager чи monorepo-інструменту: один кореневий `package.json`; backend-конфіги в `backend/`; ESLint лише для `backend/`, старі JS-скрипти не змінювалися.
-- API за замовчуванням слухає `127.0.0.1:3100` (за Nginx у майбутньому). Порт обрано як непривілейований; серверний порт ще не узгоджено.
+- API за замовчуванням слухає `127.0.0.1:3100`; з Task 003 це затверджений серверний порт (ADR-008).
 - `process.env` має пріоритет над `.env`; `ENV_FILE` дозволяє вказати інший файл (для systemd `EnvironmentFile` чи тестів). Невалідна конфігурація блокує старт; недоступна БД — ні (readiness 503).
 - Request ID генерує сервер (UUID); клієнтський `x-request-id` ігнорується, щоб не довіряти неперевіреним значенням у логах.
 - Readiness — лише `SELECT 1` з таймаутом; відповіді health — мінімальні, причина збою тільки в логах.
@@ -121,3 +121,16 @@
 **Schema/audit.** Міграція `1791900000001_auth-foundation` (additive): `users.role` (CHECK, default `viewer`), `sessions` (FK `ON DELETE CASCADE`, унікальний 32-байтний digest, `expires_at > created_at`, індекси), `audit_log` (identity PK, `event`/`outcome` CHECK, `actor_user_id` `ON DELETE SET NULL`, `request_id`, `details jsonb` лише object ≤ 2 KiB). Події: `admin.bootstrap`, `auth.login` success/failure (`reason`: `invalid_credentials`|`inactive_user`; для невідомого email — `actor_user_id = NULL`, email не зберігається), `auth.logout`, `authz.denied` (`permission`, шаблон маршруту). Login-сесія + audit, logout + audit, bootstrap user + audit — одна транзакція (`transaction_timeout` 5 с); збій audit → 503 і мутації немає. Failed-login/denied audit — best effort: збій запису логується, а доступ лишається забороненим (401/403). Збій БД при lookup/сесії → 503 (fail closed). `GET /api/audit` — keyset за `id DESC`, `limit` 1–100.
 
 **Bootstrap.** `backend/dist/bootstrap-admin.js --email <e> [--password-stdin]`: пароль — прихований TTY-ввід двічі або stdin (≤ 4 KiB, один рядок), ніколи argv; конфіг БД — `ENV_FILE`/`DB_*`; транзакція з `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`, відмова, якщо адмін уже є або email зайнятий (без підвищення/скидання пароля); user + `admin.bootstrap` атомарно. Коди виходу: 0 створено, 2 ввід/usage, 3 відмова, 1 помилка. HTTP-bootstrap і default credentials відсутні.
+
+## ADR-012: Frontend — React + Vite, same-origin, сесія лише в пам'яті
+
+Статус: прийнято (Task 006).
+
+- **Стек:** React 19.3, React Router 8.4 (declarative routes), Vite 8.3 (`@vitejs/plugin-react` 6), TypeScript strict; тести — Vitest + jsdom 29 (jsdom 30 вимагає Node `^24.15`), Testing Library; E2E — Playwright 1.64 (Chromium). Перевірено engines/peer: React Router 8 — Node ≥ 22.22, React ≥ 19.2.7; Vite 8 — Node ≥ 22.12. Без state-менеджерів і UI-бібліотек.
+- **Залежності — devDependencies** в кореневому `package.json`/lockfile (без workspaces): UI збирається в статику; production `npm ci --omit=dev` їх не встановлює.
+- **Same-origin:** у production статику й `/api/` віддає host Nginx з одного origin; у розробці/E2E — Vite proxy з того самого loopback-origin. CORS не вмикається; Origin не підмінюється (CSRF-перевірки ADR-011 працюють як є).
+- **Сесія:** HttpOnly cookie керує браузер; `user/permissions/csrfToken/expiresAt` — лише в пам'яті React; жодних токенів/паролів у web storage/URL/логах. Захист від гонок — «епохи» сесії (logout, expiry, новий login скасовують і ігнорують старі відповіді); приватна область перемонтовується на кожну сесію. Таймер на `expiresAt` перевіряє сесію в сервера.
+- **API-клієнт:** відносні `/api`, timeout 10 с + `AbortSignal`, без автоповторів, runtime-валідація (`frontend/src/api/types.ts`), фіксовані українські повідомлення за типом помилки; 503/мережа на старті — екран «недоступно» з retry, не logout.
+- **Права в UI** — лише UX; прямий URL перевіряється (`RequirePermission`), backend — джерело авторизації. Redirect після login — тільки внутрішній шлях.
+- **E2E:** реальний скомпільований backend і `vite preview` production-збірки; тестова БД через guards ADR-009, per-run схема, тестові користувачі лише в ній; паролі випадкові на прогін; без traces/screenshots/video.
+- **Nginx:** окремий loopback-сайт `127.0.0.1:3101` (не публічний), статика з `current/frontend/dist`, `/api/` без зміни URI, SPA fallback лише для не-`/api` шляхів, CSP `default-src 'self'` (тому в UI немає inline-стилів/скриптів), `immutable` кеш для hashed assets.

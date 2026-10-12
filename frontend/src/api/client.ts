@@ -1,0 +1,126 @@
+import { type AuditPage, ContractError, parseAuditPage, parseSessionInfo, type SessionInfo } from './types';
+
+// Central API client (ADR-012):
+//  * relative /api URLs only, `credentials: 'same-origin'` — the browser manages the HttpOnly session cookie;
+//  * bounded timeout + caller cancellation; never retries automatically (login/logout are not idempotent);
+//  * responses are validated at this boundary; server text is never surfaced — the UI maps error kinds to its
+//    own messages; the CSRF token is passed in explicitly from in-memory auth state.
+
+export const REQUEST_TIMEOUT_MS = 10_000;
+
+export type ApiErrorKind =
+  | 'unauthorized' // 401
+  | 'forbidden' // 403
+  | 'rate_limited' // 429
+  | 'unavailable' // 503 / 502 / 504
+  | 'invalid_request' // 400
+  | 'not_found' // 404
+  | 'network' // fetch rejected (offline, DNS, refused)
+  | 'timeout'
+  | 'aborted' // cancelled by the caller (unmount, logout)
+  | 'unexpected'; // anything else, incl. contract violations
+
+export class ApiError extends Error {
+  readonly kind: ApiErrorKind;
+  readonly status: number | null;
+  readonly retryAfterSeconds: number | null;
+
+  constructor(kind: ApiErrorKind, status: number | null = null, retryAfterSeconds: number | null = null) {
+    super(kind);
+    this.name = 'ApiError';
+    this.kind = kind;
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+function kindForStatus(status: number): ApiErrorKind {
+  switch (status) {
+    case 400: return 'invalid_request';
+    case 401: return 'unauthorized';
+    case 403: return 'forbidden';
+    case 404: return 'not_found';
+    case 429: return 'rate_limited';
+    case 502: case 503: case 504: return 'unavailable';
+    default: return 'unexpected';
+  }
+}
+
+/** Retry-After as a bounded number of seconds (header may be seconds or an HTTP date). */
+export function parseRetryAfter(header: string | null, now = Date.now()): number | null {
+  if (header === null || header.trim() === '') return null;
+  const seconds = /^\d{1,6}$/.test(header.trim()) ? Number(header.trim()) : Math.ceil((Date.parse(header) - now) / 1000);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.min(seconds, 24 * 3600);
+}
+
+export interface RequestOptions<T> {
+  method?: 'GET' | 'POST';
+  body?: unknown;
+  csrfToken?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  /** Validates the 2xx JSON body; omitted → the response must be 204. */
+  parse?: (value: unknown) => T;
+}
+
+export async function apiRequest<T = undefined>(path: `/api/${string}`, options: RequestOptions<T> = {}): Promise<T> {
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  const headers: Record<string, string> = { accept: 'application/json' };
+  if (options.body !== undefined) headers['content-type'] = 'application/json';
+  if (options.csrfToken !== undefined) headers['x-csrf-token'] = options.csrfToken;
+
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: options.method ?? 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      redirect: 'error',
+      headers,
+      signal,
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+    });
+  } catch {
+    if (options.signal?.aborted) throw new ApiError('aborted');
+    if (timeout.aborted) throw new ApiError('timeout');
+    throw new ApiError('network');
+  }
+
+  if (!response.ok) {
+    throw new ApiError(kindForStatus(response.status), response.status, parseRetryAfter(response.headers.get('retry-after')));
+  }
+  if (!options.parse) {
+    if (response.status !== 204) throw new ApiError('unexpected', response.status);
+    return undefined as T;
+  }
+  try {
+    return options.parse(await response.json());
+  } catch (error) {
+    if (options.signal?.aborted) throw new ApiError('aborted');
+    if (error instanceof ContractError || error instanceof SyntaxError) throw new ApiError('unexpected', response.status);
+    throw new ApiError('unexpected', response.status);
+  }
+}
+
+export const authApi = {
+  me: (signal?: AbortSignal) => apiRequest('/api/auth/me', { parse: parseSessionInfo, ...(signal ? { signal } : {}) }),
+  login: (email: string, password: string, signal?: AbortSignal) =>
+    apiRequest('/api/auth/login', { method: 'POST', body: { email, password }, parse: parseSessionInfo, ...(signal ? { signal } : {}) }),
+  logout: (csrfToken: string, signal?: AbortSignal) =>
+    apiRequest('/api/auth/logout', { method: 'POST', csrfToken, ...(signal ? { signal } : {}) }),
+};
+
+export const AUDIT_PAGE_SIZE = 25;
+
+export function fetchAuditPage(beforeId: string | null, signal?: AbortSignal): Promise<AuditPage> {
+  const query = new URLSearchParams({ limit: String(AUDIT_PAGE_SIZE) });
+  if (beforeId !== null) {
+    if (!/^[1-9]\d{0,17}$/.test(beforeId)) return Promise.reject(new ApiError('invalid_request'));
+    query.set('beforeId', beforeId);
+  }
+  return apiRequest(`/api/audit?${query.toString()}`, { parse: parseAuditPage, ...(signal ? { signal } : {}) });
+}
+
+export type { AuditPage, SessionInfo };

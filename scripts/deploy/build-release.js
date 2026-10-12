@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Builds a release artifact from a committed, pushed revision — never from the working directory.
 //   node scripts/deploy/build-release.js [--revision HEAD] [--out <dir>] [--remote-branch origin/main]
-// Output: <out>/node-control-api-<sha>.tar.gz, .sha256, and server-bundle/ (server-release.js + lib) for transfer.
+// Output: <out>/node-control-api-<sha>.tar.gz (API + frontend/dist + nginx/systemd templates), .sha256,
+// and server-bundle/ (server-release.js + lib) for transfer. Backend and UI are activated together via `current`.
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,7 +18,9 @@ export const ARTIFACT_PATHS = Object.freeze([
   'package-lock.json',
   'backend/dist',
   'backend/migrations',
+  'frontend/dist',
   'deploy/systemd/node-control-api.service',
+  'deploy/nginx',
   'scripts/deploy/server-release.js',
   'scripts/deploy/lib',
 ]);
@@ -26,6 +29,33 @@ export function git(args, cwd) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
   return result.stdout.trim();
+}
+
+// Server-side names and secret shapes that must never appear in the public browser bundle.
+const BUNDLE_FORBIDDEN = Object.freeze([
+  /DB_PASS|TEST_DB_|DB_USER|DB_HOST|ENV_FILE|AUTH_ALLOWED_ORIGINS/,
+  /node_control_(user|db|test)/,
+  /postgres(ql)?:\/\//,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /SCRAM-SHA-256\$/,
+  /\/etc\/goit-node-control|\/root\//,
+]);
+
+/** Fails if the frontend bundle contains source maps or anything that looks like server configuration. */
+export function assertBundleClean(distDir) {
+  const problems = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(path); continue; }
+      if (entry.name.endsWith('.map')) { problems.push(`source map: ${path.slice(distDir.length + 1)}`); continue; }
+      const text = readFileSync(path, 'utf8');
+      for (const re of BUNDLE_FORBIDDEN) if (re.test(text)) problems.push(`${path.slice(distDir.length + 1)} matches ${String(re)}`);
+    }
+  };
+  if (!existsSync(join(distDir, 'index.html'))) throw new Error('frontend bundle has no index.html');
+  walk(distDir);
+  if (problems.length > 0) throw new Error(`frontend bundle rejected: ${problems.join('; ')}`);
 }
 
 /** Resolves the revision and refuses dirty trees and commits that are not on the remote branch. */
@@ -71,6 +101,8 @@ export function buildRelease({ revision, out, remoteBranch, cwd = process.cwd() 
     rmSync(join(work, 'src.tar'));
     run('npm', ['ci', '--no-audit', '--no-fund'], work);
     run('npm', ['run', 'backend:build'], work);
+    run('npm', ['run', 'frontend:build'], work);
+    assertBundleClean(join(work, 'frontend', 'dist'));
 
     const stage = join(outDir, 'stage');
     stageArtifact(work, stage);

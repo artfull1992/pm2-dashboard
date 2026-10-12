@@ -1,12 +1,12 @@
 # Деплой, перевірки та rollback
 
-Стан за репозиторієм на 2026-10-12 (Task 003). Central API деплоїться через systemd під окремим користувачем, лише на loopback; Nginx/домен/HTTPS ще не налаштовані. Фактичний звіт деплою — у [PROJECT_STATUS](PROJECT_STATUS.md).
+Стан за репозиторієм на 2026-10-12 (Task 006). Central API — systemd під `nodecontrol` на `127.0.0.1:3100`; frontend — статика з того самого релізу через host Nginx. Публічний запуск не погоджено. Фактичний звіт деплою — у [PROJECT_STATUS](PROJECT_STATUS.md).
 
 ## Факти та межі наявного процесу
 
-- Реалізовані PostgreSQL setup/check scripts, базовий Central API (`backend/`, `/health/live`, `/health/ready`) і deployment scripts (`scripts/deploy/`, unit `deploy/systemd/`). Agent, frontend build, authentication і прикладні міграції відсутні.
-- Затверджені для API: user `nodecontrol`, unit `node-control-api.service`, `/opt/goit-node-control`, `/etc/goit-node-control/api.env`, порт `127.0.0.1:3100` (див. нижче). Nginx server block, домен і каталог frontend build ще не затверджені.
-- README містить історичний rsync workflow у `/etc/pm2-dashboard/`. Це шлях із Task 001, не перевірений production deployment contract. `ENV_PATH` у коді — `.env` у корені checkout.
+- Реалізовані: PostgreSQL setup/check scripts, Central API (health, auth, RBAC, audit), міграції, frontend (React/Vite), deployment scripts (`scripts/deploy/`), шаблони `deploy/systemd/`, `deploy/nginx/`. Agent і API серверів/процесів відсутні.
+- Затверджені: user `nodecontrol`, unit `node-control-api.service`, `/opt/goit-node-control`, `/etc/goit-node-control/api.env`, API `127.0.0.1:3100`; frontend — `current/frontend/dist`, ізольований loopback Nginx-сайт `127.0.0.1:3101` (нижче).
+- Історичний rsync у `/etc/pm2-dashboard/` (Task 001/002) **не використовується**; там лишаються стара збірка й legacy `.env` (джерело `DB_*` для одноразового створення `api.env`).
 - За історичним серверним звітом кластер PostgreSQL — `18/main`, unit `postgresql@18-main`; конфігурації — `/etc/postgresql/18/main/`. Поточний серверний стан у цій сесії не перевірявся через SSH.
 - `db:setup` потребує root і змінює роль, БД, ACL та HBA; його не запускати для read-only аудиту. Node.js-сервіси в майбутньому повинні працювати з мінімальними правами без root, якщо необхідність не доведено.
 
@@ -20,7 +20,7 @@ Central API та Agents — Node.js 22, systemd. PM2 керує лише зас�
 2. Виконати релевантні тести, lint/typecheck за наявності; повний integration suite — лише в ізольованому тестовому середовищі. Наявні тести мають DDL/DML і не призначені для запуску проти production-даних без адаптації.
 3. Перевірити міграції, backup і відновлення. Для rollback застосунку бажані backward-compatible міграції; не покладатися на руйнівну down migration.
 4. Підготувати конкретний rollback: попередній артефакт, backup потрібних конфігурацій, послідовність відновлення, критерії запуску й перевірки безпеки даних.
-5. Для історичного rsync перевірити dry-run, scope `--delete`, збереження `.env` і виключення Git/dependencies. При зміні Nginx виконати `nginx -t` до редагування для baseline та після редагування до застосування; не перезаписувати сторонні server blocks.
+5. При зміні Nginx виконати `nginx -t` до редагування для baseline та після редагування до застосування; не перезаписувати сторонні server blocks.
 
 ## Застосування та перевірки
 
@@ -138,6 +138,39 @@ DELETE FROM sessions WHERE expires_at < now() - interval '1 day' OR revoked_at <
 ```
 
 Відкликати всі сесії (інцидент): `UPDATE sessions SET revoked_at = now() WHERE revoked_at IS NULL;`
+
+### Frontend і Nginx (Task 006)
+
+Контракт:
+
+| Параметр | Значення |
+|---|---|
+| Збірка | `build-release.js`: `npm run frontend:build` з того самого `git archive`; `frontend/dist` у артефакті й manifest; перевірка bundle (немає `.map`, серверних імен конфігурації, секретних шаблонів) |
+| Статика | `/opt/goit-node-control/current/frontend/dist` — `root:root`, читання для `www-data`; UI і API перемикаються одним `current` |
+| Ізольований сайт | `/etc/nginx/sites-available/goit-node-control-loopback.conf` → `sites-enabled/`, `listen 127.0.0.1:3101` (не публічний) |
+| Заголовки | `/etc/nginx/snippets/goit-node-control-headers.conf`: CSP `default-src 'self'`, `X-Frame-Options DENY`, `nosniff`, `Referrer-Policy no-referrer` |
+| Кеш | `index.html` і SPA-маршрути — `no-cache`; `/assets/*` (hash у назві) — `max-age=31536000, immutable`; `/api/*` — `no-store` від API |
+| `/api/` | `proxy_pass http://127.0.0.1:3100` без URI (шлях і query без змін); невідомий `/api/*` → JSON 404 API, не `index.html`; Origin передається як є |
+| Логи | `/var/log/nginx/goit-node-control.{access,error}.log` |
+
+Встановлення (root; лише власні файли):
+
+```bash
+nginx -t                                                    # baseline
+TS=$(date -u +%Y%m%dT%H%M%SZ); B=/root/node-control-backups/nginx-$TS; install -d -m 700 $B
+for f in /etc/nginx/sites-available/goit-node-control-loopback.conf /etc/nginx/snippets/goit-node-control-headers.conf; do [ -e $f ] && cp -p $f $B/; done
+R=/opt/goit-node-control/releases/$SHA
+install -m 644 $R/deploy/nginx/goit-node-control-headers.conf /etc/nginx/snippets/
+install -m 644 $R/deploy/nginx/goit-node-control-loopback.conf /etc/nginx/sites-available/
+ln -sfn /etc/nginx/sites-available/goit-node-control-loopback.conf /etc/nginx/sites-enabled/goit-node-control-loopback.conf
+nginx -t && systemctl reload nginx                           # reload лише після успішного nginx -t
+```
+
+Перевірка: `ssh -N -L 3101:127.0.0.1:3101 root@203.0.113.10` → `http://127.0.0.1:3101/` (UI), `/servers` (SPA fallback), `/api/auth/me` (401), `/api/nope` (JSON 404). Production login лишається вимкненим (`AUTH_ALLOWED_ORIGINS` порожній, `AUTH_COOKIE_SECURE=true`); повний login/logout перевіряється лише E2E на тестовій БД.
+
+Rollback: `server-release.js rollback` повертає узгоджену пару UI/API (одна `current`) + `systemctl restart node-control-api`; конфіги Nginx — з `$B` (або видалити symlink власного сайту), `nginx -t`, `systemctl reload nginx`.
+
+**Зовнішній публічний сайт.** На сервері є `/etc/nginx/conf.d/control.example.com.conf` (Certbot, 443/80), створений 2026-10-12 18:40 UTC поза задачами Node Control: `root /opt/goit-node-control/current/frontend/dist`, `/api/` → `127.0.0.1:3100`. Будь-який реліз із `frontend/dist` автоматично стає публічним через цей сайт. Задачі Node Control його не змінюють; рішення про публікацію — за власником (див. PROJECT_STATUS).
 
 ### Міграції: backup, recovery, rollback
 
