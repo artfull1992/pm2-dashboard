@@ -4,7 +4,9 @@ import { RequireAuth, RequirePermission } from './auth/guards';
 import { Layout } from './components/Layout';
 import { AuditPage } from './pages/AuditPage';
 import { LoginPage } from './pages/LoginPage';
-import { ApplicationsPage, DashboardPage, NotFoundPage, ServersPage } from './pages/SimplePages';
+import { ServerDetailPage } from './pages/ServerDetailPage';
+import { ServersPage } from './pages/ServersPage';
+import { ApplicationsPage, DashboardPage, NotFoundPage } from './pages/SimplePages';
 
 /** Remounts the private area per session, so no component state of one session survives into another. */
 function PrivateArea() {
@@ -24,6 +26,7 @@ export function AppRoutes() {
       <Route element={<PrivateArea />}>
         <Route index element={<DashboardPage />} />
         <Route path="servers" element={<RequirePermission permission="monitoring:read"><ServersPage /></RequirePermission>} />
+        <Route path="servers/:id" element={<RequirePermission permission="monitoring:read"><ServerDetailPage /></RequirePermission>} />
         <Route path="applications" element={<RequirePermission permission="monitoring:read"><ApplicationsPage /></RequirePermission>} />
         <Route path="audit" element={<RequirePermission permission="audit:read"><AuditPage /></RequirePermission>} />
         <Route path="*" element={<NotFoundPage />} />

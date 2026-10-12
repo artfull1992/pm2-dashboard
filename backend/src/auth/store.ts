@@ -11,7 +11,10 @@ export type AuditEvent =
   | { event: 'auth.login'; outcome: 'success'; details?: Record<string, never> }
   | { event: 'auth.login'; outcome: 'failure'; details: { reason: 'invalid_credentials' | 'inactive_user' } }
   | { event: 'auth.logout'; outcome: 'success'; details?: Record<string, never> }
-  | { event: 'authz.denied'; outcome: 'denied'; details: { permission: string; route: string } };
+  | { event: 'authz.denied'; outcome: 'denied'; details: { permission: string; route: string } }
+  | { event: 'server.created'; outcome: 'success'; details: { serverId: string } }
+  | { event: 'agent.credential_issued'; outcome: 'success'; details: { serverId: string; rotated: boolean } }
+  | { event: 'agent.credential_revoked'; outcome: 'success'; details: { serverId: string; revoked: boolean } };
 
 export interface AuditContext {
   actorUserId: string | null;

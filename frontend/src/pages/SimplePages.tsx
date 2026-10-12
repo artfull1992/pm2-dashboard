@@ -27,17 +27,6 @@ export function DashboardPage() {
   );
 }
 
-export function ServersPage() {
-  return (
-    <section className="page" aria-labelledby="servers-title">
-      <h1 id="servers-title" className="page__title">Сервери</h1>
-      <EmptyState title="Ще немає підключених серверів">
-        Сервери з’являться тут після підключення агента моніторингу.
-      </EmptyState>
-    </section>
-  );
-}
-
 export function ApplicationsPage() {
   return (
     <section className="page" aria-labelledby="apps-title">

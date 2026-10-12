@@ -4,7 +4,7 @@
 
 ## Реалізовано
 
-ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/` — React/Vite UI (Task 006); `agent/` — лише `.gitkeep`. Є версійні міграції (`users`, `sessions`, `audit_log`). UI, агенти, process/server endpoints і Nginx-конфігурації проєкту відсутні.
+ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/` — React/Vite UI (Task 006); `agent/` — Node.js Agent із вихідним HTTPS heartbeat (Task 007). Є версійні міграції (`users`, `sessions`, `audit_log`). Є реєстр серверів і heartbeat Agent (Task 007); PM2/процеси, логи застосунків і WebSocket відсутні.
 
 | Шлях | Фактична відповідальність |
 |---|---|
@@ -29,7 +29,10 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `frontend/src/api/` | API-клієнт (timeout, cancel, runtime-валідація) і типи контракту |
 | `frontend/src/auth/` | `AuthContext` (сесія в пам'яті, епохи проти гонок), guards (`RequireAuth`, `RequirePermission`, безпечний redirect) |
 | `frontend/src/pages/`, `components/` | Login, Огляд, Сервери/Застосунки (порожні стани), Журнал аудиту; Layout із навігацією за правами |
-| `e2e/` | Playwright: реальний backend + збірка UI на тестовій БД |
+| `e2e/` | Playwright: реальний backend + збірка UI + Agent на тестовій БД |
+| `backend/src/servers/` | Реєстр серверів (SQL, keyset), credentials агентів (digest), heartbeat (FOR SHARE + монотонний upsert), контракт snapshot |
+| `agent/src/` | Agent: конфіг (HTTPS-only, файл 600), snapshot (`node:os`), heartbeat (timeout, `redirect: 'error'`), цикл (без overlap, backoff + jitter) |
+| `frontend/src/pages/Server*.tsx` | Список/деталі серверів, опитування лише видимої вкладки, одноразовий діалог ключа |
 | `backend/test/support/test-db.ts` | Guard real-DB тестів: лише `TEST_DB_*`, відхилення production, per-run схема |
 | `scripts/setup-test-db.js` | Root: ізольована `node_control_test_db`/`node_control_test_user` |
 | `backend/test/` | Vitest: unit/API (inject), `smoke/` (скомпільований dist), `db/` (opt-in реальна БД, лише SELECT 1) |

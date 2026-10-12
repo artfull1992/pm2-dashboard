@@ -2,7 +2,7 @@
 
 Централізована платформа для моніторингу та керування Node.js-проєктами на декількох серверах.
 
-> Task 001 — сервер і PostgreSQL; Task 002/003 — Central API + деплой через systemd; Task 004 — тестова БД і міграції; Task 005 — authentication, RBAC, audit log; Task 006 — React/Vite frontend. Agent і API серверів/процесів ще не реалізовані; публічний production-запуск не погоджено.
+> Task 001 — сервер і PostgreSQL; Task 002/003 — Central API + деплой через systemd; Task 004 — тестова БД і міграції; Task 005 — authentication, RBAC, audit log; Task 006 — React/Vite frontend; Task 007 — реєстр серверів, Agent heartbeat, UI серверів. PM2/процеси ще не реалізовані; публічний production-запуск не погоджено.
 
 Task 001 підтверджений файлами та локальними unit-тестами, але серверний стан незалежно не підтверджено. Актуальні результати й проблеми — [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
 
@@ -34,7 +34,7 @@ Task 001 підтверджений файлами та локальними uni
 
 ```text
 .
-├── agent/            # майбутній агент на керованих серверах
+├── agent/            # Node.js Agent: вихідний HTTPS heartbeat (src/, test/, dist/ — збірка)
 ├── backend/          # Central API: TypeScript + Fastify (src/, test/, dist/ — збірка, не в Git)
 │   └── migrations/   # версійні SQL-міграції (node-pg-migrate)
 ├── frontend/         # React + Vite UI (src/, test/, dist/ — збірка, не в Git)
@@ -98,7 +98,7 @@ DB_PORT=5432
 
 ## Central API (backend)
 
-TypeScript (strict) + Fastify 5, PostgreSQL pool, health endpoints, authentication із серверними сесіями, CSRF, RBAC, audit log, структуровані логи, обробка помилок, graceful shutdown. **CRUD користувачів, Agent, process/server endpoints, WebSocket, frontend не реалізовані.**
+TypeScript (strict) + Fastify 5, PostgreSQL pool, health endpoints, authentication із серверними сесіями, CSRF, RBAC, audit log, структуровані логи, обробка помилок, graceful shutdown. Реєстр серверів і machine-auth heartbeat Agent (Task 007). **CRUD користувачів, зміна пароля, PM2/процеси, логи застосунків, WebSocket не реалізовані.**
 
 Runtime: **Node.js 22 LTS** (Fastify 5 офіційно підтримує Node 20/22, Vitest 5 потребує Node ≥ 22.12). Якщо локально інша версія, перевірки на 22 можна запускати через `npx -y node@22 …` (див. нижче).
 
@@ -230,9 +230,28 @@ ENV_FILE=<config> npm run db:migrate:up        # явне застосуванн
 
 Немає `down`/`reset` у CLI: production-міграції лише вперед; відновлення — з backup (docs/DEPLOYMENT.md). Міграції: `1791900000000_create-users` (ADR-010), `1791900000001_auth-foundation` (ADR-011).
 
+### Сервери та Agent (Task 007, ADR-015)
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `GET /api/servers?limit=1..100&afterId=<uuid>` | `monitoring:read` | `200 {items:[ServerSummary], nextAfterId, onlineWindowSeconds}` (keyset за `created_at, id`) | 400, 401, 403, 503 |
+| `GET /api/servers/:id` | `monitoring:read` | `200 ServerDetail` = ServerSummary + `snapshot` (або `null`) | 400, 401, 403, 404, 503 |
+| `POST /api/servers` `{"name"}` | `servers:manage` + Origin + CSRF | `201 ServerSummary` (`never_connected`) | 400, 401, 403, 409 (назва зайнята), 503 |
+| `POST /api/servers/:id/agent-credentials` | `servers:manage` + Origin + CSRF | `201 {serverId, token, issuedAt, rotated}` — **токен лише тут, один раз** | 401, 403, 404, 409 (неактивний), 503 |
+| `POST /api/servers/:id/agent-credentials/revoke` | `servers:manage` + Origin + CSRF | `200 {serverId, revoked}` | 401, 403, 404, 503 |
+| `POST /api/agent/heartbeat` (snapshot) | **machine**: `Authorization: Bearer ncag_…` | `200 {status:"accepted", receivedAt, intervalSeconds}` | 400 (snapshot), 401, 403 (браузерний контекст), 413, 429, 503 |
+
+`ServerSummary = {id, name, isActive, createdAt, status: online|offline|never_connected, lastSeenAt, hasActiveCredential}`. `online` — останній прийнятий heartbeat за **серверним** годинником новіший за 90 с. Snapshot: `agentVersion, hostname, platform, arch, uptimeSeconds, cpuCount, loadAverage[3]` (довжина черги, не % CPU), `memory {totalBytes, freeBytes}` — більше нічого.
+
+Agent (`agent/`): `ENV_FILE` (600, власник — користувач агента) з `NC_AGENT_API_URL=https://…` (лише origin; HTTP — тільки `NC_AGENT_ALLOW_INSECURE_LOOPBACK=true` на loopback для dev/E2E), `NC_AGENT_TOKEN`, опційно `NC_AGENT_INTERVAL_SECONDS` (5–300), `NC_AGENT_TIMEOUT_SECONDS` (1–60), `NC_AGENT_MAX_BACKOFF_SECONDS` (30–3600). Без inbound-порту, без команд, без DB credentials.
+
+```bash
+npm run agent:build && npm run test:agent
+```
+
 ### Production (сервер)
 
-Central API — systemd `node-control-api.service` під `nodecontrol` на `127.0.0.1:3100`; UI — статика з того самого релізу. Публічна адреса — **https://control.example.com** (host Nginx + Let's Encrypt, `/api/` → API). `AUTH_ALLOWED_ORIGINS=https://control.example.com`, cookie `Secure`. Адміністратора створює оператор через CLI (DEPLOYMENT). Процедура деплою й rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); фактичний стан і release blockers — [PROJECT_STATUS](docs/PROJECT_STATUS.md).
+Central API — systemd `node-control-api.service` під `nodecontrol` на `127.0.0.1:3100`; UI — статика з того самого релізу. Публічна адреса — **https://control.example.com** (host Nginx + Let's Encrypt, `/api/` → API). `AUTH_ALLOWED_ORIGINS=https://control.example.com`, cookie `Secure`. `API_TRUSTED_PROXIES=127.0.0.1`. Перший адміністратор створений (Task 006); нові — поки лише CLI. Agent першої ноди — `node-control-agent.service` (DEPLOYMENT). Процедура деплою й rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); фактичний стан і release blockers — [PROJECT_STATUS](docs/PROJECT_STATUS.md).
 
 ## Тести та перевірки
 
@@ -247,7 +266,7 @@ npm run db:check          # SELECT 1 через .env, без виводу пар
 
 ## Frontend (React + Vite)
 
-`frontend/` — React 19 + React Router 8 + Vite 8, TypeScript strict (ADR-012). Інтерфейс українською: вхід, огляд, Сервери/Застосунки (чесні порожні стани — Agent ще не підключено), Журнал аудиту (лише `audit:read`), інформація про користувача й вихід. Стани loading / empty / error / forbidden / unavailable; адаптивний layout (sidebar на desktop, меню на мобільних), skip-link, видимий фокус.
+`frontend/` — React 19 + React Router 8 + Vite 8, TypeScript strict (ADR-012). Інтерфейс українською: вхід, огляд, Сервери (реальні дані heartbeat, деталі, керування ключами агента для admin), Застосунки (чесний порожній стан — PM2 ще немає), Журнал аудиту (лише `audit:read`), інформація про користувача й вихід. Стани loading / empty / error / forbidden / unavailable; адаптивний layout (sidebar на desktop, меню на мобільних), skip-link, видимий фокус.
 
 - **API-клієнт** (`frontend/src/api/`): лише відносні `/api`, `credentials: 'same-origin'`, timeout 10 с і скасування, без автоматичних повторів, runtime-валідація відповідей, `Retry-After` для 429/503; повідомлення формує UI, текст сервера не показується.
 - **Сесія** (`frontend/src/auth/`): стан лише в пам'яті React — без localStorage/sessionStorage/URL; cookie керує браузер (HttpOnly); `csrfToken` з `login`/`me` у пам'яті; пароль очищається після запиту. «Епохи» сесії: відповідь `me`/`login`, що прийшла після logout/expiry, ігнорується. 401 від будь-якого запиту → приватні дані скидаються.
@@ -295,7 +314,7 @@ Production-деплой — лише артефактом із запушено�
 
 ## Наступні етапи
 
-1. Agent (Node.js, systemd) і API серверів/процесів — наступне завдання.
+1. PM2 read-only inventory через Agent, потім дозволені керуючі операції (з авторизацією та Audit Log). Окремий backlog: керування користувачами, зміна пароля.
 2. Перед публічним запуском — release blockers (PROJECT_STATUS): обмеження 5432, NC-SEC-001, рішення щодо публічного HTTPS-сайту та `AUTH_ALLOWED_ORIGINS`, bootstrap адміністратора.
 3. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики.
 

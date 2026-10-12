@@ -22,3 +22,4 @@ frontend/dist/
 # Playwright output (never commit; traces/screenshots disabled by config)
 test-results/
 playwright-report/
+agent/dist/

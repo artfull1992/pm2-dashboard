@@ -9,6 +9,7 @@ export const PERMISSIONS = [
   'monitoring:read', // future: servers, applications, metrics, logs
   'processes:control', // future: start/stop/restart of allowed managed processes
   'users:manage', // future: user administration
+  'servers:manage', // server registry and Agent credentials (Task 007)
   'audit:read',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
@@ -16,7 +17,7 @@ export type Permission = (typeof PERMISSIONS)[number];
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = Object.freeze({
   viewer: ['monitoring:read'],
   operator: ['monitoring:read', 'processes:control'],
-  admin: ['monitoring:read', 'processes:control', 'users:manage', 'audit:read'],
+  admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read'],
 });
 
 export function isRole(value: unknown): value is Role {

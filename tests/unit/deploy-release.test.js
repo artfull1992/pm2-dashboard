@@ -225,3 +225,20 @@ test('CLI config never prints values', () => {
   assert.ok(lines.length > 0);
   assert.ok(!lines.join('\n').includes(pass));
 });
+
+test('dependency-free release (agent): prepare --no-install and activation without node_modules', () => {
+  const base = tmp('nc-agent-base-');
+  const art = artifact(REV1);
+  const result = runCli(['prepare', '--base', base, '--artifact', art.file, '--sha256', art.sha256, '--revision', REV1, '--no-install'], { log: () => {} });
+  assert.equal(result.status, 'prepared');
+  assert.ok(!existsSync(join(base, 'releases', REV1, 'node_modules')));
+  assert.equal(activateRelease({ base, revision: REV1 }).status, 'activated');
+});
+
+test('a release with a lockfile but no installed dependencies is refused', () => {
+  const base = tmp('nc-base-');
+  prepared(base, REV1);
+  writeFileSync(join(base, 'releases', REV1, 'package-lock.json'), '{}');
+  rmSync(join(base, 'releases', REV1, 'node_modules'), { recursive: true });
+  assert.throws(() => activateRelease({ base, revision: REV1 }), /no installed dependencies|failed verification/);
+});

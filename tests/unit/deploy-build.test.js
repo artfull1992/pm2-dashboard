@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { ARTIFACT_PATHS, assertBundleClean, resolveDeployableRevision, stageArtifact } from '../../scripts/deploy/build-release.js';
+import { AGENT_ARTIFACT_PATHS, ARTIFACT_PATHS, assertBundleClean, resolveDeployableRevision, stageArtifact } from '../../scripts/deploy/build-release.js';
 import { listFiles } from '../../scripts/deploy/lib/manifest.js';
 
 const SHA = 'c'.repeat(40);
@@ -107,4 +107,27 @@ test('assertBundleClean rejects source maps, server config names and secret shap
   const empty = mkdtempSync(join(tmpdir(), 'nc-dist-'));
   dirs.push(empty);
   assert.throws(() => assertBundleClean(empty), /no index.html/);
+});
+
+test('agent artifact contains only the compiled agent, its package.json, unit and release tooling', () => {
+  const src = mkdtempSync(join(tmpdir(), 'nc-src-'));
+  const stage = mkdtempSync(join(tmpdir(), 'nc-agent-stage-'));
+  dirs.push(src, stage);
+  const files = {
+    'agent/dist/main.js': '', 'agent/dist/main.js.map': '', 'agent/src/main.ts': '', 'agent/test/agent.test.ts': '', 'agent/package.json': '{}',
+    'agent/.env': 'NC_AGENT_TOKEN=x', 'deploy/systemd/node-control-agent.service': '', 'deploy/systemd/node-control-api.service': '',
+    'scripts/deploy/server-release.js': '', 'scripts/deploy/lib/manifest.js': '', 'backend/dist/main.js': '', 'frontend/dist/index.html': '',
+  };
+  for (const [file, content] of Object.entries(files)) {
+    mkdirSync(join(src, file, '..'), { recursive: true });
+    writeFileSync(join(src, file), content);
+  }
+  stageArtifact(src, stage, AGENT_ARTIFACT_PATHS);
+  assert.deepEqual(listFiles(stage), [
+    'agent/dist/main.js',
+    'agent/package.json',
+    'deploy/systemd/node-control-agent.service',
+    'scripts/deploy/lib/manifest.js',
+    'scripts/deploy/server-release.js',
+  ]);
 });

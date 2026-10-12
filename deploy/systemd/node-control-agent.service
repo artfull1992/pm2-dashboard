@@ -1,0 +1,60 @@
+# GOIT Node Control — Agent (outbound HTTPS heartbeat only; ADR-015).
+# Installed as /etc/systemd/system/node-control-agent.service. Not PM2-managed; no inbound listener.
+# Config: ENV_FILE (600, owned by nodecontrol-agent) with NC_AGENT_API_URL and NC_AGENT_TOKEN.
+# Exit code 2 = invalid/missing configuration (e.g. no token yet): not restarted in a loop.
+
+[Unit]
+Description=GOIT Node Control Agent (heartbeat)
+Documentation=https://github.com/artfull1992/pm2-dashboard/blob/main/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=nodecontrol-agent
+Group=nodecontrol-agent
+WorkingDirectory=/opt/goit-node-control-agent/current
+Environment=ENV_FILE=/etc/goit-node-control-agent/agent.env
+ExecStart=/usr/bin/node /opt/goit-node-control-agent/current/agent/dist/main.js
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=2
+KillSignal=SIGTERM
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=node-control-agent
+UMask=0077
+
+# Hardening. The Agent only reads /proc system-wide stats (loadavg, meminfo, uptime, cpuinfo) through node:os,
+# its release (read-only) and its env file, and makes outbound HTTPS connections. Unlike the API unit there is
+# NO IPAddressAllow=localhost: outbound HTTPS to the API is required. MemoryDenyWriteExecute stays off (V8 JIT).
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# No PM2 access: the agent user has no shell, no sudo and no access to PM2_HOME of any user (ProtectHome=yes).
+
+[Install]
+WantedBy=multi-user.target

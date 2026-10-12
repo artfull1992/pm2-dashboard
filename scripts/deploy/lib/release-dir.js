@@ -49,7 +49,10 @@ export function assertReleaseUsable(base, revision) {
   if (!existsSync(dir)) throw new Error(`release ${revision} is not prepared`);
   const errors = verifyManifest(dir, revision);
   if (errors.length > 0) throw new Error(`release ${revision} failed verification: ${errors.join('; ')}`);
-  if (!existsSync(join(dir, 'node_modules'))) throw new Error(`release ${revision} has no installed dependencies`);
+  // Releases with a lockfile (API) must have installed dependencies; dependency-free releases (Agent) have none.
+  if (existsSync(join(dir, 'package-lock.json')) && !existsSync(join(dir, 'node_modules'))) {
+    throw new Error(`release ${revision} has no installed dependencies`);
+  }
   return dir;
 }
 

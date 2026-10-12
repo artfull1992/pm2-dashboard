@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import type { Limiter } from './auth/password.js';
 import { registerAuth } from './auth/plugin.js';
 import { type AuthStore, createPgAuthStore } from './auth/store.js';
+import { registerServerRoutes } from './servers/routes.js';
+import { createPgServerStore, type ServerStore } from './servers/store.js';
 import type { AuthConfig, LogLevel } from './config.js';
 import { type Database, DatabaseCheckError, withTimeout } from './database.js';
 import { describeError, toErrorResponse } from './errors.js';
@@ -27,6 +30,10 @@ export interface BuildAppOptions {
     config: AuthConfig;
     /** Test seam; production uses the PostgreSQL store on the shared pool. */
     createStore?: (database: Database) => AuthStore;
+    /** Test seam for the server registry / Agent heartbeat store. */
+    createServerStore?: (database: Database) => ServerStore;
+    /** Test seam: bounds concurrent heartbeat transactions. */
+    heartbeatLimiter?: Limiter;
     extra?: Omit<Parameters<typeof registerAuth>[1], 'config' | 'store'>;
   };
 }
@@ -104,7 +111,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   if (options.auth) {
     const store = (options.auth.createStore ?? createPgAuthStore)(database);
-    registerAuth(app, { ...options.auth.extra, config: options.auth.config, store });
+    const serverStore = (options.auth.createServerStore ?? createPgServerStore)(database);
+    registerAuth(app, { agentResolver: serverStore, ...options.auth.extra, config: options.auth.config, store });
+    registerServerRoutes(app, { store: serverStore, ...(options.auth.heartbeatLimiter ? { heartbeatLimiter: options.auth.heartbeatLimiter } : {}) });
   }
 
   app.setNotFoundHandler({}, async (_request, reply) => {

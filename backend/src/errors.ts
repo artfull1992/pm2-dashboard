@@ -52,7 +52,7 @@ export class PublicHttpError extends Error {
   readonly publicMessage: string;
   readonly headers: Readonly<Record<string, string>>;
 
-  constructor(statusCode: 401 | 403 | 429 | 503, publicMessage: string, headers: Record<string, string> = {}) {
+  constructor(statusCode: 400 | 401 | 403 | 404 | 409 | 429 | 503, publicMessage: string, headers: Record<string, string> = {}) {
     super(publicMessage);
     this.name = 'PublicHttpError';
     this.statusCode = statusCode;

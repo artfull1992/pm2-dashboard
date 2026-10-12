@@ -47,7 +47,7 @@ export function session(role: 'admin' | 'operator' | 'viewer' = 'admin', email =
   const permissions = {
     viewer: ['monitoring:read'],
     operator: ['monitoring:read', 'processes:control'],
-    admin: ['monitoring:read', 'processes:control', 'users:manage', 'audit:read'],
+    admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read'],
   }[role];
   return {
     user: { id: `00000000-0000-4000-8000-00000000000${String(['admin', 'operator', 'viewer'].indexOf(role))}`, email, role },

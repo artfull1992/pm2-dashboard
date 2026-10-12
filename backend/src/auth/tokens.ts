@@ -61,3 +61,26 @@ export function readCookie(header: string | undefined, name: string): string | u
   if (values.length !== 1) return undefined;
   return values[0]?.slice(name.length + 1);
 }
+
+// Agent machine credentials (ADR-015): "ncag_" + 32 random bytes (base64url). Only SHA-256 is stored.
+export const AGENT_TOKEN_PREFIX = 'ncag_';
+const AGENT_TOKEN_RE = /^ncag_[A-Za-z0-9_-]{43}$/;
+
+export function newAgentToken(): string {
+  return `${AGENT_TOKEN_PREFIX}${randomBytes(SESSION_TOKEN_BYTES).toString('base64url')}`;
+}
+
+export function isWellFormedAgentToken(token: string | undefined): token is string {
+  return token !== undefined && AGENT_TOKEN_RE.test(token);
+}
+
+export function agentTokenDigest(token: string): Buffer {
+  return createHash('sha256').update(token).digest();
+}
+
+/** Extracts the token from `Authorization: Bearer <token>`; anything else → undefined. */
+export function bearerToken(header: string | undefined): string | undefined {
+  if (header === undefined || header.length > 256) return undefined;
+  const match = /^Bearer ([^\s]+)$/.exec(header);
+  return match?.[1];
+}

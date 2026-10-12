@@ -4,7 +4,7 @@
 
 ## Факти та межі наявного процесу
 
-- Реалізовані: PostgreSQL setup/check scripts, Central API (health, auth, RBAC, audit), міграції, frontend (React/Vite), deployment scripts (`scripts/deploy/`), шаблон `deploy/systemd/`. Agent і API серверів/процесів відсутні.
+- Реалізовані: PostgreSQL setup/check scripts, Central API (health, auth, RBAC, audit, реєстр серверів, Agent heartbeat), міграції, frontend (React/Vite), Agent, deployment scripts (`scripts/deploy/`), шаблони `deploy/systemd/` (API, Agent). Agent і API серверів/процесів відсутні.
 - Затверджені: user `nodecontrol`, unit `node-control-api.service`, `/opt/goit-node-control`, `/etc/goit-node-control/api.env`, API `127.0.0.1:3100`; frontend — `current/frontend/dist`, публічний сайт `https://control.example.com` (нижче).
 - Історичний rsync у `/etc/pm2-dashboard/` (Task 001/002) **не використовується**; там лишаються стара збірка й legacy `.env` (джерело `DB_*` для одноразового створення `api.env`).
 - За історичним серверним звітом кластер PostgreSQL — `18/main`, unit `postgresql@18-main`; конфігурації — `/etc/postgresql/18/main/`. Поточний серверний стан у цій сесії не перевірявся через SSH.
@@ -169,6 +169,45 @@ proxy_set_header X-Forwarded-Host $host;            # клієнт не може
 
 Rollback: `server-release.js rollback` повертає узгоджену пару UI/API + `systemctl restart node-control-api`; `api.env` — з `api.env.bak-<ts>`. Конфіг сайту не змінюється деплоєм.
 
+### Agent (Task 007)
+
+Окремий versioned-артефакт `node-control-agent-<sha>.tar.gz` (будує той самий `build-release.js`): `agent/dist`, `agent/package.json`, `deploy/systemd/node-control-agent.service`, `scripts/deploy/**`, `RELEASE.json`. Без npm-залежностей (`prepare --no-install`).
+
+| Параметр | Значення |
+|---|---|
+| Користувач | `nodecontrol-agent` — системний, `/usr/sbin/nologin`, без home/sudo, без доступу до PM2 |
+| Релізи | `/opt/goit-node-control-agent/releases/<sha>`, `current`/`previous` |
+| Конфіг | `/etc/goit-node-control-agent/agent.env` — `600 nodecontrol-agent`, каталог `750 root:nodecontrol-agent` |
+| Unit | `node-control-agent.service` (`deploy/systemd/`), `Restart=on-failure`, `RestartPreventExitStatus=2` (немає/некоректний токен → не перезапускати по колу) |
+| Мережа | лише вихідний HTTPS до `NC_AGENT_API_URL`; inbound-порту немає; `IPAddressAllow=localhost` **не** застосовується (потрібен вихід) |
+
+```bash
+# на кожній керованій ноді (root); артефакт і server-bundle передано як для API
+id nodecontrol-agent || useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin nodecontrol-agent
+install -d -m 755 /opt/goit-node-control-agent
+node server-bundle/server-release.js prepare --base /opt/goit-node-control-agent --no-install \
+  --artifact node-control-agent-$SHA.tar.gz --sha256 "$(cut -d' ' -f1 node-control-agent-$SHA.tar.gz.sha256)" --revision $SHA
+node server-bundle/server-release.js activate --base /opt/goit-node-control-agent --revision $SHA
+install -d -m 750 -o root -g nodecontrol-agent /etc/goit-node-control-agent
+install -m 644 /opt/goit-node-control-agent/current/deploy/systemd/node-control-agent.service /etc/systemd/system/
+systemd-analyze verify /etc/systemd/system/node-control-agent.service && systemctl daemon-reload
+```
+
+**Активація (оператор):** UI → Сервери → «Додати сервер» → сторінка сервера → «Видати ключ» (показується один раз). На ноді записати конфіг без потрапляння токена в argv/історію shell:
+
+```bash
+umask 077; read -rs NC_AGENT_TOKEN   # вставити ключ, Enter (не відображається)
+printf 'NC_AGENT_API_URL=https://control.example.com\nNC_AGENT_TOKEN=%s\n' "$NC_AGENT_TOKEN" \
+  | install -m 600 -o nodecontrol-agent -g nodecontrol-agent /dev/stdin /etc/goit-node-control-agent/agent.env
+unset NC_AGENT_TOKEN
+systemctl enable --now node-control-agent
+journalctl -u node-control-agent -n 5 -o cat      # "outcome":"accepted"
+```
+
+Ротація: «Видати новий ключ» у UI → перезаписати `agent.env` → `systemctl restart node-control-agent`. Відкликання: «Відкликати ключ» у UI (агент отримає 401 і перейде на рідкі повтори; `systemctl disable --now node-control-agent`). Credentials не видаляються SQL — лише відкликаються через UI (audit).
+
+Rollback Agent: `server-release.js rollback --base /opt/goit-node-control-agent` + restart, або `systemctl disable --now node-control-agent`. Rollback API на реліз до Task 007: endpoint heartbeat зникне (404) — агенти перейдуть у backoff; дані реєстру (additive-таблиці) лишаються.
+
 ### Міграції: backup, recovery, rollback
 
 - Перед кожним production `up` — `pg_dump -Fc` лише `node_control_db` у `/root/node-control-backups/` (каталог `700`, файл `600`), перевірка `pg_restore --list`. Не дамп усього кластера.
@@ -183,14 +222,13 @@ Rollback: `server-release.js rollback` повертає узгоджену па�
 
 ### Доступ із VS Code / локальної машини
 
-API не публікується. Для розробника — SSH port forwarding:
+Backend слухає лише loopback; публічно доступний лише через Nginx (`https://control.example.com`). Прямий доступ для розробника — SSH port forwarding:
 
 ```bash
 ssh -N -L 3100:127.0.0.1:3100 root@203.0.113.10
 curl -s http://127.0.0.1:3100/health/ready
 ```
 
-Nginx, домен і HTTPS — окремий наступний етап.
 
 ## Rollback
 

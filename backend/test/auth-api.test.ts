@@ -76,7 +76,7 @@ describe('login', () => {
     const body = res.json<Record<string, unknown>>();
     expect(Object.keys(body).sort()).toEqual(['csrfToken', 'expiresAt', 'permissions', 'user']);
     expect(body.user).toEqual({ id: user.id, email: 'admin@example.test', role: 'admin' });
-    expect(body.permissions).toEqual(['monitoring:read', 'processes:control', 'users:manage', 'audit:read']);
+    expect(body.permissions).toEqual(['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read']);
     expect(res.body).not.toMatch(/scrypt|passwordHash|password_hash/);
     const setCookie = String(res.headers['set-cookie']);
     expect(setCookie).toMatch(/^__Host-nc_session=[A-Za-z0-9_-]{43}; Path=\/; HttpOnly; SameSite=Strict; Max-Age=3600; Secure$/);

@@ -1,4 +1,7 @@
-import { type AuditPage, ContractError, parseAuditPage, parseSessionInfo, type SessionInfo } from './types';
+import {
+  type AuditPage, ContractError, type IssuedCredential, parseAuditPage, parseIssuedCredential, parseRevokeResult, parseServerDetail,
+  parseServerPage, parseServerSummary, parseSessionInfo, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
+} from './types';
 
 // Central API client (ADR-012):
 //  * relative /api URLs only, `credentials: 'same-origin'` — the browser manages the HttpOnly session cookie;
@@ -15,6 +18,8 @@ export type ApiErrorKind =
   | 'unavailable' // 503 / 502 / 504
   | 'invalid_request' // 400
   | 'not_found' // 404
+  | 'conflict' // 409
+  | 'too_large' // 413
   | 'network' // fetch rejected (offline, DNS, refused)
   | 'timeout'
   | 'aborted' // cancelled by the caller (unmount, logout)
@@ -40,6 +45,8 @@ function kindForStatus(status: number): ApiErrorKind {
     case 401: return 'unauthorized';
     case 403: return 'forbidden';
     case 404: return 'not_found';
+    case 409: return 'conflict';
+    case 413: return 'too_large';
     case 429: return 'rate_limited';
     case 502: case 503: case 504: return 'unavailable';
     default: return 'unexpected';
@@ -124,3 +131,24 @@ export function fetchAuditPage(beforeId: string | null, signal?: AbortSignal): P
 }
 
 export type { AuditPage, SessionInfo };
+
+// --- Server registry (Task 007) ------------------------------------------------------------------------------
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const serverPath = (id: string): `/api/${string}` => {
+  if (!UUID_RE.test(id)) throw new ApiError('invalid_request');
+  return `/api/servers/${id}`;
+};
+
+export const serversApi = {
+  list: (signal?: AbortSignal): Promise<ServerPage> =>
+    apiRequest('/api/servers?limit=100', { parse: parseServerPage, ...(signal ? { signal } : {}) }),
+  get: (id: string, signal?: AbortSignal): Promise<ServerDetail> =>
+    apiRequest(serverPath(id), { parse: parseServerDetail, ...(signal ? { signal } : {}) }),
+  create: (name: string, csrfToken: string): Promise<ServerSummary> =>
+    apiRequest('/api/servers', { method: 'POST', body: { name }, csrfToken, parse: parseServerSummary }),
+  /** The response carries a one-time secret: callers must not log or persist it. */
+  issueCredential: (id: string, csrfToken: string): Promise<IssuedCredential> =>
+    apiRequest(`${serverPath(id)}/agent-credentials`, { method: 'POST', csrfToken, parse: parseIssuedCredential }),
+  revokeCredential: (id: string, csrfToken: string): Promise<{ serverId: string; revoked: boolean }> =>
+    apiRequest(`${serverPath(id)}/agent-credentials/revoke`, { method: 'POST', csrfToken, parse: parseRevokeResult }),
+};

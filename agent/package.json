@@ -1,0 +1,8 @@
+{
+  "name": "goit-node-control-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GOIT Node Control Agent: outbound HTTPS heartbeat only (no inbound port, no commands)",
+  "type": "module",
+  "engines": { "node": ">=22" }
+}

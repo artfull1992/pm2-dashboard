@@ -151,7 +151,7 @@ describe('protected routes and permissions', () => {
   });
 
   it('servers and applications show honest empty states, no fake controls', async () => {
-    installFetch(() => json(200, session('operator')));
+    installFetch((req) => (req.url.startsWith('/api/servers') ? json(200, { items: [], nextAfterId: null, onlineWindowSeconds: 90 }) : json(200, session('operator'))));
     renderApp('/servers');
     expect(await screen.findByRole('heading', { name: 'Ще немає підключених серверів' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /перезапуст|зупин|старт/i })).toBeNull();

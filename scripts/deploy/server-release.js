@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Server-side release tool for GOIT Node Control API. Run as root on the server, from the transferred release bundle.
 //
-//   server-release.js prepare  --artifact <tgz> --sha256 <hex> --revision <sha>
+//   server-release.js prepare  --artifact <tgz> --sha256 <hex> --revision <sha> [--no-install]   (--no-install: agent artifact, no npm deps)
 //   server-release.js config   [--legacy-env /etc/pm2-dashboard/.env] [--owner nodecontrol]
 //   server-release.js activate --revision <sha>
 //   server-release.js rollback
@@ -45,6 +45,7 @@ export function runCli(argv, { log = console.log } = {}) {
       artifact: { type: 'string' },
       sha256: { type: 'string' },
       revision: { type: 'string' },
+      'no-install': { type: 'boolean', default: false },
     },
   });
   const [command, ...extra] = positionals;
@@ -56,7 +57,10 @@ export function runCli(argv, { log = console.log } = {}) {
 
   switch (command) {
     case 'prepare': {
-      const result = prepareRelease({ base: values.base, artifact: need('artifact'), artifactSha256: need('sha256'), revision: need('revision') });
+      const result = prepareRelease({
+        base: values.base, artifact: need('artifact'), artifactSha256: need('sha256'), revision: need('revision'),
+        ...(values['no-install'] ? { install: () => undefined } : {}),
+      });
       log(`[release] ${result.status}: ${result.dir}`);
       return result;
     }

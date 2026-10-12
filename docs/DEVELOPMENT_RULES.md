@@ -8,6 +8,8 @@
 
 Прикладний SQL — параметризований, пов'язані операції — транзакційні. Наявні setup SQL builders обмежують identifiers/екранують literals; це не заміна параметризованих запитів API. Agent: авторизація кожної команди, Audit Log керуючих дій, мінімальні права та явні дозволи на процеси з урахуванням Linux-користувача/PM2_HOME. Remote execution endpoint заборонений.
 
+Agent/machine routes (Task 007): machine-маршрути декларують `config.access: { machine: 'agent' }`; тести — розділення browser/machine credentials, підміна ідентичності, ліміти, malformed payload; real-DB — конкурентність (ротація, heartbeat, revoke). Agent — лише Node built-ins, без `rejectUnauthorized:false`, без HTTP поза loopback dev-режимом.
+
 Frontend (Task 006): нові екрани — компонентні тести (стани loading/empty/error/forbidden/unavailable), без HTML з API, без web storage для сесійних даних; auth-сценарії — Playwright E2E лише проти тестової БД. Dev-backend для UI — `NODE_ENV=development`, `AUTH_COOKIE_SECURE=false` лише на loopback, `AUTH_ALLOWED_ORIGINS=http://127.0.0.1:5173`.
 
 Auth/RBAC (Task 005): кожен новий `/api`-маршрут декларує `config.access`; тести — позитивні, 401, 403 (матриця ролей) і для state-changing — Origin/CSRF; API-тести використовують `FakeAuthStore` (атомарна семантика), SQL-семантика — `backend/test/db/auth.test.ts` у тестовій БД. Request-схеми лише з явними `properties` і `additionalProperties: false` (NC-SEC-001 відкрито).
@@ -32,6 +34,7 @@ Auth/RBAC (Task 005): кожен новий `/api`-маршрут деклару
 | `npm run frontend:dev` / `frontend:build` / `frontend:preview` | Vite лише на 127.0.0.1; `/api` проксюється на 127.0.0.1:3100 без зміни Origin |
 | `npm run test:frontend` | Vitest + jsdom: API-клієнт, auth/гонки, маршрути, audit |
 | `npm run test:e2e` | Playwright: реальний backend + збірка UI; лише `TEST_DB_*`, per-run схема, без traces/screenshots |
+| `npm run test:agent` / `agent:build` | Vitest для Agent (конфіг, snapshot, TLS/redirect, backoff, loop); збірка `agent/dist` |
 | `npm run check:local` | Secrets → старі unit → typecheck → lint → backend → smoke; без production-connected тестів |
 
 Обов'язкова цільова перевірка — Node.js 22 LTS. Старий `tests/integration` (node:test, `.env`, production `node_control_db`) з Task 004 **лише read-only**: перевірки прав #9/#10 виконуються через каталоги PostgreSQL, без CREATE/INSERT/DROP. Тести із записом — тільки `backend/test/db/*` проти `node_control_test_db` у власній схемі `nc_test_<ms>_<hex8>`; cleanup видаляє лише цю схему, ніколи БД. Привілейований suite потребує root на хості PostgreSQL (`runuser`, `psql`, systemd); локально пропускається з поясненням. Успіх локально не замінює серверну перевірку.

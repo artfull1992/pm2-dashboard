@@ -9,14 +9,30 @@ import { createRateLimiter, LOGIN_LIMITS, type RateLimiter } from './rate-limit.
 import { hasPermission, type Permission, permissionsFor, type Role } from './rbac.js';
 import type { AuditContext, AuditEvent, AuthStore } from './store.js';
 import {
-  clearedSessionCookie, csrfTokenFor, csrfTokenMatches, isWellFormedToken, newSessionToken, readCookie,
-  sessionCookie, sessionCookieName, sessionTokenDigest,
+  agentTokenDigest, bearerToken, clearedSessionCookie, csrfTokenFor, csrfTokenMatches, isWellFormedAgentToken, isWellFormedToken,
+  newSessionToken, readCookie, sessionCookie, sessionCookieName, sessionTokenDigest,
 } from './tokens.js';
 
 // Authentication, CSRF and RBAC for /api (ADR-011).
 // Every /api route must declare `config.access`; registration fails otherwise (deny by default).
 
-export type RouteAccess = 'public' | 'authenticated' | { permission: Permission };
+export type RouteAccess = 'public' | 'authenticated' | { permission: Permission } | { machine: 'agent' };
+
+export interface AgentState {
+  serverId: string;
+  /** Digest of the presented bearer token (never the token itself). */
+  tokenHash: Buffer;
+}
+
+export interface AgentResolver {
+  resolveAgent(tokenHash: Buffer): Promise<{ serverId: string } | null>;
+}
+
+/** Machine (Agent) route limits: before any DB lookup, bounded key maps. */
+export const AGENT_LIMITS = Object.freeze({
+  perAddress: { max: 120, windowMs: 60_000 },
+  perToken: { max: 20, windowMs: 60_000 },
+});
 
 export interface AuthState {
   sessionId: string;
@@ -35,6 +51,7 @@ declare module 'fastify' {
   }
   interface FastifyRequest {
     auth: AuthState | null;
+    agent: AgentState | null;
   }
 }
 
@@ -44,6 +61,10 @@ export interface AuthPluginOptions {
   hashLimiter?: Limiter;
   accountLimiter?: RateLimiter;
   addressLimiter?: RateLimiter;
+  /** Machine authentication for `{ machine: 'agent' }` routes; absent → such routes answer 503. */
+  agentResolver?: AgentResolver;
+  agentAddressLimiter?: RateLimiter;
+  agentTokenLimiter?: RateLimiter;
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -57,6 +78,10 @@ export const AUTH_MESSAGES = Object.freeze({
   csrf: 'CSRF token missing or invalid',
   forbidden: 'Insufficient permissions',
   rateLimited: 'Too many login attempts, try again later',
+  machineOnly: 'Browser requests are not accepted on this endpoint',
+  agentUnauthenticated: 'Agent credential missing or invalid',
+  agentRateLimited: 'Too many requests',
+  bearerNotAccepted: 'Bearer credentials are not accepted on this endpoint',
   unavailable: 'Service temporarily unavailable',
 });
 
@@ -84,7 +109,10 @@ const auditItemSchema = {
     // Server-defined keys only (see store.ts AuditEvent); listed explicitly so nothing else is serialized.
     details: {
       type: 'object', additionalProperties: false,
-      properties: { reason: { type: 'string' }, permission: { type: 'string' }, route: { type: 'string' } },
+      properties: {
+        reason: { type: 'string' }, permission: { type: 'string' }, route: { type: 'string' },
+        serverId: { type: 'string' }, rotated: { type: 'boolean' }, revoked: { type: 'boolean' },
+      },
     },
   },
 } as const;
@@ -106,7 +134,44 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
   const cookieName = sessionCookieName(config.cookieSecure);
   const allowedOrigins = new Set(config.allowedOrigins);
 
+  const agentAddressLimiter = options.agentAddressLimiter ?? createRateLimiter(AGENT_LIMITS.perAddress);
+  const agentTokenLimiter = options.agentTokenLimiter ?? createRateLimiter(AGENT_LIMITS.perToken);
+
   app.decorateRequest('auth', null);
+  app.decorateRequest('agent', null);
+
+  /**
+   * Machine authentication (ADR-015). Bearer token only; a browser context (Origin / Sec-Fetch-* / session
+   * cookie) is refused so the two auth modes never mix. Limits run before any database work.
+   */
+  async function authenticateAgent(request: FastifyRequest): Promise<void> {
+    if (request.headers.origin !== undefined || request.headers['sec-fetch-site'] !== undefined) {
+      throw new PublicHttpError(403, AUTH_MESSAGES.machineOnly);
+    }
+    if (readCookie(request.headers.cookie, cookieName) !== undefined) {
+      throw new PublicHttpError(401, AUTH_MESSAGES.agentUnauthenticated);
+    }
+    const addressKey = isIP(request.ip) === 0 ? 'unresolved' : request.ip;
+    const addressRetry = agentAddressLimiter.hit(addressKey);
+    if (addressRetry > 0) throw new PublicHttpError(429, AUTH_MESSAGES.agentRateLimited, { 'retry-after': String(addressRetry) });
+
+    const token = bearerToken(request.headers.authorization);
+    if (!isWellFormedAgentToken(token)) throw new PublicHttpError(401, AUTH_MESSAGES.agentUnauthenticated);
+    const tokenHash = agentTokenDigest(token);
+    const tokenRetry = agentTokenLimiter.hit(tokenHash.toString('base64url'));
+    if (tokenRetry > 0) throw new PublicHttpError(429, AUTH_MESSAGES.agentRateLimited, { 'retry-after': String(tokenRetry) });
+
+    if (!options.agentResolver) throw unavailable();
+    let agent;
+    try {
+      agent = await options.agentResolver.resolveAgent(tokenHash);
+    } catch (error) {
+      request.log.error({ error: describeError(error) }, 'Agent credential lookup failed');
+      throw unavailable();
+    }
+    if (!agent) throw new PublicHttpError(401, AUTH_MESSAGES.agentUnauthenticated);
+    request.agent = { serverId: agent.serverId, tokenHash };
+  }
 
   // Deny by default: an /api route without an explicit access declaration is a startup error.
   app.addHook('onRoute', (route) => {
@@ -129,6 +194,14 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
     if (!request.url.startsWith('/api/') || access === undefined) return;
     reply.header('cache-control', 'no-store');
     const stateChanging = !SAFE_METHODS.has(request.method);
+
+    // Machine routes have their own auth flow and never use cookies, Origin or CSRF.
+    if (typeof access === 'object' && 'machine' in access) {
+      await authenticateAgent(request);
+      return;
+    }
+    // Browser routes: a bearer credential is never accepted (no ambiguous auth modes; agent tokens stay machine-only).
+    if (request.headers.authorization !== undefined) throw new PublicHttpError(401, AUTH_MESSAGES.bearerNotAccepted);
 
     // 1. Origin allowlist for every state-changing /api request, including login (login CSRF).
     //    A missing Origin is rejected: browsers always send it on POST; other clients must set it explicitly.
@@ -169,7 +242,7 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
     }
 
     // 4. Permission check (server-side role → permissions).
-    if (typeof access === 'object' && !hasPermission(session.role, access.permission)) {
+    if (typeof access === 'object' && 'permission' in access && !hasPermission(session.role, access.permission)) {
       await auditBestEffort(
         request,
         { event: 'authz.denied', outcome: 'denied', details: { permission: access.permission, route: request.routeOptions.url ?? '' } },

@@ -30,6 +30,15 @@ export function git(args, cwd) {
   return result.stdout.trim();
 }
 
+/** Agent artifact (installed under its own base on each managed server). No npm dependencies. */
+export const AGENT_ARTIFACT_PATHS = Object.freeze([
+  'agent/dist',
+  'agent/package.json',
+  'deploy/systemd/node-control-agent.service',
+  'scripts/deploy/server-release.js',
+  'scripts/deploy/lib',
+]);
+
 // Server-side names and secret shapes that must never appear in the public browser bundle.
 const BUNDLE_FORBIDDEN = Object.freeze([
   /DB_PASS|TEST_DB_|DB_USER|DB_HOST|ENV_FILE|AUTH_ALLOWED_ORIGINS/,
@@ -69,10 +78,10 @@ export function resolveDeployableRevision({ revision = 'HEAD', remoteBranch = 'o
   return sha;
 }
 
-/** Copies only ARTIFACT_PATHS from a built source tree into stage; .map files are dropped. */
-export function stageArtifact(sourceRoot, stageDir) {
+/** Copies only the given paths (default: API artifact) from a built source tree into stage; .map files are dropped. */
+export function stageArtifact(sourceRoot, stageDir, paths = ARTIFACT_PATHS) {
   mkdirSync(stageDir, { recursive: true });
-  for (const path of ARTIFACT_PATHS) {
+  for (const path of paths) {
     const from = join(sourceRoot, path);
     if (!existsSync(from)) throw new Error(`artifact input missing: ${path}`);
     cpSync(from, join(stageDir, path), {
@@ -101,6 +110,7 @@ export function buildRelease({ revision, out, remoteBranch, cwd = process.cwd() 
     run('npm', ['ci', '--no-audit', '--no-fund'], work);
     run('npm', ['run', 'backend:build'], work);
     run('npm', ['run', 'frontend:build'], work);
+    run('npm', ['run', 'agent:build'], work);
     assertBundleClean(join(work, 'frontend', 'dist'));
 
     const stage = join(outDir, 'stage');
@@ -114,7 +124,20 @@ export function buildRelease({ revision, out, remoteBranch, cwd = process.cwd() 
     const digest = sha256File(artifact);
     writeFileSync(`${artifact}.sha256`, `${digest}  node-control-api-${sha}.tar.gz\n`);
     cpSync(join(stage, 'scripts', 'deploy'), join(outDir, 'server-bundle'), { recursive: true });
-    return { sha, artifact, sha256: digest, files: Object.keys(manifest.files).length, nodeVersion: manifest.nodeVersion, outDir };
+
+    const agentStage = join(outDir, 'agent-stage');
+    stageArtifact(work, agentStage, AGENT_ARTIFACT_PATHS);
+    const agentManifest = buildManifest(agentStage, { revision: sha });
+    writeFileSync(join(agentStage, MANIFEST_FILE), `${JSON.stringify(agentManifest, null, 2)}\n`);
+    const agentArtifact = join(outDir, `node-control-agent-${sha}.tar.gz`);
+    run('tar', ['-czf', agentArtifact, '-C', agentStage, ...readdirSync(agentStage)], outDir, { ...process.env, COPYFILE_DISABLE: '1' });
+    const agentDigest = sha256File(agentArtifact);
+    writeFileSync(`${agentArtifact}.sha256`, `${agentDigest}  node-control-agent-${sha}.tar.gz\n`);
+
+    return {
+      sha, artifact, sha256: digest, files: Object.keys(manifest.files).length, nodeVersion: manifest.nodeVersion, outDir,
+      agentArtifact, agentSha256: agentDigest, agentFiles: Object.keys(agentManifest.files).length,
+    };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -133,6 +156,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     console.log(`[build-release] revision=${result.sha} files=${result.files} node=${result.nodeVersion}`);
     console.log(`[build-release] artifact=${result.artifact}`);
     console.log(`[build-release] sha256=${result.sha256}`);
+    console.log(`[build-release] agent artifact=${result.agentArtifact} files=${result.agentFiles}`);
+    console.log(`[build-release] agent sha256=${result.agentSha256}`);
   } catch (error) {
     console.error(`[build-release] ERROR: ${error.message}`);
     process.exit(1);
