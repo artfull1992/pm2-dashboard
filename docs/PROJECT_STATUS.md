@@ -143,6 +143,30 @@ Rollback підготовлено до production `up`: код — `server-relea
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
 
+## Task 006.1 — login rate limit за Nginx (2026-10-12)
+
+**Active code revision на сервері: `005fa629570273931db33a1ccef1b3ca527f02c9`** (`fix(auth): isolate login rate limits behind trusted nginx proxy`); previous — `85f047c`. Цей звіт — пізніший docs-commit, на сервер не деплоївся.
+
+**Проблема (review Codex, P1).** `addressLimiter` брав `request.socket.remoteAddress`; за Nginx це завжди `127.0.0.1`, тож усі клієнти ділили ліміт 30 спроб / 15 хв — будь-хто міг заблокувати вхід іншим. До виправлення Nginx також пропускав клієнтський `X-Forwarded-For` без змін.
+
+**Виправлення (ADR-014).** `API_TRUSTED_PROXIES` (точні loopback-IP; default порожньо → Fastify `trustProxy: false`); production `127.0.0.1`. Ліміт за адресою — `request.ip` (заголовки в auth-коді не читаються); не-IP від proxy → спільний ключ `unresolved`. Nginx `/api/`: `X-Forwarded-For $remote_addr` (замінює клієнтський) і `X-Forwarded-Host $host`; `Host`, `X-Real-IP`, `X-Forwarded-Proto` без змін. Per-account і hashing limiter, Origin/CSRF не змінювались.
+
+| Перевірка | Результат |
+|---|---|
+| Regression/security (`backend/test/auth-proxy.test.ts`, Node 22) | 25/25: default ігнорує forwarded-заголовки; недовірений peer не змінює IP; довірений proxy → IP з `X-Forwarded-For`; `X-Real-IP` ніколи не джерело; підроблений ланцюжок не обирає адресу; missing/malformed → визначена поведінка (`unresolved`); незалежні ліміти різних IP; підробка не обходить ліміт (через proxy й напряму); per-account між IP; Origin/CSRF; конфіг (відхилення hostname/CIDR/не-loopback/`*`, ліміт довжини, без echo значень) |
+| Доказ регресії | зі старим `socket.remoteAddress` тест незалежних лімітів падає; код відновлено |
+| `npm run check:local` | exit 0: node:test 82/82, typecheck, lint, backend 259/259, smoke 10/10, frontend 50/50, збірка UI |
+| Node v22.23.3 | backend 259/259, frontend 50/50, node:test 82/82 |
+| Real-DB / E2E (тестова БД, без proxy, default config) | 27/27 / 8/8; 0 схем `nc_test_*` після прогону |
+| Production-подібний ланцюжок (сервер, ізольовано) | тимчасовий nginx `127.0.0.1:39180` з тими ж заголовками → backend підготовленого релізу `127.0.0.1:39100` (`trustProxy 127.0.0.1`, store-заглушка, без БД), ліміт 2: клієнт 127.0.0.2 з підробленими XFF/X-Real-IP → 401, 401, 429; клієнт 127.0.0.3 → 401, 401 (незалежно); прямий недовірений 127.0.0.4 з підробленим XFF → 401, 401, 429; тимчасові процеси зупинено, каталог видалено |
+| Git / артефакт | `005fa62` запушено; 32 файли, SHA-256 `52ada27f…c3cf18a9`, `sha256sum -c` OK; prod deps `fastify`, `node-pg-migrate`, `pg` |
+| Nginx | backup `/root/node-control-backups/nginx-trusted-proxy-20261012T192840Z/`; `nginx -t` → +2 рядки в `location /api/` (і перевід рядка в кінці файлу від awk) → `nginx -t` → reload; нових записів у `error.log` немає |
+| `api.env` | backup `api.env.bak-20261012T192906Z`; додано лише `API_TRUSTED_PROXIES=127.0.0.1`; `600 nodecontrol`; інші ключі без змін; лог старту: `trustedProxies:1`, `authOrigins:1`, `cookieSecure:true` |
+| Активація | міграції pending=0; `current` → `005fa62`; restart лише `node-control-api`; процес `nodecontrol`; listener лише `127.0.0.1:3100` |
+| Після деплою | live/ready 200; `https://control.example.com/` 200, `/servers`, `/audit` → index.html; `/api/auth/me` (з підробленими XFF/X-Real-IP) → 401 `no-store`; `/api/nope` → 404 JSON; journal без warn/error, паролів 0; PostgreSQL/Nginx/Docker active, failed 0, менеджер секретів 200; 3100/3101 ззовні недоступні |
+
+Production login/навантажувальні тести не виконувались; пароль адміністратора не змінювався (його сесія збереглась). Rollback (не застосовувався): `server-release.js rollback` (→ `85f047c`) + видалити `API_TRUSTED_PROXIES` / відновити `api.env.bak-20261012T192906Z` + restart API; Nginx — повернути файл із backup, `nginx -t`, reload (заміна XFF безпечна й для старого релізу, тож Nginx можна лишити).
+
 ## Task 006 (оновлення) — публічний HTTPS-сайт (2026-10-12)
 
 **Active code revision на сервері: `85f047ccd86bc7b7fb90a3e614a3fec6cefe8a6a`** (`chore(deploy): serve UI via public HTTPS site, drop loopback nginx site`); previous — `fd16acb`. Runtime-код (backend/frontend) ідентичний `fd16acb`; `bfe784e` — предок (`git merge-base --is-ancestor`). Цей звіт — пізніший docs-commit, на сервер не деплоївся.
@@ -256,7 +280,7 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 006 задеплоєно на `85f047c` (публічний HTTPS-сайт, `AUTH_ALLOWED_ORIGINS` налаштовано); очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 006.1 (trusted proxy для login rate limit) задеплоєно на `005fa62`; очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
 Next Task: зміна власного пароля (з поточним паролем, CSRF, audit, відкликанням інших сесій) і базове керування користувачами для admin; далі Agent і API серверів/процесів. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
