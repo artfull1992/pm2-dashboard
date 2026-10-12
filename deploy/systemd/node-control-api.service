@@ -1,0 +1,62 @@
+# GOIT Node Control — Central API.
+# Installed as /etc/systemd/system/node-control-api.service (see docs/DEPLOYMENT.md).
+# Single config source: the app reads ENV_FILE itself (Node util.parseEnv format); no EnvironmentFile=.
+# The journal is operational logging only, not an application Audit Log.
+
+[Unit]
+Description=GOIT Node Control Central API
+Documentation=https://github.com/artfull1992/pm2-dashboard/blob/main/docs/DEPLOYMENT.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+# Restart at most 5 times in 5 minutes, then stay failed for investigation.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=nodecontrol
+Group=nodecontrol
+WorkingDirectory=/opt/goit-node-control/current
+Environment=ENV_FILE=/etc/goit-node-control/api.env
+ExecStart=/usr/bin/node /opt/goit-node-control/current/backend/dist/main.js
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+# API shutdown timeout is 10 s; leave headroom before SIGKILL.
+TimeoutStopSec=20
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=node-control-api
+UMask=0077
+
+# Hardening. MemoryDenyWriteExecute is intentionally NOT set: it breaks the V8 JIT.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Network: loopback only (API listener on 127.0.0.1, PostgreSQL on 127.0.0.1:5432).
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

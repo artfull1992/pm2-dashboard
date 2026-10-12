@@ -37,13 +37,15 @@ Task 001 підтверджений файлами та локальними uni
 ├── agent/            # майбутній агент на керованих серверах
 ├── backend/          # Central API: TypeScript + Fastify (src/, test/, dist/ — збірка, не в Git)
 ├── frontend/         # майбутній UI
+├── deploy/systemd/   # node-control-api.service (systemd unit)
 ├── docs/
 │   └── server-audit.md
 ├── scripts/
 │   ├── lib/          # чиста логіка: env, пароль, SCRAM, SQL, pg_hba, план налаштування, пошук секретів
 │   ├── setup-postgres.js   # npm run db:setup
 │   ├── db-check.js         # npm run db:check
-│   └── check-secrets.js    # npm run check:secrets
+│   ├── check-secrets.js    # npm run check:secrets
+│   └── deploy/             # build-release.js (локально), server-release.js (сервер), lib/
 ├── tests/
 │   ├── unit/         # без мережі та БД
 │   ├── integration/  # реальна БД через .env
@@ -180,6 +182,15 @@ ssh -N -L 15432:127.0.0.1:5432 root@203.0.113.10   # окремий термін
 TEST_DB_HOST=127.0.0.1 TEST_DB_PORT=15432 TEST_DB_NAME=node_control_db \
 TEST_DB_USER=node_control_user TEST_DB_PASS='<пароль, не зберігати в історії shell>' \
 npm run test:backend:db
+```
+
+### Production (сервер)
+
+Central API розгортається на `control-server` як systemd-сервіс `node-control-api.service` під користувачем `nodecontrol`, лише на `127.0.0.1:3100`; конфіг — `/etc/goit-node-control/api.env`, релізи — `/opt/goit-node-control/releases/<sha>`. Публічного доступу немає (Nginx — наступний етап). Фактичний стан деплою — [PROJECT_STATUS](docs/PROJECT_STATUS.md). Процедура збирання, передачі, активації та rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#central-api-deployment-contract-task-003). Доступ з VS Code / локальної машини:
+
+```bash
+ssh -N -L 3100:127.0.0.1:3100 root@203.0.113.10
+curl -s http://127.0.0.1:3100/health/live
 ```
 
 ## Тести та перевірки
