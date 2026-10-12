@@ -1,0 +1,21 @@
+{
+  "name": "goit-node-control",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Centralized monitoring and management platform for Node.js projects across multiple servers",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"tests/unit/**/*.test.js\"",
+    "test:integration": "node --test --test-concurrency=1 \"tests/integration/**/*.test.js\"",
+    "check:secrets": "node scripts/check-secrets.js",
+    "check": "npm run check:secrets && npm test && npm run test:integration",
+    "db:setup": "node scripts/setup-postgres.js",
+    "db:check": "node scripts/db-check.js"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}
