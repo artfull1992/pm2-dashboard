@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-12 (Task 006). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-12 (Task 007). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -143,6 +143,34 @@ Rollback підготовлено до production `up`: код — `server-relea
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
 
+## Task 007 — реєстр серверів, Agent heartbeat, UI серверів (2026-10-12)
+
+**Active code revision на сервері:** API/UI — `97d1c0624cb3c4e382df1f90822cdde15086a97a` (`feat(agent): add server registry and authenticated heartbeat`), previous — `005fa62`; Agent — `e2ac0c91879f6e672cdfed4fd6e30102c9809557` (`fix(agent): treat missing env file as configuration error`), previous — `97d1c06`. `e2ac0c9` змінює лише `agent/` (backend/frontend ідентичні `97d1c06`), тому API не передеплоювався. `bfe784e` і `005fa62` — предки. Цей звіт — пізніший docs-commit, на сервер не деплоївся.
+
+**Реалізовано (ADR-015).** Міграція `1791900000002_server-registry` (additive): `servers`, `agent_credentials` (SHA-256 digest токена, partial unique index — один активний credential на сервер, `revoked_at >= created_at`), `server_heartbeats` (останній snapshot ≤ 2048 байт). Admin-only (`servers:manage`) створення сервера, видача/ротація (атомарно, транзакційний audit `agent.credential_issued{rotated}`), відкликання (`agent.credential_revoked`); перегляд — усі ролі. Machine auth `POST /api/agent/heartbeat`: `Bearer ncag_…` (32 байти), відмова з Origin/Sec-Fetch-* (403) або session cookie (401); browser-маршрути відхиляють `Authorization`. Ліміти: 120/хв на IP, 20/хв на токен, конкурентність 8 (+16 у черзі, далі 503), body ≤ 4096 байт, строгий snapshot (`additionalProperties:false`). Agent (TypeScript strict, лише built-ins): тільки вихідний HTTPS з перевіркою TLS, `redirect:'error'`, без HTTP fallback, послідовний цикл, backoff із jitter, Retry-After, graceful shutdown; exit 2 на помилку конфігурації (без restart-циклу). UI: список/деталі з polling 15 с (лише видима вкладка), статус онлайн (вікно 90 с), діалоги створення/видачі/ротації/відкликання, одноразовий показ ключа.
+
+**Виправлення під час деплою.** На сервері без `agent.env` Agent завершувався з кодом 1 (ENOENT від `statSync`), і systemd перезапускав би його до StartLimit. Тепер це `AgentConfigError` → exit 2 (`RestartPreventExitStatus=2`). Додано regression-тест; commit `e2ac0c9`.
+
+| Перевірка | Результат |
+|---|---|
+| Node v22.23.3 (`97d1c06`) | backend 291/291, frontend 62/62, agent 34/34, compiled smoke 10/10, node:test 85/85; `check:local` exit 0 |
+| Real-DB (тестова БД, per-run schema) | 38/38: обмеження схеми, один активний credential, конкурентна ротація, монотонний `received_at`, transactional audit; 0 схем `nc_test_*` після прогону |
+| E2E (Playwright, тестова БД) | 9/9: admin створює сервер і видає ключ → скомпільований Agent «Онлайн»; viewer → 403; відкликання → Agent `unauthorized`, `received_at <= revoked_at`; audit-події |
+| `e2ac0c9` | agent 35/35, node:test 85/85, typecheck, lint, `check:secrets` OK |
+| Артефакти | API `97d1c06`: 36 файлів, SHA-256 `d423cbe6…acf0b99`; Agent `97d1c06`: 11 файлів, `0c7c82e9…c4bfda`; Agent `e2ac0c9`: 11 файлів, `bbaae1d9…b573c17`; `sha256sum -c` OK |
+| Backup | `/root/node-control-backups/node_control_db-20261012T200658Z-pre-97d1c06….dump` (`600 root`), `pg_restore --list` — 8 таблиць |
+| Міграція | як `nodecontrol` з підготовленого релізу: pending 1 → applied=3, pending=0; таблиці й індекс `agent_credentials_one_active_idx` на місці; servers/credentials/heartbeats — 0 рядків |
+| Активація API | `current` → `97d1c06`; restart лише `node-control-api`; процес `nodecontrol`; listener лише `127.0.0.1:3100`; лог старту `trustedProxies:1`, `authOrigins:1`, `cookieSecure:true` |
+| Після деплою | live/ready 200; `https://control.example.com/` і `/servers/<id>` → 200 (SPA); анонімні `/api/auth/me`, `/api/servers` → 401; heartbeat без токена → 401; journal: 0 записів error/fatal, 0 збігів `ncag_`/password; `nginx -t` OK; PostgreSQL/Nginx active |
+| Agent (перша тестова нода — цей сервер) | користувач `nodecontrol-agent` (uid 994, `/usr/sbin/nologin`, home `/nonexistent`, без sudo); `/opt/goit-node-control-agent` current=`e2ac0c9`; `/etc/goit-node-control-agent` `750 root:nodecontrol-agent`, `agent.env` **відсутній**; unit встановлено, `systemd-analyze verify` OK, **disabled/inactive**; без конфігу → exit 2; listener-ів немає |
+| Egress-smoke Agent | одноразовий запуск як `nodecontrol-agent` з фіктивним (не виданим) токеном через env: HTTPS до публічного сайту з перевіркою TLS → `unauthorized`, наступна спроба через 900 с; процес зупинено timeout-ом; записів у БД 0 |
+
+Production credential **не створювався** (ні через SQL, ні через UI); security/load тести проти production не запускались; firewall/HBA/сторонні служби/публічний Nginx-конфіг не змінювались; Agent-порт не відкривався.
+
+**Підключення першої ноди (оператор):** UI → «Сервери» → «Додати сервер» → «Видати ключ» → на сервері записати `agent.env` через `read -rs` (процедура в DEPLOYMENT, розділ «Agent») → `systemctl enable --now node-control-agent` → у журналі `"outcome":"accepted"`, в UI статус «Онлайн».
+
+**Rollback (не застосовувався):** API — `server-release.js rollback` (→ `005fa62`) + restart `node-control-api`; heartbeat зникне (404), нові таблиці лишаються (additive), відновлення БД з backup не потрібне. Agent — `systemctl disable --now node-control-agent` і/або `server-release.js rollback --base /opt/goit-node-control-agent` (→ `97d1c06`).
+
 ## Task 006.1 — login rate limit за Nginx (2026-10-12)
 
 **Active code revision на сервері: `005fa629570273931db33a1ccef1b3ca527f02c9`** (`fix(auth): isolate login rate limits behind trusted nginx proxy`); previous — `85f047c`. Цей звіт — пізніший docs-commit, на сервер не деплоївся.
@@ -280,8 +308,8 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 006.1 (trusted proxy для login rate limit) задеплоєно на `005fa62`; очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 007 (реєстр серверів, Agent heartbeat) задеплоєно: API `97d1c06`, Agent `e2ac0c9` (installed, disabled до видачі ключа оператором); очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
-Next Task: зміна власного пароля (з поточним паролем, CSRF, audit, відкликанням інших сесій) і базове керування користувачами для admin; далі Agent і API серверів/процесів. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
+Next Task: PM2 read-only inventory через Agent (явно дозволені Linux-користувачі/PM2_HOME), далі дозволені керуючі операції з авторизацією та audit. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.

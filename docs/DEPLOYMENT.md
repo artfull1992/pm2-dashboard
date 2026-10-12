@@ -193,6 +193,8 @@ install -m 644 /opt/goit-node-control-agent/current/deploy/systemd/node-control-
 systemd-analyze verify /etc/systemd/system/node-control-agent.service && systemctl daemon-reload
 ```
 
+Без `agent.env` unit не вмикати: Agent без конфігу завершується з кодом 2 і не перезапускається.
+
 **Активація (оператор):** UI → Сервери → «Додати сервер» → сторінка сервера → «Видати ключ» (показується один раз). На ноді записати конфіг без потрапляння токена в argv/історію shell:
 
 ```bash
