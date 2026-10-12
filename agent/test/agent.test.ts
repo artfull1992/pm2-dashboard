@@ -63,6 +63,11 @@ describe('configuration', () => {
     expect(readSecureEnvFile(file)).toEqual({ NC_AGENT_TOKEN: TOKEN });
     expect(() => readSecureEnvFile(file, (process.getuid?.() ?? 0) + 1)).toThrow(/owned by the agent user/);
   });
+
+  it('reports a missing env file as a configuration error (exit 2, not a restart loop)', () => {
+    expect(() => readSecureEnvFile(join(dir, 'missing.env'))).toThrow(AgentConfigError);
+    expect(() => readSecureEnvFile(join(dir, 'missing.env'))).toThrow(/missing or not accessible/);
+  });
 });
 
 describe('snapshot', () => {

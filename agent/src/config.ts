@@ -71,7 +71,13 @@ export function loadAgentConfig(env: Env): AgentConfig {
 
 /** The env file holds a secret: refuse it unless it is owned by us and not accessible to group/other. */
 export function readSecureEnvFile(path: string, uid: number | undefined = process.getuid?.()): Record<string, string> {
-  const stat = statSync(path);
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    // Missing/unreadable file (e.g. no credential provisioned yet) is a configuration problem: exit 2, no restart loop.
+    throw new AgentConfigError(['ENV_FILE is missing or not accessible']);
+  }
   if (!stat.isFile()) throw new AgentConfigError(['ENV_FILE must be a regular file']);
   if ((stat.mode & 0o077) !== 0) throw new AgentConfigError(['ENV_FILE must not be accessible to group/other (chmod 600)']);
   if (uid !== undefined && stat.uid !== uid) throw new AgentConfigError(['ENV_FILE must be owned by the agent user']);
