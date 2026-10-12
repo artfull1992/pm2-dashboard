@@ -109,7 +109,11 @@ let dummyHash: Promise<string> | undefined;
 
 /** Same-cost verification for unknown users, so response time does not reveal whether an email exists. */
 export async function verifyDummy(password: string, limiter: Limiter = DEFAULT_HASH_LIMITER): Promise<false> {
-  dummyHash ??= hashPassword(randomBytes(24).toString('base64url'), limiter);
+  dummyHash ??= hashPassword(randomBytes(24).toString('base64url'), limiter).catch((error: unknown) => {
+    // Share successful initialization, but let later requests retry a transient failure.
+    dummyHash = undefined;
+    throw error;
+  });
   await verifyPassword(password, await dummyHash, limiter);
   return false;
 }

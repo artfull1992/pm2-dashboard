@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { normalizeEmail } from '../src/auth/email.js';
 import {
   BusyError, checkPasswordPolicy, createLimiter, hashPassword, parsePasswordHash, PasswordHashFormatError, SCRYPT_PARAMS,
@@ -51,6 +51,31 @@ describe('password hashing', () => {
 
   it('dummy verification always fails', async () => {
     await expect(verifyDummy(PASSWORD)).resolves.toBe(false);
+  });
+
+  it('recovers concurrent dummy verification after initialization is rejected by a full limiter', async () => {
+    // A fresh module reproduces the first unknown-user request after process startup.
+    vi.resetModules();
+    const passwords = await import('../src/auth/password.js');
+    const limiter = passwords.createLimiter(1, 0);
+    let release!: () => void;
+    const held = limiter.run(() => new Promise<void>((resolve) => { release = resolve; }));
+    try {
+      const failures = await Promise.allSettled([
+        passwords.verifyDummy(PASSWORD, limiter),
+        passwords.verifyDummy(PASSWORD, limiter),
+      ]);
+      for (const result of failures) {
+        expect(result.status).toBe('rejected');
+        if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(passwords.BusyError);
+      }
+    } finally {
+      release();
+      await held;
+    }
+    expect(limiter.stats()).toEqual({ active: 0, queued: 0 });
+    await expect(passwords.verifyDummy(PASSWORD, limiter)).resolves.toBe(false);
+    await expect(passwords.verifyDummy(PASSWORD, limiter)).resolves.toBe(false);
   });
 
   it('salt/key sizes match the constants', () => {
