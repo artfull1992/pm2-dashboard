@@ -12,11 +12,12 @@ Task 001 підтверджений файлами та локальними uni
 - [Архітектура](docs/ARCHITECTURE.md) — фактичні компоненти й ціль MVP1.
 - [Стан проєкту](docs/PROJECT_STATUS.md) — перевірки, проблеми та наступний етап.
 - [Рішення](docs/DECISIONS.md), [правила розробки](docs/DEVELOPMENT_RULES.md), [AI workflow](docs/AI_WORKFLOW.md).
+- [Деплой і rollback](docs/DEPLOYMENT.md) — наявний процес та ще не визначені параметри.
 
 ## Архітектурні принципи
 
-1. Без Docker / Docker Compose — PostgreSQL і Nginx працюють безпосередньо на хості.
-2. Backend у майбутньому запускається через systemd.
+1. На поточному етапі без Docker / Docker Compose — PostgreSQL і Nginx працюють безпосередньо на хості.
+2. Central API та Agent — systemd, незалежно від PM2; frontend — статична React/Vite-збірка через Nginx, без окремого Node.js-процесу. Новий код — TypeScript.
 3. Setup розрахований на повторний запуск; production-готовність потребує перевірки середовища та сценаріїв помилок.
 4. Перед змінами — аудит ([docs/server-audit.md](docs/server-audit.md)), після змін — перевірка працездатності.
 5. Допоміжна логіка має автоматизовані тести; повне покриття orchestration/error paths скриптів не підтверджено.
@@ -99,7 +100,7 @@ npm run db:check          # SELECT 1 через .env, без виводу пар
 ```
 
 Integration-тести змінюють лише `node_control_db`: тимчасова таблиця створюється і видаляється, спроба `CREATE DATABASE` має завершитись відмовою.
-Серверні перевірки (`pg_authid`, `pg_hba.conf`, systemd) виконуються лише від root на хості PostgreSQL; з машини розробника вони позначаються як skipped — тому `npm run check` треба запускати **і на сервері**.
+Повний suite запускати лише у перевіреному виділеному тестовому середовищі без зміни production-даних; окремої test-DB конфігурації поки немає. Серверні перевірки (`pg_authid`, `pg_hba.conf`, systemd) потребують root на хості PostgreSQL; локально пропускаються. Read-only перевірки на production відокремлювати від тестів із записом.
 
 ## Робота через VS Code
 
@@ -110,7 +111,8 @@ Integration-тести змінюють лише `node_control_db`: тимчас
 rsync -az --delete --no-owner --no-group \
   --exclude .git --exclude node_modules --exclude '.env' --exclude '.env.*' --include .env.example \
   ./ root@203.0.113.10:/etc/pm2-dashboard/
-ssh root@203.0.113.10 'cd /etc/pm2-dashboard && npm ci --omit=dev && npm run check'
+ssh root@203.0.113.10 'cd /etc/pm2-dashboard && npm ci --omit=dev'
+# Повний npm run check — лише у виділеному тестовому середовищі, не проти production-даних.
 ```
 
 Отримати `.env` локально — лише через SSH, ніколи через Git чи месенджери:
@@ -143,3 +145,5 @@ npm run db:check
 3. Агент для збору стану Node.js/PM2-процесів на серверах.
 4. Frontend, Nginx reverse proxy з TLS.
 5. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики. Зовнішній доступ до 5432 не відкривати без окремого підтвердження.
+
+Контейнеризація API/Agents — окрема фаза після стабілізації MVP за новим завданням. Зараз Docker-файли, залежності та контейнери не створювати. PostgreSQL/Nginx залишаються на хості.

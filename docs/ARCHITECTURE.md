@@ -20,16 +20,16 @@ ES modules, залежність `pg`, npm scripts, вбудований `node:t
 
 HBA-правило в коді: `hostssl node_control_db node_control_user 0.0.0.0/0 scram-sha-256`. Воно обмежене БД/роллю, але дозволяє будь-яку IPv4-адресу. Попередні правила HBA можуть збігтися раніше. `dbConfigFromEnv` не задає `ssl`; перевірка SCRAM не є перевіркою TLS. Публічний доступ не дозволений архітектурою без окремого підтвердження.
 
-## Ціль MVP1 — ще не реалізовано
+## Затверджена архітектура поточного етапу — ще не реалізовано
 
 ```mermaid
 flowchart LR
   User[Користувач] --> Nginx[Nginx на хості / TLS]
-  Nginx --> UI[React + Vite]
-  Nginx --> API[Fastify Central API / REST + WebSocket]
+  Nginx --> UI[React + Vite / статичні файли]
+  Nginx --> API[Fastify Central API / systemd / REST + WebSocket]
   Agent[Node.js Agent / systemd] -->|Вихідне захищене з'єднання| API
   Agent --> PM2[Локальний PM2 API]
-  API --> DB[PostgreSQL на хості]
+  API --> DB[PostgreSQL на хості / systemd]
   API --> Jenkins[Існуючий Jenkins API / pipelines]
   API --> Slack[Slack Alerts]
   API --> менеджер секретів[Існуючий менеджер секретів]
@@ -40,3 +40,17 @@ Central API: authentication, authorization, реєстри серверів і �
 MVP1 охоплює кілька серверів, моніторинг, логи в реальному часі, керування процесами, redeploy, доступ за ролями та аудит усіх адміністративних дій. Slack: зупинка процесу, недоступність сервера, високі CPU/RAM, часті рестарти, невдалий деплой і відновлення; обов'язкові cooldown та deduplication.
 
 Транспорт агента, формат команд, модель ролей, retention метрик/логів, схема БД та міграційний інструмент ще не обрані. Не видавати їх за прийняті рішення.
+
+## Життєвий цикл і майбутня фаза
+
+API та Agent: Node.js 22 через systemd, без root за замовчуванням. PM2 використовується лише для керованих Node.js-проєктів; API/Agent не запускати через PM2. Agent залишається незалежним від PM2, обмежується дозволеними процесами, Linux-користувачем та PM2_HOME.
+
+Frontend збирається у статичні файли й обслуговується host Nginx; окремий production Node.js-процес не потрібен. Nginx через systemd забезпечує HTTPS, статику, reverse proxy і WebSocket proxy. Порти API, домен та шлях build ще не затверджені.
+
+Central API забезпечує RBAC; метрики застосунків включають CPU/RAM, uptime і restart count, серверів — CPU/RAM, диск і навантаження. Slack: також налаштування порогів і захист від alert spam. Використовувати існуючі Jenkins/менеджер секретів через API, не створювати новий Jenkins і не переписувати pipelines без потреби.
+
+Новий код — TypeScript зі строгими типами та environment-конфігурацією. Чинні JS-скрипти читають `.env` із checkout; конфігурація майбутніх сервісів ще не реалізована. Безпеку каналу й автентифікації Agent/API окремо спроєктувати та протестувати до production-активації; схема вище не визначає протокол.
+
+Після MVP, успішних тестів і стабілізації production окремо розглянути Docker для API/Agents за новим завданням. Зараз не створювати Dockerfile/Compose, контейнерні залежності чи контейнери. PostgreSQL і Nginx залишаються на хості; їх перенесення не погоджено.
+
+Деплой і невизначені параметри — [DEPLOYMENT](DEPLOYMENT.md).
