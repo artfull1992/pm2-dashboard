@@ -186,7 +186,7 @@ npm run test:backend:db
 
 ### Production (сервер)
 
-Central API розгортається на `control-server` як systemd-сервіс `node-control-api.service` під користувачем `nodecontrol`, лише на `127.0.0.1:3100`; конфіг — `/etc/goit-node-control/api.env`, релізи — `/opt/goit-node-control/releases/<sha>`. Публічного доступу немає (Nginx — наступний етап). Фактичний стан деплою — [PROJECT_STATUS](docs/PROJECT_STATUS.md). Процедура збирання, передачі, активації та rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#central-api-deployment-contract-task-003). Доступ з VS Code / локальної машини:
+Central API працює на `control-server` як systemd-сервіс (з Task 003) `node-control-api.service` під користувачем `nodecontrol`, лише на `127.0.0.1:3100`; конфіг — `/etc/goit-node-control/api.env`, релізи — `/opt/goit-node-control/releases/<sha>`. Публічного доступу немає (Nginx — наступний етап). Фактичний стан деплою — [PROJECT_STATUS](docs/PROJECT_STATUS.md). Процедура збирання, передачі, активації та rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#central-api-deployment-contract-task-003). Доступ з VS Code / локальної машини:
 
 ```bash
 ssh -N -L 3100:127.0.0.1:3100 root@203.0.113.10
