@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AuthConfig } from '../config.js';
 import { describeError, PublicHttpError } from '../errors.js';
@@ -193,7 +194,11 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
 
     // Rate limits before any database lookup or hashing. The account key is a digest, not the email.
     const accountKey = createHash('sha256').update(email ?? rawEmail.trim().toLowerCase()).digest('base64url');
-    const retryAfter = Math.max(addressLimiter.hit(request.socket.remoteAddress ?? 'unknown'), accountLimiter.hit(accountKey));
+    // request.ip: socket peer, or — only behind a configured trusted proxy — the address that proxy put in
+    // X-Forwarded-For (Fastify trustProxy, ADR-014). Headers are never read here directly. A non-IP result
+    // (misconfigured proxy) falls into one shared bucket instead of an attacker-chosen key.
+    const addressKey = isIP(request.ip) === 0 ? 'unresolved' : request.ip;
+    const retryAfter = Math.max(addressLimiter.hit(addressKey), accountLimiter.hit(accountKey));
     if (retryAfter > 0) throw new PublicHttpError(429, AUTH_MESSAGES.rateLimited, { 'retry-after': String(retryAfter) });
 
     const fail = async (actorUserId: string | null, reason: 'invalid_credentials' | 'inactive_user'): Promise<never> => {

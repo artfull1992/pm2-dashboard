@@ -114,7 +114,7 @@
 
 **CSRF.** (1) Для кожного state-changing `/api`-запиту (включно з login — захист від login CSRF) `Origin` має точно збігатися з `AUTH_ALLOWED_ORIGINS` (≤ 10 точних origin; https; http лише для loopback поза production). Відсутній `Origin` → 403 (браузери надсилають його на POST; інші клієнти мусять задати явно). `Sec-Fetch-Site`, якщо присутній, має бути `same-origin`. Порожній allowlist → усі такі запити відхиляються (fail closed; поточний production). (2) Для автентифікованих state-changing запитів (logout і майбутні) — заголовок `x-csrf-token` = `base64url(HMAC-SHA256(key = session token, "nc-csrf-v1"))`, отримується з `login`/`me`; порівняння constant-time. SameSite — додатковий, не єдиний захист. CORS не вмикається; frontend працює same-origin (Vite proxy / Nginx). `trustProxy` вимкнено.
 
-**Rate limiting.** До будь-якого lookup і hashing: ≤ 5 спроб / 15 хв на SHA-256 нормалізованого email і ≤ 30 / 15 хв на адресу сокета; 429 + `Retry-After`. Пам'ять обмежена 10 000 ключів на лімітер. Стан у процесі: скидається при рестарті, коректний лише для одного інстансу; за майбутнім reverse proxy ліміт за адресою стане глобальним — переглянути разом із налаштуванням proxy. Постійного lockout немає.
+**Rate limiting.** До будь-якого lookup і hashing: ≤ 5 спроб / 15 хв на SHA-256 нормалізованого email і ≤ 30 / 15 хв на адресу сокета; 429 + `Retry-After`. Пам'ять обмежена 10 000 ключів на лімітер. Стан у процесі: скидається при рестарті, коректний лише для одного інстансу. Адреса клієнта за reverse proxy — ADR-014. Постійного lockout немає.
 
 **RBAC.** Одна роль: `viewer` → `monitoring:read`; `operator` → + `processes:control`; `admin` → + `users:manage`, `audit:read`. Дозволи виводяться на сервері з актуальної ролі в БД. Кожен `/api`-маршрут декларує `config.access` (`public` | `authenticated` | `{ permission }`), інакше реєстрація падає (deny by default). Порядок: Origin → сесія (401) → CSRF (403) → permission (403 + `authz.denied`). `monitoring:read`, `processes:control`, `users:manage` поки лише контракт — endpoints немає.
 
@@ -143,3 +143,12 @@
 - Конфіг сайту не є частиною артефакту й не змінюється деплоєм; задачі Node Control лише перевіряють його (root, proxy, TLS, `nginx -t`).
 - `AUTH_ALLOWED_ORIGINS=https://control.example.com`, `AUTH_COOKIE_SECURE=true`. Вхід можливий лише після створення адміністратора оператором.
 - Рекомендації власнику (не застосовані): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options DENY`, `nosniff`, `Referrer-Policy`), `Cache-Control: no-cache` для SPA-маршрутів (зараз лише для `/index.html`), `immutable` для `/assets/`, `try_files $uri =404` для `/assets/`, HSTS.
+
+## ADR-014: Довірений reverse proxy для адреси клієнта
+
+Статус: прийнято (Task 006.1, review Codex P1).
+
+- **Проблема:** за Nginx `request.socket.remoteAddress` завжди `127.0.0.1`, тож усі клієнти ділили ліміт 30 спроб / 15 хв за адресою — будь-хто міг заблокувати вхід іншим.
+- **Рішення:** `API_TRUSTED_PROXIES` — список точних loopback-IP (≤ 4; без hostname, CIDR, wildcard, не-loopback). Порожньо (default, розробка, E2E) → Fastify `trustProxy: false`. Інакше `trustProxy` = цей список (не `true`). Ліміт за адресою використовує `request.ip`; auth-код заголовки не читає. Невалідна IP-адреса від proxy → один спільний ключ `unresolved`, а не ключ, обраний клієнтом.
+- **Nginx (узгоджена пара):** `proxy_set_header X-Forwarded-For $remote_addr` **замінює** клієнтський заголовок (не `$proxy_add_x_forwarded_for`), `X-Forwarded-Host $host`, `X-Forwarded-Proto $scheme`; `X-Real-IP` API не використовує. Запити від недовіреного peer (не з `API_TRUSTED_PROXIES`) — forwarded-заголовки ігноруються.
+- **Межі:** per-account ліміт, hashing limiter, Origin/CSRF без змін. `request.ip` не логується і не пишеться в audit. Стан лімітерів — у пам'яті одного процесу (як і раніше).

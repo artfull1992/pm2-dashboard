@@ -120,6 +120,7 @@ npm run backend:start     # node backend/dist/main.js
 | `DB_HOST` / `DB_PORT` | `127.0.0.1` / `5432` | IP або hostname / 1–65535 |
 | `DB_NAME`, `DB_USER`, `DB_PASS` | — | обов'язкові |
 | `ENV_FILE` | `<repo>/.env` | шлях до dotenv-файлу; відсутній файл — не помилка |
+| `API_TRUSTED_PROXIES` | порожньо | точні loopback-IP локального reverse proxy (production: `127.0.0.1`); порожньо — `trustProxy` вимкнено (ADR-014) |
 
 Пріоритет: **process environment > `.env`**. Некоректна конфігурація зупиняє startup з exit code 1; повідомлення називає лише ключі та правила, без значень. Пул: max 5 з'єднань; таймаути connect/query/statement — 2 с, idle — 10 с, readiness — 2,5 с, shutdown — 10 с (константи в `backend/src/config.ts`). Логується лише `nodeEnv/host/port/logLevel`.
 
@@ -154,7 +155,7 @@ Frontend flow: при старті `GET /api/auth/me` (401 → сторінка 
 | `operator` | `monitoring:read`, `processes:control` |
 | `admin` | `monitoring:read`, `processes:control`, `users:manage`, `audit:read` |
 
-Конфігурація: `AUTH_ALLOWED_ORIGINS` (точні origin через кому; порожньо → login вимкнено), `AUTH_COOKIE_SECURE` (default `true`; `false` лише для loopback-розробки), `AUTH_SESSION_TTL_MINUTES` (15–1440, default 480). Rate limits: 5 спроб / 15 хв на акаунт, 30 / 15 хв на адресу; лише в пам'яті одного процесу.
+Конфігурація: `AUTH_ALLOWED_ORIGINS` (точні origin через кому; порожньо → login вимкнено), `AUTH_COOKIE_SECURE` (default `true`; `false` лише для loopback-розробки), `AUTH_SESSION_TTL_MINUTES` (15–1440, default 480). Rate limits: 5 спроб / 15 хв на акаунт, 30 / 15 хв на адресу клієнта (`request.ip`; за Nginx — адреса, яку proxy записав у `X-Forwarded-For`, лише якщо peer входить до `API_TRUSTED_PROXIES`); лише в пам'яті одного процесу.
 
 Перший адміністратор — лише CLI (DEPLOYMENT, «Bootstrap адміністратора»): `ENV_FILE=… node backend/dist/bootstrap-admin.js --email <email>` (пароль вводиться приховано двічі).
 

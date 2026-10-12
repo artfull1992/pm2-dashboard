@@ -147,9 +147,21 @@ DELETE FROM sessions WHERE expires_at < now() - interval '1 day' OR revoked_at <
 | Статика | `/opt/goit-node-control/current/frontend/dist` (`root:root`, читання для `www-data`); UI і API перемикаються одним `current` |
 | Сайт | `https://control.example.com` — `/etc/nginx/conf.d/control.example.com.conf`, **керує власник сервера** (Certbot), скрипти Node Control його не встановлюють і не змінюють |
 | TLS | Let's Encrypt, `CN=control.example.com`; оновлення — `snap.certbot.renew.timer`; HTTP → 301 на HTTPS |
-| `/api/` | `proxy_pass http://127.0.0.1:3100` без URI (шлях і query без змін); невідомий `/api/*` → JSON 404 API; Origin передається як є; `X-Forwarded-*` API ігнорує (`trustProxy` вимкнено) |
+| `/api/` | `proxy_pass http://127.0.0.1:3100` без URI (шлях і query без змін); невідомий `/api/*` → JSON 404 API; Origin передається як є; заголовки — нижче (ADR-014) |
 | SPA | `location /` → `try_files $uri $uri/ /index.html`; `/index.html` — `Cache-Control: no-store` |
-| API-конфіг | `AUTH_ALLOWED_ORIGINS=https://control.example.com`, `AUTH_COOKIE_SECURE=true` |
+| API-конфіг | `AUTH_ALLOWED_ORIGINS=https://control.example.com`, `AUTH_COOKIE_SECURE=true`, `API_TRUSTED_PROXIES=127.0.0.1` |
+
+Заголовки в `location /api/` (Task 006.1; узгоджено з `API_TRUSTED_PROXIES=127.0.0.1`):
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;            # довідково; API його НЕ використовує
+proxy_set_header X-Forwarded-For $remote_addr;      # ЗАМІНЮЄ клієнтський заголовок — не $proxy_add_x_forwarded_for
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;            # клієнт не може підставити свій host
+```
+
+Порядок застосування: спершу Nginx (заміна `X-Forwarded-For` безпечна і для старого релізу, який заголовки ігнорує), потім `API_TRUSTED_PROXIES` + реліз + restart API. Rollback — у зворотному порядку: прибрати ключ/повернути реліз, restart API, потім за потреби Nginx. Ніколи не вмикати `API_TRUSTED_PROXIES`, поки Nginx пропускає клієнтський `X-Forwarded-For`.
 
 Окремий loopback-сайт `127.0.0.1:3101` (перша редакція Task 006) прибрано: файли збережено в `/root/node-control-backups/nginx-*`, шаблони видалено з репозиторію й артефакту.
 

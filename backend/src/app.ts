@@ -17,6 +17,11 @@ export interface BuildAppOptions {
   createDatabase: (log: FastifyBaseLogger) => Database;
   /** Log destination override (tests). Defaults to stdout. */
   logStream?: LogDestination;
+  /**
+   * Exact peer addresses trusted to set X-Forwarded-For (ADR-014). Empty/omitted → trustProxy off,
+   * request.ip is the socket peer and forwarded headers are ignored.
+   */
+  trustedProxies?: readonly string[];
   /** Enables /api auth routes. Omitted only by health-only tests. */
   auth?: {
     config: AuthConfig;
@@ -63,6 +68,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     logger: loggerOptions(options),
     // Client-supplied IDs are ignored to keep log correlation trustworthy.
     requestIdHeader: false,
+    trustProxy: options.trustedProxies && options.trustedProxies.length > 0 ? [...options.trustedProxies] : false,
     genReqId: () => randomUUID(),
   });
 

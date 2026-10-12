@@ -23,7 +23,7 @@ describe('loadConfig', () => {
   it('applies loopback and documented defaults', () => {
     const config = loadConfig(base);
     expect(config.nodeEnv).toBe('development');
-    expect(config.api).toEqual({ host: '127.0.0.1', port: 3100 });
+    expect(config.api).toEqual({ host: '127.0.0.1', port: 3100, trustedProxies: [] });
     expect(config.logLevel).toBe('info');
     expect(config.db).toMatchObject({ host: '127.0.0.1', port: 5432, database: 'node_control_db', user: 'node_control_user' });
   });

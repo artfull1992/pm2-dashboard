@@ -34,7 +34,11 @@ export interface AuthConfig {
 export interface AppConfig {
   readonly nodeEnv: NodeEnv;
   readonly auth: AuthConfig;
-  readonly api: { readonly host: string; readonly port: number };
+  /**
+   * trustedProxies: exact loopback peer addresses whose X-Forwarded-For is honoured (ADR-014).
+   * Empty (default) → Fastify trustProxy is off and forwarded headers are ignored.
+   */
+  readonly api: { readonly host: string; readonly port: number; readonly trustedProxies: readonly string[] };
   readonly logLevel: LogLevel;
   readonly db: DbConfig;
   readonly readinessTimeoutMs: number;
@@ -69,6 +73,28 @@ export const AUTH_DEFAULTS = Object.freeze({
 });
 const SESSION_TTL_MINUTES_RANGE = [15, 1440] as const;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
+
+const MAX_TRUSTED_PROXIES = 4;
+
+/**
+ * API_TRUSTED_PROXIES: comma-separated literal loopback IPs of the local reverse proxy (e.g. 127.0.0.1).
+ * No hostnames, CIDR ranges, wildcards or non-loopback addresses: the API only listens on loopback,
+ * so the only legitimate proxy is the local Nginx. Messages never include the offending value.
+ */
+export function trustedProxyList(raw: string, issues: string[]): string[] {
+  if (raw.trim() === '') return [];
+  const entries = raw.split(',').map((entry) => entry.trim());
+  if (entries.length > MAX_TRUSTED_PROXIES) {
+    issues.push(`API_TRUSTED_PROXIES allows at most ${String(MAX_TRUSTED_PROXIES)} addresses`);
+    return [];
+  }
+  const loopback = (ip: string) => (isIP(ip) === 4 && ip.startsWith('127.')) || (isIP(ip) === 6 && ip === '::1');
+  if (!entries.every(loopback)) {
+    issues.push('API_TRUSTED_PROXIES must list loopback IP addresses only (e.g. 127.0.0.1); no hostnames or ranges');
+    return [];
+  }
+  return [...new Set(entries)];
+}
 
 export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.has(host);
@@ -139,7 +165,8 @@ export function loadConfig(env: EnvSource): AppConfig {
   };
 
   const nodeEnv = oneOf('NODE_ENV', NODE_ENVS, 'development');
-  const api = { host: host('API_HOST', CONFIG_DEFAULTS.API_HOST), port: port('API_PORT', CONFIG_DEFAULTS.API_PORT) };
+  const trustedProxies = trustedProxyList(value('API_TRUSTED_PROXIES', ''), issues);
+  const api = { host: host('API_HOST', CONFIG_DEFAULTS.API_HOST), port: port('API_PORT', CONFIG_DEFAULTS.API_PORT), trustedProxies };
   // Insecure (non-Secure cookie, http origins) is an explicit opt-in that only a loopback development setup may use.
   const insecureAllowed = nodeEnv !== 'production' && isLoopbackHost(api.host);
 
@@ -200,6 +227,7 @@ export function loadConfig(env: EnvSource): AppConfig {
 export function describeConfig(config: AppConfig): Record<string, string | number | boolean> {
   return {
     nodeEnv: config.nodeEnv, host: config.api.host, port: config.api.port, logLevel: config.logLevel,
+    trustedProxies: config.api.trustedProxies.length,
     authOrigins: config.auth.allowedOrigins.length, cookieSecure: config.auth.cookieSecure,
     sessionTtlMinutes: config.auth.sessionTtlSeconds / 60,
   };
