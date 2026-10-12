@@ -128,11 +128,23 @@ npm run backend:start     # node backend/dist/main.js
 | `GET /health/ready` | `200 {"status":"ready"}` після `SELECT 1`; `503 {"status":"unavailable"}` при помилці або таймауті |
 | інший маршрут/метод | `404 {"statusCode":404,"error":"Not Found","message":"Route not found"}` |
 
-Обидва health-маршрути повертають `Cache-Control: no-store`; кожна відповідь — `x-request-id` (UUID, що генерує сервер; клієнтський заголовок ігнорується). Причина 503 пишеться лише в лог (`code` + повідомлення з маскуванням пароля). Внутрішня помилка → `500` з загальним текстом, без stack/SQL. Недоступна БД не зупиняє процес. CORS не вмикається.
+Обидва health-маршрути повертають `Cache-Control: no-store`; кожна відповідь — `x-request-id` (UUID, що генерує сервер; клієнтський заголовок ігнорується). Причина 503 пишеться лише в лог як метадані (`category` + `code` з allowlist). Недоступна БД не зупиняє процес. CORS не вмикається.
+
+### Помилки (контракт відповіді)
+
+Текст кинутої помилки (`message`, `name`, `cause`, `stack`) ніколи не повертається клієнту — навіть за `statusCode` 4xx.
+
+| Випадок | Відповідь |
+|---|---|
+| Schema validation | `400 {"statusCode":400,"error":"Bad Request","message":"Request validation failed","validation":[{"location":"body","path":"/name","rule":"required"}]}` — `path`/`rule` зі схеми, без отриманих значень, до 10 пунктів |
+| Інша помилка з 4xx `statusCode` (у т.ч. malformed JSON, 413, 415) | той самий статус; `error` = `message` = стандартний HTTP-текст (`Bad Request`, `Unsupported Media Type`, нестандартний → `Client Error`) |
+| Будь-що інше (5xx, без статусу, не-`Error`) | `500 {"statusCode":500,"error":"Internal Server Error","message":"Internal Server Error"}` |
 
 ### Логи
 
 Fastify/pino JSON у stdout. У запиті логуються лише `method`, `path` (без query string) і `reqId`; заголовки й тіла не логуються, а `authorization`, `cookie`, `proxy-authorization`, `x-api-key`, `set-cookie` додатково редагуються.
+
+Помилки логуються лише як `error: { category, code?, statusCode? }` (`describeError` у `backend/src/errors.ts`): `category` — `validation | client | timeout | database | system | internal | non-error`; `code` лише з allowlist (Node errno, коди Fastify, SQLSTATE з `pg.DatabaseError`). Подія (`msg`), рівень і `reqId` зберігаються. Redaction заголовків не захищає текст помилок — тому текст не логується взагалі. Startup/shutdown та fatal (`uncaughtException`/`unhandledRejection`) виводять у stderr/лог лише ці метадані; після невдалого старту процес гарантовано завершується з кодом 1 (одразу, якщо cleanup завис; інакше через unref-таймер 2 с).
 
 ### TLS до PostgreSQL
 

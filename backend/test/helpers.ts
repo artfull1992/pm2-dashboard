@@ -1,4 +1,4 @@
-import { createServer } from 'node:net';
+import { createServer, type Server } from 'node:net';
 import { vi } from 'vitest';
 import { buildApp, type BuildAppOptions } from '../src/app.js';
 import type { Database } from '../src/database.js';
@@ -37,10 +37,22 @@ export function testApp(database: Database, overrides: Partial<BuildAppOptions> 
   return { app, logs };
 }
 
-/** A port that is free right now (listener opened on :0 and closed). */
-export async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+/**
+ * A port that is free right now (listener opened on :0 and closed).
+ * Rejects promptly on listen errors (EPERM in a sandbox, EADDRNOTAVAIL, …) instead of throwing uncaught.
+ */
+export async function freePort(host = '127.0.0.1', server: Server = createServer()): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.close();
+      reject(error);
+    };
+    server.once('error', onError);
+    server.listen(0, host, () => {
+      server.off('error', onError);
+      resolve();
+    });
+  });
   const address = server.address();
   await new Promise<void>((resolve) => server.close(() => { resolve(); }));
   if (address === null || typeof address === 'string') throw new Error('No port assigned');

@@ -1,8 +1,11 @@
 import pg from 'pg';
 import type { DbConfig } from './config.js';
+import { describeError, type ErrorMeta, TimeoutError } from './errors.js';
+
+export { TimeoutError };
 
 export interface Database {
-  /** Read-only liveness probe of PostgreSQL: SELECT 1. Rejects on error or timeout. */
+  /** Read-only liveness probe of PostgreSQL: SELECT 1. Rejects with DatabaseCheckError on error or timeout. */
   check(): Promise<void>;
   /** Ends the pool. Safe to call more than once. */
   close(): Promise<void>;
@@ -22,29 +25,14 @@ export interface DbLogger {
   error(obj: object, msg: string): void;
 }
 
-export interface SafeError {
-  name: string;
-  code?: string;
-  message: string;
-}
+/** Carries only ErrorMeta of the underlying failure; the original error (and its text) is dropped. */
+export class DatabaseCheckError extends Error {
+  readonly meta: ErrorMeta;
 
-/** Strips anything that could carry credentials; replaces known secrets in the message. */
-export function toSafeError(error: unknown, secrets: readonly string[] = []): SafeError {
-  const source = error instanceof Error ? error : new Error(String(error));
-  let message = source.message;
-  for (const secret of secrets) {
-    if (secret) message = message.replaceAll(secret, '[REDACTED]');
-  }
-  const code = (source as { code?: unknown }).code;
-  return { name: source.name, ...(typeof code === 'string' ? { code } : {}), message };
-}
-
-export class TimeoutError extends Error {
-  readonly code = 'ETIMEDOUT';
-
-  constructor(ms: number) {
-    super(`Operation timed out after ${ms} ms`);
-    this.name = 'TimeoutError';
+  constructor(meta: ErrorMeta) {
+    super('Database check failed');
+    this.name = 'DatabaseCheckError';
+    this.meta = meta;
   }
 }
 
@@ -79,12 +67,11 @@ export function createPool(config: DbConfig): PoolLike {
 }
 
 export function createDatabase(config: DbConfig, logger: DbLogger, pool: PoolLike = createPool(config)): Database {
-  const secrets = [config.password];
   let closing: Promise<void> | undefined;
 
   // An idle client failing (e.g. PostgreSQL restart) must not crash the process.
   pool.on('error', (error) => {
-    logger.error({ err: toSafeError(error, secrets) }, 'PostgreSQL pool error');
+    logger.error({ error: describeError(error) }, 'PostgreSQL pool error');
   });
 
   return {
@@ -92,7 +79,7 @@ export function createDatabase(config: DbConfig, logger: DbLogger, pool: PoolLik
       try {
         await withTimeout(pool.query('SELECT 1'), config.queryTimeoutMs);
       } catch (error) {
-        throw Object.assign(new Error('Database check failed'), { cause: toSafeError(error, secrets) });
+        throw new DatabaseCheckError(describeError(error));
       }
     },
     close() {

@@ -19,7 +19,9 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `backend/src/database.ts` | `pg.Pool` (max 5, кінцеві таймаути), `check()` = `SELECT 1`, ідемпотентний `close()`, маскування помилок |
 | `backend/src/app.ts` | Fastify factory: логер із redaction, request ID, `/health/live`, `/health/ready`, 404/500 handlers; не слухає порт |
 | `backend/src/lifecycle.ts` | `listen`, ідемпотентний shutdown із таймаутом, SIGINT/SIGTERM |
-| `backend/src/main.ts` | Точка входу: конфіг → app → listen; exit code 1 при помилці конфігурації/старту/shutdown |
+| `backend/src/errors.ts` | Політика помилок: `describeError` (лише category + allowlisted code), `toErrorResponse` (фіксований публічний контракт) |
+| `backend/src/server.ts` | `runServer`: логіка executable (config → app → listen → сигнали), гарантоване завершення після невдалого старту |
+| `backend/src/main.ts` | Точка входу: `.env` + process env, fatal handlers, виклик `runServer`, exit code |
 | `backend/test/` | Vitest: unit/API (inject), `smoke/` (скомпільований dist), `db/` (opt-in реальна БД, лише SELECT 1) |
 
 `ENV_PATH` прив'язаний до кореня checkout; `/etc/pm2-dashboard/.env` отримується лише якщо код розміщено в цьому каталозі. Setup використовує DB_NAME/DB_USER із config та відмовляється змінювати БД з чужим власником. Повторний запуск примусово застосовує атрибути ролі та ACL; це не повний no-op. Пароль змінюється лише при створенні ролі або явному `--rotate-password`; `.env` записується до зміни пароля.
@@ -29,11 +31,13 @@ HBA-правило в коді: `hostssl node_control_db node_control_user 0.0.0
 ### Central API (Task 002)
 
 ```text
-main.ts ── loadConfig(mergeEnv(.env, process.env)) ──► ConfigError → stderr, exit 1
+main.ts ── installFatalHandlers ── runServer(mergeEnv(.env, process.env))
+server.ts ── loadConfig ──► ConfigError → stderr, exit 1
    │
    ├─ buildApp({ createDatabase }) ── Fastify (без listen, без signal handlers)
    │      └─ onClose → database.close() → pool.end()
    └─ createLifecycle(app).start() → listen 127.0.0.1:3100
+          помилка listen → shutdown (таймаут) → StartupError{cleanedUp} → exit 1 (одразу / unref-таймер)
           SIGINT/SIGTERM → shutdown (один раз, таймаут 10 с) → exit 0 / 1
 ```
 

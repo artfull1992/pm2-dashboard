@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
-import { createDatabase, type PoolLike, TimeoutError, toSafeError, withTimeout } from '../src/database.js';
+import pg from 'pg';
+import { createDatabase, DatabaseCheckError, type PoolLike, TimeoutError, withTimeout } from '../src/database.js';
 import { FAKE_SECRET, freePort } from './helpers.js';
 
 const dbConfig = (overrides: Record<string, string> = {}) =>
@@ -24,13 +25,18 @@ describe('createDatabase with an injected pool', () => {
     expect(pool.query).toHaveBeenCalledExactlyOnceWith('SELECT 1');
   });
 
-  it('check rejects with a sanitized cause on error', async () => {
+  it('check rejects with metadata only: SQLSTATE kept, message/stack/cause dropped', async () => {
     const pool = new FakePool();
-    pool.query.mockRejectedValueOnce(Object.assign(new Error(`auth failed ${FAKE_SECRET}`), { code: '28P01' }));
+    const pgError = Object.assign(new pg.DatabaseError(`password authentication failed ${FAKE_SECRET}`, 0, 'error'), {
+      code: '28P01',
+      cause: new Error(`nested ${FAKE_SECRET}`),
+    });
+    pool.query.mockRejectedValueOnce(pgError);
     const error = await createDatabase(dbConfig(), logger(), pool).check().catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe('Database check failed');
-    expect((error as Error).cause).toEqual({ name: 'Error', code: '28P01', message: 'auth failed [REDACTED]' });
+    expect(error).toBeInstanceOf(DatabaseCheckError);
+    expect((error as DatabaseCheckError).meta).toEqual({ category: 'database', code: '28P01' });
+    expect((error as Error).cause).toBeUndefined();
+    expect(JSON.stringify(error) + String(error) + ((error as Error).stack ?? '')).not.toContain(FAKE_SECRET);
   });
 
   it('check times out when the query hangs', async () => {
@@ -38,7 +44,7 @@ describe('createDatabase with an injected pool', () => {
     pool.query.mockReturnValueOnce(new Promise(() => undefined));
     const config = { ...dbConfig(), queryTimeoutMs: 30 };
     const error = await createDatabase(config, logger(), pool).check().catch((e: unknown) => e);
-    expect((error as Error).cause).toMatchObject({ name: 'TimeoutError', code: 'ETIMEDOUT' });
+    expect((error as DatabaseCheckError).meta).toEqual({ category: 'timeout', code: 'ETIMEDOUT' });
   });
 
   it('pool errors are logged without credentials and do not throw', () => {
@@ -46,7 +52,7 @@ describe('createDatabase with an injected pool', () => {
     const log = logger();
     createDatabase(dbConfig(), log, pool);
     expect(() => pool.emit('error', new Error(`terminating connection; password=${FAKE_SECRET}`))).not.toThrow();
-    expect(log.error).toHaveBeenCalledOnce();
+    expect(log.error).toHaveBeenCalledExactlyOnceWith({ error: { category: 'internal' } }, 'PostgreSQL pool error');
     expect(JSON.stringify(log.error.mock.calls)).not.toContain(FAKE_SECRET);
   });
 
@@ -69,8 +75,7 @@ describe('createDatabase with a real pg.Pool (no server)', () => {
     const port = String(await freePort());
     const database = createDatabase(dbConfig({ DB_PORT: port }), logger());
     const error = await database.check().catch((e: unknown) => e);
-    expect((error as Error).cause).toMatchObject({ code: 'ECONNREFUSED' });
-    expect(JSON.stringify((error as Error).cause)).not.toContain(FAKE_SECRET);
+    expect((error as DatabaseCheckError).meta).toEqual({ category: 'system', code: 'ECONNREFUSED' });
     await database.close();
     expect(database.stats().total).toBe(0);
   });
@@ -80,10 +85,5 @@ describe('helpers', () => {
   it('withTimeout resolves fast promises and rejects slow ones', async () => {
     await expect(withTimeout(Promise.resolve(7), 50)).resolves.toBe(7);
     await expect(withTimeout(new Promise(() => undefined), 10)).rejects.toBeInstanceOf(TimeoutError);
-  });
-
-  it('toSafeError handles non-Error values and drops non-string codes', () => {
-    expect(toSafeError('boom')).toEqual({ name: 'Error', message: 'boom' });
-    expect(toSafeError(Object.assign(new Error('x'), { code: 42 }))).toEqual({ name: 'Error', message: 'x' });
   });
 });

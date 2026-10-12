@@ -110,12 +110,17 @@ describe('routing and errors', () => {
     expect(res.body).not.toContain('10.1.1.1');
   });
 
-  it('client errors (4xx) keep Fastify validation messages', async () => {
+  it('validation errors return 400 with schema-derived issues', async () => {
     const { app } = setup(fakeDatabase());
     app.post('/echo', { schema: { body: { type: 'object', required: ['name'] } } }, () => ({ ok: true }));
     const res = await app.inject({ method: 'POST', url: '/echo', payload: {} });
     expect(res.statusCode).toBe(400);
-    expect(res.json()).toMatchObject({ statusCode: 400, message: expect.stringContaining('name') as string });
+    expect(res.json()).toEqual({
+      statusCode: 400,
+      error: 'Bad Request',
+      message: 'Request validation failed',
+      validation: [{ location: 'body', path: '/name', rule: 'required' }],
+    });
   });
 
   it('does not add permissive CORS headers', async () => {

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import type { LogLevel } from './config.js';
-import { type Database, toSafeError, withTimeout } from './database.js';
+import { type Database, DatabaseCheckError, withTimeout } from './database.js';
+import { describeError, toErrorResponse } from './errors.js';
 
 export interface LogDestination {
   write(chunk: string): void;
@@ -79,9 +80,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         await withTimeout(database.check(), options.readinessTimeoutMs);
         return { status: 'ready' };
       } catch (error) {
-        // database.check() already attaches a sanitized cause; timeouts from withTimeout carry none.
-        const err = error instanceof Error && error.cause !== undefined ? error.cause : toSafeError(error);
-        request.log.warn({ err }, 'Readiness check failed');
+        const meta = error instanceof DatabaseCheckError ? error.meta : describeError(error);
+        request.log.warn({ error: meta }, 'Readiness check failed');
         return reply.code(503).send({ status: 'unavailable' });
       }
     },
@@ -91,15 +91,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return reply.code(404).send({ statusCode: 404, error: 'Not Found', message: 'Route not found' });
   });
 
-  app.setErrorHandler(async (error: Error & { statusCode?: number }, request, reply) => {
-    const statusCode = error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : 500;
-    if (statusCode >= 500) {
-      request.log.error({ err: error }, 'Unhandled error');
-      return reply.code(500).send({ statusCode: 500, error: 'Internal Server Error', message: 'Internal Server Error' });
-    }
-    // Fastify's own 4xx errors (validation, payload size, content type) carry client-safe messages.
-    request.log.info({ err: toSafeError(error) }, 'Client error');
-    return reply.code(statusCode).send({ statusCode, error: error.name, message: error.message });
+  // Thrown values are untrusted: neither the response nor the log ever contains their message/name/cause/stack.
+  app.setErrorHandler(async (error: unknown, request, reply) => {
+    const meta = describeError(error);
+    const { statusCode, body } = toErrorResponse(error);
+    if (statusCode >= 500) request.log.error({ error: meta }, 'Unhandled error');
+    else request.log.info({ error: meta, statusCode }, 'Client error');
+    return reply.code(statusCode).send(body);
   });
 
   return app;

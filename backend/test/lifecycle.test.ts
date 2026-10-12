@@ -1,8 +1,16 @@
 import { createServer, type Server } from 'node:net';
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createLifecycle, installSignalHandlers, type Lifecycle } from '../src/lifecycle.js';
-import { fakeDatabase, freePort, testApp } from './helpers.js';
+import { createLifecycle, installFatalHandlers, installSignalHandlers, type Lifecycle, StartupError } from '../src/lifecycle.js';
+import { FAKE_SECRET, fakeDatabase, freePort, testApp } from './helpers.js';
+
+async function occupiedPort(): Promise<number> {
+  const blocker = createServer();
+  blockers.push(blocker);
+  const port = await freePort();
+  await new Promise<void>((resolve) => blocker.listen(port, '127.0.0.1', resolve));
+  return port;
+}
 
 const blockers: Server[] = [];
 afterEach(async () => {
@@ -39,18 +47,30 @@ describe('createLifecycle', () => {
     expect(logs.text()).toContain('Shutdown already in progress');
   });
 
-  it('startup failure (port in use) closes the app and database and rethrows', async () => {
-    const blocker = createServer();
-    blockers.push(blocker);
-    const port = await freePort();
-    await new Promise<void>((resolve) => blocker.listen(port, '127.0.0.1', resolve));
-
+  it('startup failure (port in use) closes the app and database and rejects with StartupError', async () => {
+    const port = await occupiedPort();
     const database = fakeDatabase();
     const { app, logs } = testApp(database);
     const lifecycle = createLifecycle(app, { host: '127.0.0.1', port, shutdownTimeoutMs: 2_000 });
-    await expect(lifecycle.start()).rejects.toMatchObject({ code: 'EADDRINUSE' });
+    const error = await lifecycle.start().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(StartupError);
+    expect(error).toMatchObject({ meta: { category: 'system', code: 'EADDRINUSE' }, cleanedUp: true });
     expect(database.close).toHaveBeenCalledOnce();
-    expect(logs.text()).toContain('Failed to start listener');
+    expect(logs.records().find((r) => r.msg === 'Failed to start listener')).toMatchObject({ error: { category: 'system', code: 'EADDRINUSE' } });
+  });
+
+  it('startup failure with hung cleanup rejects within the shutdown timeout and reports cleanedUp=false', async () => {
+    const port = await occupiedPort();
+    const database = fakeDatabase();
+    database.close.mockReturnValue(new Promise(() => undefined));
+    const { app, logs } = testApp(database);
+    const lifecycle = createLifecycle(app, { host: '127.0.0.1', port, shutdownTimeoutMs: 100 });
+    const started = Date.now();
+    const error = await lifecycle.start().catch((e: unknown) => e);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(error).toMatchObject({ cleanedUp: false, meta: { code: 'EADDRINUSE' } });
+    expect(database.close).toHaveBeenCalledOnce();
+    expect(logs.records().find((r) => r.msg === 'Shutdown failed or timed out')).toMatchObject({ error: { category: 'timeout' } });
   });
 
   it('shutdown reports failure when cleanup exceeds the timeout', async () => {
@@ -62,12 +82,14 @@ describe('createLifecycle', () => {
     expect(logs.text()).toContain('Shutdown failed or timed out');
   });
 
-  it('shutdown reports failure when cleanup throws', async () => {
+  it('shutdown reports failure when cleanup throws, without logging the error text', async () => {
     const database = fakeDatabase();
-    database.close.mockRejectedValue(new Error('pool end failed'));
-    const { app } = testApp(database);
+    database.close.mockRejectedValue(new Error(`pool end failed ${FAKE_SECRET}`));
+    const { app, logs } = testApp(database);
     const lifecycle = createLifecycle(app, { host: '127.0.0.1', port: await freePort(), shutdownTimeoutMs: 1_000 });
     await expect(lifecycle.shutdown('SIGTERM')).resolves.toBe(false);
+    expect(logs.text()).toContain('Shutdown failed or timed out');
+    expect(logs.text()).not.toContain(FAKE_SECRET);
   });
 });
 
@@ -105,5 +127,27 @@ describe('installSignalHandlers', () => {
     expect(target.listenerCount('SIGTERM')).toBe(1);
     remove();
     expect(target.listenerCount('SIGTERM') + target.listenerCount('SIGINT')).toBe(0);
+  });
+});
+
+describe('installFatalHandlers', () => {
+  it.each(['uncaughtException', 'unhandledRejection'] as const)('%s writes metadata only and exits 1', (event) => {
+    const target = new EventEmitter();
+    let stderr = '';
+    const exit = vi.fn();
+    installFatalHandlers(target, { write: (chunk: string) => { stderr += chunk; } }, exit);
+    const error = Object.assign(new Error(`boom ${FAKE_SECRET}`), { code: 'EPIPE' });
+    error.stack = `at ${FAKE_SECRET}`;
+    target.emit(event, error);
+    expect(stderr).toBe(`Fatal ${event} (category=system code=EPIPE); exiting\n`);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it('handles non-Error values', () => {
+    const target = new EventEmitter();
+    let stderr = '';
+    installFatalHandlers(target, { write: (chunk: string) => { stderr += chunk; } }, vi.fn());
+    target.emit('unhandledRejection', FAKE_SECRET);
+    expect(stderr).toBe('Fatal unhandledRejection (category=non-error); exiting\n');
   });
 });

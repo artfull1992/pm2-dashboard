@@ -3,11 +3,13 @@
 // so the developer's real .env is never read.
 import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { FAKE_SECRET, freePort } from '../helpers.js';
 
 const MAIN = join(import.meta.dirname, '..', '..', 'dist', 'main.js');
+const FIXTURE = join(import.meta.dirname, 'fixtures', 'failing-startup.mjs');
 const NODE = process.env.SMOKE_NODE_BINARY ?? process.execPath;
 const children: ChildProcess[] = [];
 
@@ -106,6 +108,28 @@ describe('compiled API smoke', () => {
     expect(out).toContain('DB_NAME is required');
     expect(out).not.toContain(FAKE_SECRET);
     expect(out).not.toContain('70000');
+  });
+
+  it.each(['hung-cleanup', 'open-handle'])('startup failure with %s still terminates with exit 1 in bounded time', async (mode) => {
+    const blocker = createServer();
+    const env = await baseEnv({ FIXTURE_MODE: mode });
+    await new Promise<void>((resolve) => blocker.listen(Number(env.API_PORT), '127.0.0.1', resolve));
+    try {
+      const child = spawn(NODE, [FIXTURE], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      children.push(child);
+      let output = '';
+      child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+      child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+      const started = Date.now();
+      const code = await new Promise<number | null>((resolve) => child.on('exit', (c) => { resolve(c); }));
+      expect(code).toBe(1);
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(output).toContain('Failed to start listener');
+      expect(output).toContain(mode === 'hung-cleanup' ? 'Shutdown failed or timed out' : 'Shutdown complete');
+      expect(output).not.toContain(FAKE_SECRET);
+    } finally {
+      await new Promise((resolve) => blocker.close(resolve));
+    }
   });
 
   it('port already in use → exit 1 after cleanup', async () => {
