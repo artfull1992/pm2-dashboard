@@ -1,10 +1,10 @@
 # Архітектура GOIT Node Control
 
-Стан перевірено за кодом 2026-10-12. Документ розрізняє реалізацію Task 001 і ціль MVP1.
+Стан перевірено за кодом 2026-10-12 (після Task 002). Документ розрізняє реалізоване і ціль MVP1.
 
 ## Реалізовано
 
-ES modules, залежність `pg`, npm scripts, вбудований `node:test`. `backend/`, `frontend/`, `agent/` містять лише `.gitkeep`. API, UI, агенти, схема прикладних таблиць, міграції, systemd units та Nginx-конфігурації проєкту відсутні.
+ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить базовий Central API (лише health endpoints); `frontend/`, `agent/` — лише `.gitkeep`. Authentication/RBAC, UI, агенти, схема прикладних таблиць, міграції, systemd units та Nginx-конфігурації проєкту відсутні.
 
 | Шлях | Фактична відповідальність |
 |---|---|
@@ -12,13 +12,32 @@ ES modules, залежність `pg`, npm scripts, вбудований `node:t
 | `scripts/db-check.js` | Підключення з `.env`, SELECT 1, показ версії й факту SSL |
 | `scripts/check-secrets.js` | Перевірка `.env` у Git і сканування файлів, що можуть потрапити в commit |
 | `scripts/lib/` | Конфігурація, env, генерація пароля, SCRAM, SQL builders, HBA parser, setup plan, scanner |
-| `tests/unit/` | 46 тестів допоміжної логіки без БД |
+| `tests/unit/` | 46 тестів допоміжної логіки без БД (node:test) |
 | `tests/integration/` | Env, реальна БД, каталоги, права, SCRAM; привілейовані серверні перевірки |
 | `docs/server-audit.md` | Історичний звіт Task 001 про сервер, не поточна незалежна перевірка |
+| `backend/src/config.ts` | Читання `.env` (`ENV_FILE`) + process env (пріоритет), валідація, ліміти pool/timeout |
+| `backend/src/database.ts` | `pg.Pool` (max 5, кінцеві таймаути), `check()` = `SELECT 1`, ідемпотентний `close()`, маскування помилок |
+| `backend/src/app.ts` | Fastify factory: логер із redaction, request ID, `/health/live`, `/health/ready`, 404/500 handlers; не слухає порт |
+| `backend/src/lifecycle.ts` | `listen`, ідемпотентний shutdown із таймаутом, SIGINT/SIGTERM |
+| `backend/src/main.ts` | Точка входу: конфіг → app → listen; exit code 1 при помилці конфігурації/старту/shutdown |
+| `backend/test/` | Vitest: unit/API (inject), `smoke/` (скомпільований dist), `db/` (opt-in реальна БД, лише SELECT 1) |
 
 `ENV_PATH` прив'язаний до кореня checkout; `/etc/pm2-dashboard/.env` отримується лише якщо код розміщено в цьому каталозі. Setup використовує DB_NAME/DB_USER із config та відмовляється змінювати БД з чужим власником. Повторний запуск примусово застосовує атрибути ролі та ACL; це не повний no-op. Пароль змінюється лише при створенні ролі або явному `--rotate-password`; `.env` записується до зміни пароля.
 
 HBA-правило в коді: `hostssl node_control_db node_control_user 0.0.0.0/0 scram-sha-256`. Воно обмежене БД/роллю, але дозволяє будь-яку IPv4-адресу. Попередні правила HBA можуть збігтися раніше. `dbConfigFromEnv` не задає `ssl`; перевірка SCRAM не є перевіркою TLS. Публічний доступ не дозволений архітектурою без окремого підтвердження.
+
+### Central API (Task 002)
+
+```text
+main.ts ── loadConfig(mergeEnv(.env, process.env)) ──► ConfigError → stderr, exit 1
+   │
+   ├─ buildApp({ createDatabase }) ── Fastify (без listen, без signal handlers)
+   │      └─ onClose → database.close() → pool.end()
+   └─ createLifecycle(app).start() → listen 127.0.0.1:3100
+          SIGINT/SIGTERM → shutdown (один раз, таймаут 10 с) → exit 0 / 1
+```
+
+Health endpoints публічні навмисно; адміністративних маршрутів немає до появи authentication та Audit Log. API підключається до PostgreSQL лише по loopback (або SSH-тунелю в розробці) без TLS у `pg`; пряме віддалене підключення не підтримується без окремого рішення.
 
 ## Затверджена архітектура поточного етапу — ще не реалізовано
 

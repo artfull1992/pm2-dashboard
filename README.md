@@ -2,7 +2,7 @@
 
 Централізована платформа для моніторингу та керування Node.js-проєктами на декількох серверах.
 
-> Етап 1 (Task 001): підготовка сервера та PostgreSQL. Backend, frontend і агент ще не реалізовані.
+> Етап 1 (Task 001): підготовка сервера та PostgreSQL. Етап 2 (Task 002): базовий Central API — лише health endpoints, без authentication, схеми БД і production-деплою. Frontend і агент ще не реалізовані.
 
 Task 001 підтверджений файлами та локальними unit-тестами, але серверний стан незалежно не підтверджено. Актуальні результати й проблеми — [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
 
@@ -35,7 +35,7 @@ Task 001 підтверджений файлами та локальними uni
 ```text
 .
 ├── agent/            # майбутній агент на керованих серверах
-├── backend/          # майбутній API (systemd)
+├── backend/          # Central API: TypeScript + Fastify (src/, test/, dist/ — збірка, не в Git)
 ├── frontend/         # майбутній UI
 ├── docs/
 │   └── server-audit.md
@@ -50,6 +50,7 @@ Task 001 підтверджений файлами та локальними uni
 │   └── helpers/
 ├── .env              # не в Git
 ├── .env.example
+├── eslint.config.js  # lint лише для backend/
 └── package.json
 ```
 
@@ -89,6 +90,83 @@ DB_PORT=5432
 
 - На сервері: `/etc/pm2-dashboard/.env`, створюється `npm run db:setup`, права `600`, власник — користувач, від якого працює застосунок.
 - `.env` і `.env.*` ігноруються Git (крім `.env.example`); `npm run check:secrets` це перевіряє і шукає реальний пароль у всіх файлах, що можуть потрапити в коміт.
+
+## Central API (backend)
+
+Мінімальна основа API: TypeScript (strict) + Fastify 5, PostgreSQL pool, health endpoints, структуровані логи, обробка помилок і graceful shutdown. **Authentication, RBAC, схема БД/міграції, CRUD, Agent, WebSocket і production-деплой не реалізовані.** Адміністративних endpoints немає.
+
+Runtime: **Node.js 22 LTS** (Fastify 5 офіційно підтримує Node 20/22, Vitest 5 потребує Node ≥ 22.12). Якщо локально інша версія, перевірки на 22 можна запускати через `npx -y node@22 …` (див. нижче).
+
+```bash
+npm ci                    # залежності з lockfile
+npm run backend:dev       # tsx watch, src/main.ts, читає .env + process env
+npm run backend:build     # tsc → backend/dist
+npm run backend:start     # node backend/dist/main.js
+```
+
+### Конфігурація
+
+| Змінна | За замовчуванням | Правило |
+|---|---|---|
+| `NODE_ENV` | `development` | `development` \| `test` \| `production` |
+| `API_HOST` | `127.0.0.1` | IP або hostname; loopback — API стоїть за host Nginx |
+| `API_PORT` | `3100` | 1–65535 |
+| `LOG_LEVEL` | `info` | `fatal` `error` `warn` `info` `debug` `trace` `silent` |
+| `DB_HOST` / `DB_PORT` | `127.0.0.1` / `5432` | IP або hostname / 1–65535 |
+| `DB_NAME`, `DB_USER`, `DB_PASS` | — | обов'язкові |
+| `ENV_FILE` | `<repo>/.env` | шлях до dotenv-файлу; відсутній файл — не помилка |
+
+Пріоритет: **process environment > `.env`**. Некоректна конфігурація зупиняє startup з exit code 1; повідомлення називає лише ключі та правила, без значень. Пул: max 5 з'єднань; таймаути connect/query/statement — 2 с, idle — 10 с, readiness — 2,5 с, shutdown — 10 с (константи в `backend/src/config.ts`). Логується лише `nodeEnv/host/port/logLevel`.
+
+Порт 3100 обрано як непривілейований і вільний на машині розробника (перевірено `lsof` перед запуском); на сервері порт ще не узгоджено.
+
+### Health endpoints (публічні навмисно, без authentication)
+
+| Запит | Відповідь |
+|---|---|
+| `GET /health/live` | `200 {"status":"ok"}` — не звертається до БД |
+| `GET /health/ready` | `200 {"status":"ready"}` після `SELECT 1`; `503 {"status":"unavailable"}` при помилці або таймауті |
+| інший маршрут/метод | `404 {"statusCode":404,"error":"Not Found","message":"Route not found"}` |
+
+Обидва health-маршрути повертають `Cache-Control: no-store`; кожна відповідь — `x-request-id` (UUID, що генерує сервер; клієнтський заголовок ігнорується). Причина 503 пишеться лише в лог (`code` + повідомлення з маскуванням пароля). Внутрішня помилка → `500` з загальним текстом, без stack/SQL. Недоступна БД не зупиняє процес. CORS не вмикається.
+
+### Логи
+
+Fastify/pino JSON у stdout. У запиті логуються лише `method`, `path` (без query string) і `reqId`; заголовки й тіла не логуються, а `authorization`, `cookie`, `proxy-authorization`, `x-api-key`, `set-cookie` додатково редагуються.
+
+### TLS до PostgreSQL
+
+API не вмикає TLS у `pg`: підтримується лише loopback на сервері або SSH-тунель у розробці — **це не TLS-з'єднання з PostgreSQL**, захист дає SSH або локальність. `rejectUnauthorized:false` не використовується. Пряме віддалене підключення API до БД не підтримується без окремого рішення з перевіркою сертифіката.
+
+### Тести backend
+
+```bash
+npm run typecheck           # tsc --noEmit, strict (src + test)
+npm run lint                # ESLint + typescript-eslint strictTypeChecked, лише backend/
+npm run test:backend        # Vitest: config, API через inject, database, lifecycle — без мережевої БД
+npm run test:backend:smoke  # збирає dist і запускає скомпільований API як процес
+npm run check:local         # secrets + старі 46 unit + typecheck + lint + test:backend + smoke
+```
+
+`check:local` не запускає production-connected тести (`test:integration`, `test:backend:db`). Старий `npm run check` не змінено.
+
+Перевірка на Node.js 22, коли локально інша версія:
+
+```bash
+npx -y node@22 node_modules/vitest/vitest.mjs run --config backend/vitest.config.ts
+npm run backend:build && BACKEND_TEST_SUITE=smoke npx -y node@22 node_modules/vitest/vitest.mjs run --config backend/vitest.config.ts
+```
+
+### Backend: перевірка з реальною PostgreSQL
+
+Opt-in, лише `SELECT 1` через `/health/ready`, без DDL/DML; перевіряє, що після `app.close()` пул порожній. Конфігурація — **тільки** явні `TEST_DB_*`; кореневий `.env` не читається, без змінних тест падає з поясненням.
+
+```bash
+ssh -N -L 15432:127.0.0.1:5432 root@203.0.113.10   # окремий термінал
+TEST_DB_HOST=127.0.0.1 TEST_DB_PORT=15432 TEST_DB_NAME=node_control_db \
+TEST_DB_USER=node_control_user TEST_DB_PASS='<пароль, не зберігати в історії shell>' \
+npm run test:backend:db
+```
 
 ## Тести та перевірки
 
@@ -141,7 +219,7 @@ npm run db:check
 ## Наступні етапи
 
 1. Окремий системний користувач для backend + systemd unit; перевласнити `.env`.
-2. Backend API та схема БД (міграції).
+2. Authentication/RBAC + Audit Log, схема БД і версійні міграції (базовий API з health endpoints реалізовано в Task 002).
 3. Агент для збору стану Node.js/PM2-процесів на серверах.
 4. Frontend, Nginx reverse proxy з TLS.
 5. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики. Зовнішній доступ до 5432 не відкривати без окремого підтвердження.

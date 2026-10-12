@@ -37,8 +37,8 @@ Agent: перевірка авторизації кожної команди, а
 
 - Жодна реалізація не завершена без тестів: unit та integration; API, E2E, security і regression — відповідно до змінених сценаріїв. Нові та змінені гілки логіки покривати до 100%, де технічно доцільно, без формальних тестів заради coverage.
 - Не видаляти тести заради успіху, не приховувати помилки й не пропускати перевірки без пояснення. При падінні встановити причину, виправити в межах завдання й повторити; проблему середовища явно зафіксувати.
-- Команди та межі тестування — [DEVELOPMENT_RULES](docs/DEVELOPMENT_RULES.md). Наявні npm scripts: `npm test`, `npm run test:integration`, `npm run check:secrets`, `npm run check`, `npm run db:check`.
-- Перед commit: diff, секрети, тести, доступні lint/format/typecheck checks. Наразі ці інструменти не налаштовані — не повідомляти про їх успішний запуск.
+- Команди та межі тестування — [DEVELOPMENT_RULES](docs/DEVELOPMENT_RULES.md). Наявні npm scripts: `npm test`, `npm run test:integration`, `npm run check:secrets`, `npm run check`, `npm run db:check`; backend — `typecheck`, `lint`, `backend:build`, `test:backend`, `test:backend:smoke`, `test:backend:db` (opt-in), `check:local`.
+- Перед commit: diff, секрети, тести, `npm run typecheck` і `npm run lint` (налаштовані лише для `backend/`). Formatter не налаштований — не повідомляти про його запуск.
 - Після успішного завершення — commit і push у поточну робочу гілку; повідомити hash. Push лише за успішних перевірок і дозволених правил гілки. Не force-push, не змінювати історію без дозволу, не обходити захист гілки.
 - Документаційний commit не означає готовності реалізації чи дозволу на деплой. За актуальним bootstrap-запитом документаційний push дозволений після успішних релевантних перевірок документів, unit-тестів і секретів, з чесним звітом про недоступні перевірки БД. Для функціональних змін і деплою потрібні всі релевантні успішні тести.
 
