@@ -22,8 +22,18 @@ export interface DbConfig {
   readonly queryTimeoutMs: number;
 }
 
+export interface AuthConfig {
+  /** Exact Origin values allowed for state-changing /api requests. Empty → every such request is refused. */
+  readonly allowedOrigins: readonly string[];
+  /** Secure cookie (and __Host- prefix). false only outside production on a loopback API_HOST. */
+  readonly cookieSecure: boolean;
+  /** Absolute session lifetime; never extended. */
+  readonly sessionTtlSeconds: number;
+}
+
 export interface AppConfig {
   readonly nodeEnv: NodeEnv;
+  readonly auth: AuthConfig;
   readonly api: { readonly host: string; readonly port: number };
   readonly logLevel: LogLevel;
   readonly db: DbConfig;
@@ -48,7 +58,21 @@ export const LIMITS = Object.freeze({
   queryTimeoutMs: 2_000,
   readinessTimeoutMs: 2_500,
   shutdownTimeoutMs: 10_000,
+  transactionTimeoutMs: 5_000,
+  maxAllowedOrigins: 10,
 });
+
+export const AUTH_DEFAULTS = Object.freeze({
+  AUTH_COOKIE_SECURE: 'true',
+  AUTH_SESSION_TTL_MINUTES: '480',
+  AUTH_ALLOWED_ORIGINS: '',
+});
+const SESSION_TTL_MINUTES_RANGE = [15, 1440] as const;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
+
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host);
+}
 
 const HOSTNAME_RE = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
 
@@ -114,9 +138,44 @@ export function loadConfig(env: EnvSource): AppConfig {
     return raw;
   };
 
+  const nodeEnv = oneOf('NODE_ENV', NODE_ENVS, 'development');
+  const api = { host: host('API_HOST', CONFIG_DEFAULTS.API_HOST), port: port('API_PORT', CONFIG_DEFAULTS.API_PORT) };
+  // Insecure (non-Secure cookie, http origins) is an explicit opt-in that only a loopback development setup may use.
+  const insecureAllowed = nodeEnv !== 'production' && isLoopbackHost(api.host);
+
+  const secureRaw = value('AUTH_COOKIE_SECURE', AUTH_DEFAULTS.AUTH_COOKIE_SECURE);
+  if (secureRaw !== 'true' && secureRaw !== 'false') issues.push('AUTH_COOKIE_SECURE must be true or false');
+  const cookieSecure = secureRaw !== 'false';
+  if (!cookieSecure && !insecureAllowed) {
+    issues.push('AUTH_COOKIE_SECURE=false is only allowed outside production with a loopback API_HOST');
+  }
+
+  const ttlRaw = value('AUTH_SESSION_TTL_MINUTES', AUTH_DEFAULTS.AUTH_SESSION_TTL_MINUTES);
+  const ttl = Number(ttlRaw);
+  if (!/^\d+$/.test(ttlRaw) || ttl < SESSION_TTL_MINUTES_RANGE[0] || ttl > SESSION_TTL_MINUTES_RANGE[1]) {
+    issues.push(`AUTH_SESSION_TTL_MINUTES must be an integer between ${String(SESSION_TTL_MINUTES_RANGE[0])} and ${String(SESSION_TTL_MINUTES_RANGE[1])}`);
+  }
+
+  const originsRaw = value('AUTH_ALLOWED_ORIGINS', AUTH_DEFAULTS.AUTH_ALLOWED_ORIGINS);
+  const allowedOrigins = originsRaw === '' ? [] : originsRaw.split(',').map((o) => o.trim());
+  if (allowedOrigins.length > LIMITS.maxAllowedOrigins) issues.push(`AUTH_ALLOWED_ORIGINS allows at most ${String(LIMITS.maxAllowedOrigins)} origins`);
+  for (const origin of allowedOrigins) {
+    let url: URL | undefined;
+    try { url = new URL(origin); } catch { url = undefined; }
+    if (!url || url.origin !== origin) {
+      issues.push('AUTH_ALLOWED_ORIGINS entries must be exact origins like https://host[:port] (no path, no trailing slash)');
+      break;
+    }
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && insecureAllowed && isLoopbackHost(url.hostname))) {
+      issues.push('AUTH_ALLOWED_ORIGINS must use https (http only for loopback origins outside production)');
+      break;
+    }
+  }
+
   const config: AppConfig = {
-    nodeEnv: oneOf('NODE_ENV', NODE_ENVS, 'development'),
-    api: { host: host('API_HOST', CONFIG_DEFAULTS.API_HOST), port: port('API_PORT', CONFIG_DEFAULTS.API_PORT) },
+    nodeEnv,
+    api,
+    auth: { allowedOrigins, cookieSecure, sessionTtlSeconds: ttl * 60 },
     logLevel: oneOf('LOG_LEVEL', LOG_LEVELS, 'info'),
     db: {
       host: host('DB_HOST', CONFIG_DEFAULTS.DB_HOST),
@@ -138,6 +197,10 @@ export function loadConfig(env: EnvSource): AppConfig {
 }
 
 /** The only config fields allowed in logs. */
-export function describeConfig(config: AppConfig): Record<string, string | number> {
-  return { nodeEnv: config.nodeEnv, host: config.api.host, port: config.api.port, logLevel: config.logLevel };
+export function describeConfig(config: AppConfig): Record<string, string | number | boolean> {
+  return {
+    nodeEnv: config.nodeEnv, host: config.api.host, port: config.api.port, logLevel: config.logLevel,
+    authOrigins: config.auth.allowedOrigins.length, cookieSecure: config.auth.cookieSecure,
+    sessionTtlMinutes: config.auth.sessionTtlSeconds / 60,
+  };
 }

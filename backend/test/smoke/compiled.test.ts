@@ -91,6 +91,65 @@ describe('compiled API smoke', () => {
     expect(api.output()).not.toMatch(/smoke_user|smoke_db/);
   });
 
+  it('anonymous /api/auth/me → 401 no-store; login without allowed origin → 403 (empty allowlist)', async () => {
+    const env = await baseEnv();
+    const api = start(env);
+    await api.waitFor('API started');
+    expect(api.output()).toContain('AUTH_ALLOWED_ORIGINS is empty');
+    const base = `http://127.0.0.1:${env.API_PORT}`;
+    const me = await fetch(`${base}/api/auth/me`);
+    expect(me.status).toBe(401);
+    expect(me.headers.get('cache-control')).toBe('no-store');
+    expect(me.headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/);
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+      body: JSON.stringify({ email: 'a@b.c', password: 'whatever-long-pass' }),
+    });
+    expect(login.status).toBe(403);
+    api.child.kill('SIGTERM');
+    expect(await api.exited).toBe(0);
+  });
+
+  it('compiled bootstrap CLI fails closed: no terminal, bad email, unreachable DB (metadata only)', async () => {
+    const CLI = join(import.meta.dirname, '..', '..', 'dist', 'bootstrap-admin.js');
+    const runCli = async (args: string[], input: string) => {
+      const env = await baseEnv();
+      const child = spawn(NODE, [CLI, ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      children.push(child);
+      let out = '';
+      child.stdout.on('data', (c: Buffer) => { out += c.toString(); });
+      child.stderr.on('data', (c: Buffer) => { out += c.toString(); });
+      child.stdin.end(input);
+      const code = await new Promise<number | null>((resolve) => child.on('exit', resolve));
+      return { code, out };
+    };
+    const password = 'synthetic-Smoke-Passw0rd';
+    const noTty = await runCli(['--email', 'admin@example.test'], `${password}\n`);
+    expect(noTty.code).toBe(2);
+    expect(noTty.out).toContain('use --password-stdin');
+    expect((await runCli(['--email', 'nope'], '')).code).toBe(2);
+    const noDb = await runCli(['--email', 'admin@example.test', '--password-stdin'], `${password}\n`);
+    expect(noDb.code).toBe(1);
+    expect(noDb.out).toContain('code=ECONNREFUSED');
+    for (const r of [noTty, noDb]) {
+      expect(r.out).not.toContain(password);
+      expect(r.out).not.toContain(FAKE_SECRET);
+    }
+  });
+
+  it('compiled runtime imports only production dependencies', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const dist = join(import.meta.dirname, '..', '..', 'dist');
+    const allowed = new Set(['fastify', 'pg', 'node-pg-migrate']);
+    for (const file of readdirSync(dist, { recursive: true }).map(String).filter((f) => f.endsWith('.js'))) {
+      const source = readFileSync(join(dist, file), 'utf8');
+      for (const [, spec] of source.matchAll(/(?:^|\n)import [^'"]*['"]([^'"]+)['"]/g)) {
+        if (!spec || spec.startsWith('.') || spec.startsWith('node:')) continue;
+        expect([file, spec, allowed.has(spec)]).toEqual([file, spec, true]);
+      }
+    }
+  });
+
   it('SIGINT also shuts down with exit 0', async () => {
     const api = start(await baseEnv());
     await api.waitFor('API started');

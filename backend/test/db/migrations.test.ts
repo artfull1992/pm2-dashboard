@@ -11,6 +11,8 @@ import {
 
 const FAILING_DIR = join(import.meta.dirname, '..', 'fixtures', 'migrations-failing');
 const USERS_MIGRATION = '1791900000000_create-users';
+const AUTH_MIGRATION = '1791900000001_auth-foundation';
+const ALL = [USERS_MIGRATION, AUTH_MIGRATION];
 
 let config: DbConfig;
 let admin: pg.Client;
@@ -87,15 +89,15 @@ describe('migrations on a clean schema', () => {
 
   it('status before up: everything pending, nothing created', async () => {
     const status = await withClient((c) => migrationStatus(c, { schema }));
-    expect(status).toEqual({ applied: [], pending: [USERS_MIGRATION], unknown: [] });
+    expect(status).toEqual({ applied: [], pending: ALL, unknown: [] });
     const { rows } = await admin.query('SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = $1', [schema]);
     expect(rows[0]).toEqual({ n: 0 });
   });
 
-  it('up applies the users migration and records it once', async () => {
-    await expect(withClient((c) => migrateUp(c, { schema }))).resolves.toEqual([USERS_MIGRATION]);
-    const { rows } = await q(schema, `SELECT name FROM ${MIGRATIONS_TABLE}`);
-    expect(rows).toEqual([{ name: USERS_MIGRATION }]);
+  it('up applies all migrations in order and records each once', async () => {
+    await expect(withClient((c) => migrateUp(c, { schema }))).resolves.toEqual(ALL);
+    const { rows } = await q(schema, `SELECT name FROM ${MIGRATIONS_TABLE} ORDER BY id`);
+    expect(rows).toEqual(ALL.map((name) => ({ name })));
   });
 
   it('creates the expected users structure', async () => {
@@ -110,6 +112,7 @@ describe('migrations on a clean schema', () => {
       { column_name: 'is_active', data_type: 'boolean', is_nullable: 'NO', column_default: 'true' },
       { column_name: 'created_at', data_type: 'timestamp with time zone', is_nullable: 'NO', column_default: 'now()' },
       { column_name: 'updated_at', data_type: 'timestamp with time zone', is_nullable: 'NO', column_default: 'now()' },
+      { column_name: 'role', data_type: 'text', is_nullable: 'NO', column_default: "'viewer'::text" },
     ]);
     const { rows: constraints } = await admin.query(
       // PostgreSQL 18 also records NOT NULL as pg_constraint rows (contype 'n'); those are covered by the column check above.
@@ -122,6 +125,7 @@ describe('migrations on a clean schema', () => {
       { conname: 'users_email_normalized', contype: 'c' },
       { conname: 'users_password_hash_not_empty', contype: 'c' },
       { conname: 'users_pkey', contype: 'p' },
+      { conname: 'users_role_valid', contype: 'c' },
     ]);
     const { rows: triggers } = await admin.query(
       `SELECT tgname FROM pg_trigger WHERE tgrelid = format('%I.users', $1::text)::regclass AND NOT tgisinternal`, [schema],
@@ -131,9 +135,9 @@ describe('migrations on a clean schema', () => {
 
   it('second up is a no-op and status shows nothing pending', async () => {
     await expect(withClient((c) => migrateUp(c, { schema }))).resolves.toEqual([]);
-    await expect(withClient((c) => migrationStatus(c, { schema }))).resolves.toEqual({ applied: [USERS_MIGRATION], pending: [], unknown: [] });
+    await expect(withClient((c) => migrationStatus(c, { schema }))).resolves.toEqual({ applied: ALL, pending: [], unknown: [] });
     const { rows } = await q(schema, `SELECT count(*)::int AS n FROM ${MIGRATIONS_TABLE}`);
-    expect(rows[0]).toEqual({ n: 1 });
+    expect(rows[0]).toEqual({ n: ALL.length });
   });
 
   it('defaults: uuid id, is_active=true, timestamps set; updated_at maintained by trigger', async () => {
@@ -180,9 +184,10 @@ describe('failure and concurrency', () => {
   it('concurrent up runs serialize on the advisory lock and apply the migration exactly once', async () => {
     const schema = await freshSchema();
     const results = await Promise.all([1, 2, 3].map(() => withClient((c) => migrateUp(c, { schema }))));
-    expect(results.flat()).toEqual([USERS_MIGRATION]);
-    const { rows } = await q(schema, `SELECT name FROM ${MIGRATIONS_TABLE}`);
-    expect(rows).toEqual([{ name: USERS_MIGRATION }]);
+    expect(results.flat()).toEqual(ALL);
+    expect(results.filter((r) => r.length > 0)).toHaveLength(1);
+    const { rows } = await q(schema, `SELECT name FROM ${MIGRATIONS_TABLE} ORDER BY id`);
+    expect(rows).toEqual(ALL.map((name) => ({ name })));
   });
 });
 

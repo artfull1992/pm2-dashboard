@@ -2,7 +2,7 @@
 
 Централізована платформа для моніторингу та керування Node.js-проєктами на декількох серверах.
 
-> Етап 1 (Task 001): підготовка сервера та PostgreSQL. Етап 2 (Task 002): базовий Central API — лише health endpoints, без authentication, схеми БД і production-деплою. Frontend і агент ще не реалізовані.
+> Task 001 — сервер і PostgreSQL; Task 002/003 — Central API (health) + деплой через systemd; Task 004 — тестова БД і міграції; Task 005 — authentication, RBAC, audit log (backend). Frontend (Task 006) і Agent ще не реалізовані; публічного production-запуску немає.
 
 Task 001 підтверджений файлами та локальними unit-тестами, але серверний стан незалежно не підтверджено. Актуальні результати й проблеми — [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
 
@@ -97,7 +97,7 @@ DB_PORT=5432
 
 ## Central API (backend)
 
-Мінімальна основа API: TypeScript (strict) + Fastify 5, PostgreSQL pool, health endpoints, структуровані логи, обробка помилок і graceful shutdown. **Authentication, RBAC, схема БД/міграції, CRUD, Agent, WebSocket і production-деплой не реалізовані.** Адміністративних endpoints немає.
+TypeScript (strict) + Fastify 5, PostgreSQL pool, health endpoints, authentication із серверними сесіями, CSRF, RBAC, audit log, структуровані логи, обробка помилок, graceful shutdown. **CRUD користувачів, Agent, process/server endpoints, WebSocket, frontend не реалізовані.**
 
 Runtime: **Node.js 22 LTS** (Fastify 5 офіційно підтримує Node 20/22, Vitest 5 потребує Node ≥ 22.12). Якщо локально інша версія, перевірки на 22 можна запускати через `npx -y node@22 …` (див. нижче).
 
@@ -133,6 +133,29 @@ npm run backend:start     # node backend/dist/main.js
 | інший маршрут/метод | `404 {"statusCode":404,"error":"Not Found","message":"Route not found"}` |
 
 Обидва health-маршрути повертають `Cache-Control: no-store`; кожна відповідь — `x-request-id` (UUID, що генерує сервер; клієнтський заголовок ігнорується). Причина 503 пишеться лише в лог як метадані (`category` + `code` з allowlist). Недоступна БД не зупиняє процес. CORS не вмикається.
+
+### Authentication API (контракт для frontend)
+
+Деталі й обґрунтування — ADR-011. Усі `/api` відповіді мають `Cache-Control: no-store` і `x-request-id`. Frontend працює **same-origin** (Vite proxy у розробці, Nginx у production); CORS не вмикається.
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `POST /api/auth/login` `{"email","password"}` | public + Origin | `200 {user:{id,email,role}, permissions[], csrfToken, expiresAt}` + `Set-Cookie: __Host-nc_session=…` | 400 validation, 401 `Invalid email or password` (однаково для будь-якої причини), 403 `Request origin not allowed`, 429 + `Retry-After`, 503 + `Retry-After` |
+| `GET /api/auth/me` | сесія | `200` — той самий об'єкт, що й login | 401 `Authentication required` (+ очищення cookie, якщо вона була), 503 |
+| `POST /api/auth/logout` (без тіла) | сесія + Origin + `x-csrf-token` | `204`, cookie очищено | 401, 403 (Origin/CSRF), 503 |
+| `GET /api/audit?limit=1..100&beforeId=<id>` | `audit:read` (admin) | `200 {items:[{id,occurredAt,event,outcome,actorUserId,requestId,details}], nextBeforeId}` — `id DESC`, keyset | 400, 401, 403 `Insufficient permissions`, 503 |
+
+Frontend flow: при старті `GET /api/auth/me` (401 → сторінка login) → `POST /api/auth/login` з `credentials: 'same-origin'` → зберегти `csrfToken` **у пам'яті** (не localStorage) → кожен POST/PUT/PATCH/DELETE з `x-csrf-token`. Після reload — знову `me`.
+
+| Роль | Дозволи |
+|---|---|
+| `viewer` | `monitoring:read` |
+| `operator` | `monitoring:read`, `processes:control` |
+| `admin` | `monitoring:read`, `processes:control`, `users:manage`, `audit:read` |
+
+Конфігурація: `AUTH_ALLOWED_ORIGINS` (точні origin через кому; порожньо → login вимкнено), `AUTH_COOKIE_SECURE` (default `true`; `false` лише для loopback-розробки), `AUTH_SESSION_TTL_MINUTES` (15–1440, default 480). Rate limits: 5 спроб / 15 хв на акаунт, 30 / 15 хв на адресу; лише в пам'яті одного процесу.
+
+Перший адміністратор — лише CLI (DEPLOYMENT, «Bootstrap адміністратора»): `ENV_FILE=… node backend/dist/bootstrap-admin.js --email <email>` (пароль вводиться приховано двічі).
 
 ### Помилки (контракт відповіді)
 
@@ -203,7 +226,7 @@ ENV_FILE=<config> npm run db:migrate:status    # read-only: applied / pending / 
 ENV_FILE=<config> npm run db:migrate:up        # явне застосування
 ```
 
-Немає `down`/`reset` у CLI: production-міграції лише вперед; відновлення — з backup (docs/DEPLOYMENT.md). Перша міграція `1791900000000_create-users` створює таблицю `users` (контракт — ADR-010). **Authentication ще не реалізована**: немає хешування, створення адміністратора, сесій чи endpoints.
+Немає `down`/`reset` у CLI: production-міграції лише вперед; відновлення — з backup (docs/DEPLOYMENT.md). Міграції: `1791900000000_create-users` (ADR-010), `1791900000001_auth-foundation` (ADR-011).
 
 ### Production (сервер)
 
@@ -265,7 +288,7 @@ npm run db:check
 ## Наступні етапи
 
 1. Окремий системний користувач для backend + systemd unit; перевласнити `.env`.
-2. Authentication/RBAC + Audit Log, схема БД і версійні міграції (базовий API з health endpoints реалізовано в Task 002).
+2. Task 006 — React/Vite frontend (login, навігація, захищені сторінки) на auth-контракті — після review Task 005.
 3. Агент для збору стану Node.js/PM2-процесів на серверах.
 4. Frontend, Nginx reverse proxy з TLS.
 5. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики. Зовнішній доступ до 5432 не відкривати без окремого підтвердження.

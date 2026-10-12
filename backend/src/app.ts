@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServerOptions } from 'fastify';
-import type { LogLevel } from './config.js';
+import { registerAuth } from './auth/plugin.js';
+import { type AuthStore, createPgAuthStore } from './auth/store.js';
+import type { AuthConfig, LogLevel } from './config.js';
 import { type Database, DatabaseCheckError, withTimeout } from './database.js';
 import { describeError, toErrorResponse } from './errors.js';
 
@@ -15,6 +17,13 @@ export interface BuildAppOptions {
   createDatabase: (log: FastifyBaseLogger) => Database;
   /** Log destination override (tests). Defaults to stdout. */
   logStream?: LogDestination;
+  /** Enables /api auth routes. Omitted only by health-only tests. */
+  auth?: {
+    config: AuthConfig;
+    /** Test seam; production uses the PostgreSQL store on the shared pool. */
+    createStore?: (database: Database) => AuthStore;
+    extra?: Omit<Parameters<typeof registerAuth>[1], 'config' | 'store'>;
+  };
 }
 
 export const REDACTED_PATHS = [
@@ -87,6 +96,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     },
   );
 
+  if (options.auth) {
+    const store = (options.auth.createStore ?? createPgAuthStore)(database);
+    registerAuth(app, { ...options.auth.extra, config: options.auth.config, store });
+  }
+
   app.setNotFoundHandler({}, async (_request, reply) => {
     return reply.code(404).send({ statusCode: 404, error: 'Not Found', message: 'Route not found' });
   });
@@ -94,9 +108,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   // Thrown values are untrusted: neither the response nor the log ever contains their message/name/cause/stack.
   app.setErrorHandler(async (error: unknown, request, reply) => {
     const meta = describeError(error);
-    const { statusCode, body } = toErrorResponse(error);
+    const { statusCode, body, headers } = toErrorResponse(error);
     if (statusCode >= 500) request.log.error({ error: meta }, 'Unhandled error');
     else request.log.info({ error: meta, statusCode }, 'Client error');
+    if (headers) reply.headers(headers);
     return reply.code(statusCode).send(body);
   });
 

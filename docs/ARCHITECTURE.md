@@ -4,7 +4,7 @@
 
 ## Реалізовано
 
-ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить базовий Central API (лише health endpoints); `frontend/`, `agent/` — лише `.gitkeep`. Є версійні міграції та таблиця `users` (Task 004); authentication/RBAC, UI, агенти та Nginx-конфігурації проєкту відсутні.
+ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/`, `agent/` — лише `.gitkeep`. Є версійні міграції (`users`, `sessions`, `audit_log`). UI, агенти, process/server endpoints і Nginx-конфігурації проєкту відсутні.
 
 | Шлях | Фактична відповідальність |
 |---|---|
@@ -23,7 +23,9 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `backend/src/server.ts` | `runServer`: логіка executable (config → app → listen → сигнали), гарантоване завершення після невдалого старту |
 | `backend/src/main.ts` | Точка входу: `.env` + process env, fatal handlers, виклик `runServer`, exit code |
 | `backend/src/migrations.ts`, `migrate-cli.ts`, `migrate.ts` | node-pg-migrate: `status` (read-only), `up` (advisory lock, одна транзакція, timeouts); окремий CLI, API міграції не запускає |
-| `backend/migrations/` | Версійні SQL-міграції; `1791900000000_create-users` — таблиця `users` |
+| `backend/migrations/` | Версійні SQL-міграції: `1791900000000_create-users`, `1791900000001_auth-foundation` (role, sessions, audit_log) |
+| `backend/src/auth/` | `password` (scrypt, limiter), `tokens` (session/CSRF/cookie), `rbac`, `rate-limit`, `email`, `store` (SQL + транзакції з audit), `plugin` (hooks + `/api/auth/*`, `/api/audit`), `bootstrap` |
+| `backend/src/bootstrap-cli.ts`, `bootstrap-admin.ts` | CLI створення першого адміністратора (без HTTP) |
 | `backend/test/support/test-db.ts` | Guard real-DB тестів: лише `TEST_DB_*`, відхилення production, per-run схема |
 | `scripts/setup-test-db.js` | Root: ізольована `node_control_test_db`/`node_control_test_user` |
 | `backend/test/` | Vitest: unit/API (inject), `smoke/` (скомпільований dist), `db/` (opt-in реальна БД, лише SELECT 1) |
@@ -45,7 +47,7 @@ server.ts ── loadConfig ──► ConfigError → stderr, exit 1
           SIGINT/SIGTERM → shutdown (один раз, таймаут 10 с) → exit 0 / 1
 ```
 
-Health endpoints публічні навмисно; адміністративних маршрутів немає до появи authentication та Audit Log. API підключається до PostgreSQL лише по loopback (або SSH-тунелю в розробці) без TLS у `pg`; пряме віддалене підключення не підтримується без окремого рішення.
+Health endpoints публічні навмисно. `/api/*` проходить auth-hook: Origin → сесія → CSRF → permission (ADR-011); кожен маршрут декларує `config.access`. API підключається до PostgreSQL лише по loopback (або SSH-тунелю в розробці) без TLS у `pg`; пряме віддалене підключення не підтримується без окремого рішення.
 
 ## Затверджена архітектура поточного етапу — ще не реалізовано
 

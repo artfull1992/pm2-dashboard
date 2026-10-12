@@ -40,7 +40,11 @@ export async function runServer(options: RunServerOptions): Promise<number> {
     readinessTimeoutMs: config.readinessTimeoutMs,
     createDatabase: (log) => makeDatabase(config.db, log),
     ...(options.logStream ? { logStream: options.logStream } : {}),
+    auth: { config: config.auth },
   });
+  if (config.auth.allowedOrigins.length === 0) {
+    app.log.warn('AUTH_ALLOWED_ORIGINS is empty: every state-changing /api request (including login) is refused');
+  }
   const lifecycle = createLifecycle(app, {
     ...config.api,
     shutdownTimeoutMs: options.shutdownTimeoutMs ?? config.shutdownTimeoutMs,

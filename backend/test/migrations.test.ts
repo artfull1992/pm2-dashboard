@@ -7,6 +7,8 @@ import { runMigrateCli } from '../src/migrate-cli.js';
 import { assertSchemaName, DEFAULT_MIGRATIONS_DIR, listMigrations, migrationStatus } from '../src/migrations.js';
 import { FAKE_SECRET, freePort } from './helpers.js';
 
+const USERS = '1791900000000_create-users';
+const AUTH = '1791900000001_auth-foundation';
 const dir = mkdtempSync(join(tmpdir(), 'nc-migr-'));
 afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
 
@@ -42,7 +44,7 @@ function fakeClient(applied: string[] | null, failOn?: string) {
 describe('migration files', () => {
   it('the packaged directory holds only well-formed SQL migrations, in order', () => {
     const names = listMigrations(DEFAULT_MIGRATIONS_DIR);
-    expect(names[0]).toBe('1791900000000_create-users');
+    expect(names).toEqual([USERS, AUTH]);
     expect([...names].sort()).toEqual(names);
   });
 
@@ -59,14 +61,14 @@ describe('migration files', () => {
 describe('migrationStatus (read-only)', () => {
   it('no tracking table → everything pending, nothing created', async () => {
     const { client } = fakeClient(null);
-    await expect(migrationStatus(client)).resolves.toEqual({ applied: [], pending: ['1791900000000_create-users'], unknown: [] });
+    await expect(migrationStatus(client)).resolves.toEqual({ applied: [], pending: [USERS, AUTH], unknown: [] });
   });
 
   it('reports applied and unknown migrations', async () => {
-    const { client } = fakeClient(['1791900000000_create-users', '1799999999999_from-newer-release']);
+    const { client } = fakeClient([USERS, '1799999999999_from-newer-release']);
     await expect(migrationStatus(client)).resolves.toEqual({
-      applied: ['1791900000000_create-users', '1799999999999_from-newer-release'],
-      pending: [],
+      applied: [USERS, '1799999999999_from-newer-release'],
+      pending: [AUTH],
       unknown: ['1799999999999_from-newer-release'],
     });
   });
@@ -90,7 +92,7 @@ describe('runMigrateCli', () => {
     const t = io();
     const { client, ended } = fakeClient(null);
     await expect(runMigrateCli(['status'], { ...t.io, createClient: () => client })).resolves.toBe(0);
-    expect(t.out()).toContain('target n_user@127.0.0.1:5432/n_db: applied=0 pending=1 unknown=0');
+    expect(t.out()).toContain('target n_user@127.0.0.1:5432/n_db: applied=0 pending=2 unknown=0');
     expect(t.out()).toContain('pending  1791900000000_create-users');
     expect(t.out() + t.err()).not.toContain(FAKE_SECRET);
     expect(ended).toEqual([true]);

@@ -22,6 +22,9 @@ export function fakeDatabase(check: () => Promise<void> = () => Promise.resolve(
     check: vi.fn(check),
     close: vi.fn(() => Promise.resolve()),
     stats: () => ({ total: 0, idle: 0, waiting: 0 }),
+    // Health-only tests never query; auth tests inject a store instead of using these.
+    query: () => Promise.reject(new Error('fakeDatabase.query not configured')),
+    transaction: () => Promise.reject(new Error('fakeDatabase.transaction not configured')),
   };
 }
 

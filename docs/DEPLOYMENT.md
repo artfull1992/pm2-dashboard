@@ -104,10 +104,45 @@ node /opt/goit-node-control/current/scripts/deploy/server-release.js status   # 
 
 Не друкувати `systemctl show`/`/proc/<pid>/environ` і вміст `api.env`. Сторонні служби: `systemctl is-active postgresql@18-main nginx docker`, `docker ps`, `systemctl --failed`.
 
+### Auth-конфігурація (Task 005)
+
+`/etc/goit-node-control/api.env` лише доповнюється non-secret ключами, яких бракує; DB credentials, власник (`nodecontrol`) і права `600` зберігаються. Перед зміною — копія `api.env.bak-<ts>` (`600`), атомарний запис через тимчасовий файл у тому ж каталозі:
+
+```text
+AUTH_COOKIE_SECURE=true          # production: завжди true
+AUTH_SESSION_TTL_MINUTES=480
+AUTH_ALLOWED_ORIGINS=            # порожньо → login вимкнено, доки немає HTTPS-origin frontend (Task 006 + Nginx)
+```
+
+Коли з'явиться frontend за Nginx/HTTPS: `AUTH_ALLOWED_ORIGINS=https://<точний домен>` і restart лише `node-control-api`.
+
+### Bootstrap адміністратора (оператор, одноразово)
+
+Виконує оператор, коли визначено email; пароль вводиться приховано двічі, в argv/історію shell не потрапляє. Потрібні застосовані міграції (`status` pending=0).
+
+```bash
+cd / && runuser -u nodecontrol -- env ENV_FILE=/etc/goit-node-control/api.env \
+  /usr/bin/node /opt/goit-node-control/current/backend/dist/bootstrap-admin.js --email <admin-email>
+# exit 0 — створено (друкується id); 3 — адміністратор уже існує або email зайнятий (нічого не змінено);
+# 2 — ввід/параметри; 1 — помилка БД (нічого не закомічено).
+```
+
+Без TTY (автоматизація) — лише `--password-stdin` із захищеного джерела (pipe із менеджера секретів або файл `600`, який одразу видаляється); не через `echo` у shell history. Повторний запуск не скидає пароль і не створює другого адміністратора.
+
+### Очищення сесій
+
+Автоматично: під час кожного login видаляються сесії цього користувача, що завершились/відкликані понад добу тому. Масово (за потреби, як `nodecontrol`/власник БД):
+
+```sql
+DELETE FROM sessions WHERE expires_at < now() - interval '1 day' OR revoked_at < now() - interval '1 day';
+```
+
+Відкликати всі сесії (інцидент): `UPDATE sessions SET revoked_at = now() WHERE revoked_at IS NULL;`
+
 ### Міграції: backup, recovery, rollback
 
 - Перед кожним production `up` — `pg_dump -Fc` лише `node_control_db` у `/root/node-control-backups/` (каталог `700`, файл `600`), перевірка `pg_restore --list`. Не дамп усього кластера.
-- Міграції лише additive і сумісні з попереднім релізом (health-only API не залежить від `users`). Rollback коду (`server-release.js rollback`) **не** відкочує схему; additive-об'єкти лишаються.
+- Міграції лише additive і сумісні з попереднім релізом (health-only API не читає `users`/`sessions`/`audit_log`). Rollback коду (`server-release.js rollback`) **не** відкочує схему й не видаляє users/sessions/audit; additive-об'єкти лишаються. Після rollback auth-ключі в `api.env` ігноруються старим релізом (за потреби — відновити `api.env.bak-<ts>`).
 - Автоматичного `down`/drop у production немає. Відновлення з backup — окрема контрольована операція за доведеної потреби: спершу відновити в нову БД для перевірки (`createdb -O node_control_user node_control_db_restore_<ts>` + `pg_restore --no-owner --role=node_control_user -d node_control_db_restore_<ts> <dump>`), порівняти, і лише за рішенням оператора переключати/переносити дані — не знищуючи нових даних.
 
 ### Rollback

@@ -43,8 +43,29 @@ export class TimeoutError extends Error {
   }
 }
 
+/**
+ * An error whose public message is chosen by server code (never derived from input or other errors).
+ * Used for the fixed 401/403/429/503 contracts; `headers` (e.g. Retry-After) are applied to the response.
+ */
+export class PublicHttpError extends Error {
+  readonly statusCode: number;
+  readonly publicMessage: string;
+  readonly headers: Readonly<Record<string, string>>;
+
+  constructor(statusCode: 401 | 403 | 429 | 503, publicMessage: string, headers: Record<string, string> = {}) {
+    super(publicMessage);
+    this.name = 'PublicHttpError';
+    this.statusCode = statusCode;
+    this.publicMessage = publicMessage;
+    this.headers = headers;
+  }
+}
+
 export function describeError(error: unknown): ErrorMeta {
   if (!(error instanceof Error)) return { category: 'non-error' };
+  if (error instanceof PublicHttpError) {
+    return { category: error.statusCode >= 500 ? 'internal' : 'client', statusCode: error.statusCode };
+  }
 
   const code = ownString(error, 'code');
   const statusCode = httpStatus(error);
@@ -81,6 +102,7 @@ export interface ValidationIssue {
 export interface ErrorResponse {
   statusCode: number;
   body: { statusCode: number; error: string; message: string; validation?: ValidationIssue[] };
+  headers?: Readonly<Record<string, string>>;
 }
 
 const VALIDATION_LOCATIONS = new Set(['body', 'querystring', 'params', 'headers']);
@@ -105,6 +127,14 @@ function validationIssues(error: Error): ValidationIssue[] {
 
 /** Maps any thrown value to a fixed public contract. Never reflects message/name/cause/stack. */
 export function toErrorResponse(error: unknown): ErrorResponse {
+  if (error instanceof PublicHttpError) {
+    const text = STATUS_CODES[error.statusCode] ?? 'Error';
+    return {
+      statusCode: error.statusCode,
+      body: { statusCode: error.statusCode, error: text, message: error.publicMessage },
+      headers: error.headers,
+    };
+  }
   const meta = describeError(error);
   if (meta.category === 'validation' && error instanceof Error) {
     return {

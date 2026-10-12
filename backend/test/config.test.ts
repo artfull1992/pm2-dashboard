@@ -104,3 +104,48 @@ describe('environment sources', () => {
     expect(config.db.database).toBe('file_db');
   });
 });
+
+describe('auth configuration', () => {
+  const prod = { ...base, NODE_ENV: 'production' };
+
+  it('defaults: Secure cookie, 8 h absolute TTL, no allowed origins (login refused)', () => {
+    expect(loadConfig(prod).auth).toEqual({ allowedOrigins: [], cookieSecure: true, sessionTtlSeconds: 480 * 60 });
+  });
+
+  it('accepts exact https origins and a TTL in range', () => {
+    const auth = loadConfig({ ...prod, AUTH_ALLOWED_ORIGINS: 'https://nc.example.com, https://nc2.example.com:8443', AUTH_SESSION_TTL_MINUTES: '60' }).auth;
+    expect(auth.allowedOrigins).toEqual(['https://nc.example.com', 'https://nc2.example.com:8443']);
+    expect(auth.sessionTtlSeconds).toBe(3600);
+  });
+
+  it.each([
+    ['https://nc.example.com/', 'exact origins'],
+    ['https://nc.example.com/app', 'exact origins'],
+    ['nc.example.com', 'exact origins'],
+    ['*', 'exact origins'],
+    ['http://nc.example.com', 'must use https'],
+    ['http://localhost:5173', 'must use https'], // http is never allowed in production
+  ])('rejects origin %s in production', (origin, rule) => {
+    expect(issuesOf({ ...prod, AUTH_ALLOWED_ORIGINS: origin }).join(' ')).toContain(rule);
+  });
+
+  it('rejects more than 10 origins and out-of-range TTLs', () => {
+    const many = Array.from({ length: 11 }, (_, i) => `https://h${String(i)}.example.com`).join(',');
+    expect(issuesOf({ ...prod, AUTH_ALLOWED_ORIGINS: many })).toContain('AUTH_ALLOWED_ORIGINS allows at most 10 origins');
+    for (const ttl of ['14', '1441', 'x', '-5']) {
+      expect(issuesOf({ ...prod, AUTH_SESSION_TTL_MINUTES: ttl })[0]).toMatch(/AUTH_SESSION_TTL_MINUTES must be an integer between 15 and 1440/);
+    }
+  });
+
+  it('insecure cookie is never silent: refused in production and on non-loopback hosts', () => {
+    expect(issuesOf({ ...prod, AUTH_COOKIE_SECURE: 'false' })).toEqual(['AUTH_COOKIE_SECURE=false is only allowed outside production with a loopback API_HOST']);
+    expect(issuesOf({ ...base, NODE_ENV: 'development', API_HOST: '0.0.0.0', AUTH_COOKIE_SECURE: 'false' })[0]).toMatch(/only allowed outside production/);
+    expect(issuesOf({ ...base, AUTH_COOKIE_SECURE: 'yes' })).toEqual(['AUTH_COOKIE_SECURE must be true or false']);
+  });
+
+  it('loopback development may use a non-Secure cookie and an http loopback origin explicitly', () => {
+    const auth = loadConfig({ ...base, NODE_ENV: 'development', AUTH_COOKIE_SECURE: 'false', AUTH_ALLOWED_ORIGINS: 'http://localhost:5173' }).auth;
+    expect(auth).toMatchObject({ cookieSecure: false, allowedOrigins: ['http://localhost:5173'] });
+    expect(issuesOf({ ...base, NODE_ENV: 'development', AUTH_ALLOWED_ORIGINS: 'http://evil.example' }).join(' ')).toContain('must use https');
+  });
+});
