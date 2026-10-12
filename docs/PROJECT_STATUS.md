@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-12 (Task 004). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-12 (Task 005). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -136,6 +136,38 @@ Read-only аудит перед змінами (поточна сесія): host
 
 Rollback підготовлено до production `up`: код — `server-release.js rollback` (current↔previous) + restart лише API; схема additive і сумісна з health-only `5e7c11c`, тож лишається. Не застосовувався. Restore з backup — лише окремим рішенням (DEPLOYMENT). PostgreSQL-лог після деплою: лише очікувані помилки негативних тестів у `node_control_test_db`.
 
+## Release blockers (до публічного production-запуску)
+
+1. **Мережева політика PostgreSQL потребує обмеження** (спостереження Task 004: спроба входу з чужої адреси, відхилена HBA). Обмеження у firewall провайдера відкладено користувачем до фінального етапу; у Task 005 firewall/HBA не змінювались. Відкрито.
+2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; нові схеми лише з явними `properties` і `additionalProperties: false`.
+3. Nginx + HTTPS + домен для API/frontend ще немає; `AUTH_ALLOWED_ORIGINS` у production порожній → login вимкнено (fail closed).
+4. Адміністратора в production не створено (email/пароль не надано) — інструкція в DEPLOYMENT «Bootstrap адміністратора».
+
+## Task 005 — authentication, RBAC, audit (2026-10-12)
+
+**Active code revision на сервері: `be432c0828b30aa8e8bb3916913e18b2580c2a6c`** (`feat(auth): add sessions, RBAC and audit foundation`); previous — `5ec6ece`. Цей звіт — пізніший docs-commit, на сервер не деплоївся.
+
+Реалізовано (ADR-011): scrypt-хешування з bounded-параметрами і limiter; серверні сесії (digest у БД, абсолютний TTL, fixation-захист, logout); cookie `__Host-nc_session` (HttpOnly, SameSite=Strict, Secure); CSRF — точний Origin allowlist для всіх state-changing `/api` (включно з login) + session-bound `x-csrf-token`; ролі admin/operator/viewer, deny-by-default `config.access`; `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/audit`; rate limiting до hashing; транзакційний audit; bootstrap CLI; міграція `1791900000001_auth-foundation`. Frontend, Agent, CRUD користувачів, password reset — не реалізовано.
+
+| Перевірка (поточна сесія) | Результат |
+|---|---|
+| `npm run check:local` (Node v24 системний) | exit 0: secrets OK, node:test 80/80, typecheck, lint, Vitest 233/233, smoke 10/10 |
+| Node v22.23.3 | Vitest 233/233; smoke 10/10 (anonymous me 401, compiled bootstrap CLI fail-closed, dist імпортує лише `fastify`/`pg`/`node-pg-migrate`); node:test 80/80 |
+| `test:backend:db` (тестова БД через тунель 15432) | 27/27: міграції, constraints/indexes, login→me→audit→logout, fixation, expiry, актуальна роль/деактивація, failed-login без email, реальний rollback сесії й bootstrap при збої audit, 5 конкурентних bootstrap → 1 адмін, CLI end-to-end; після прогону 0 схем `nc_test_*` |
+| Read-only `test:integration` проти production | 12/12 (тимчасовий тунель, закрито) |
+| Git | `be432c0` запушено до деплою |
+| Артефакт | 29 файлів, SHA-256 `64bc712b…fecda1be`; без тестів/fixtures/`.env*`/`.map`; `npm ci --omit=dev`: `fastify`, `node-pg-migrate`, `pg`, без devDependencies |
+| Backup | `pg_dump -Fc node_control_db` → `/root/node-control-backups/node_control_db-20261012T175555Z-pre-be432c0….dump` (`600 root`), `pg_restore --list` читає (users, pgmigrations, функція, тригер) |
+| Конфіг | `api.env.bak-20261012T175555Z` (`600 nodecontrol`); додано лише `AUTH_COOKIE_SECURE=true`, `AUTH_SESSION_TTL_MINUTES=480`, `AUTH_ALLOWED_ORIGINS=` (порожньо); `DB_*` не змінено; `600 nodecontrol:nodecontrol` |
+| Міграція (як `nodecontrol`, з релізу) | pending `1791900000001_auth-foundation` → applied; status applied=2 pending=0 |
+| Схема read-only | `audit_log`, `sessions`, `users.role` з усіма constraints та індексами; users/sessions/audit_log — 0 рядків |
+| Активація | current `be432c0`, previous `5ec6ece`; restart лише `node-control-api`; enabled/active; процес `nodecontrol`; listener лише `127.0.0.1:3100`; ззовні недоступний |
+| HTTP | live 200; ready 200 `no-store`; `GET /api/auth/me` без сесії → 401 `no-store` + `x-request-id`; login без Origin → 403; `/api/audit` анонімно → 401 |
+| Journal | warn лише очікувані (порожній allowlist; власний 403-запит); паролів 0 |
+| Сторонні служби | PostgreSQL/Nginx/Docker active, failed 0, менеджер секретів up/200 |
+
+Auth DML-smoke у production не виконувався (повний login/logout — лише в тестовій БД). Rollback підготовлено, не застосовувався: `server-release.js rollback` (→ `5ec6ece`) + за потреби відновити `api.env.bak-…` + restart API; additive-схема й дані лишаються.
+
 ## Відомі проблеми та ризики
 
 1. Локальне підключення до PostgreSQL можливе лише через SSH-тунель: у Task 002/002.1 тунель на `127.0.0.1:15432` працював і `SELECT 1` проходив. Це не означає, що `127.0.0.1:5432` локально або тунель доступні зараз — тунель відкривається вручну й закривається після перевірки. Успішний `SELECT 1` не підтверджує HBA, firewall, TLS чи стан сторонніх служб, тому Task 001 лишається частково підтвердженим.
@@ -152,20 +184,23 @@ Rollback підготовлено до production `up`: код — `server-relea
 12. Fatal handlers (`uncaughtException`/`unhandledRejection`) завершують процес одразу без graceful shutdown; перезапуск забезпечує systemd (`Restart=on-failure`, ≤5 разів за 5 хв).
 13. `/health/ready` виконує `SELECT 1` на кожен запит без rate limit/кешу; перед публікацією через Nginx потрібне рішення.
 14. Історичний `/etc/pm2-dashboard` досі містить збірку Task 002 і legacy `.env`; сервіс їх не використовує. Прибирання — окремим рішенням.
-15. **NC-SEC-001 / P2 — відкладено за рішенням користувача.** Review Codex для `f4417d3`: `backend/src/errors.ts`, `validationIssues()` відображає Ajv `instancePath` у відповіді. Для схеми з динамічними ключами (`additionalProperties: { type: 'integer' }`) секретний ключ із запиту потрапляє у `validation[].path`. Відтворено тестовим маршрутом із синтетичним маркером; чинні health endpoints не мають такого сценарію. Виправлення: перевірені статичні шляхи, узагальнення/приховування динамічних ключів, regression-тести. Закрити до додавання endpoint зі схемою, що допускає динамічні ключі, або публікації такого endpoint. Відкладення не означає виправлення. Стан на Task 004: **відкрито**; задеплоєний API не має endpoint із динамічними ключами.
+15. **NC-SEC-001 / P2 — відкладено за рішенням користувача.** Review Codex для `f4417d3`: `backend/src/errors.ts`, `validationIssues()` відображає Ajv `instancePath` у відповіді. Для схеми з динамічними ключами (`additionalProperties: { type: 'integer' }`) секретний ключ із запиту потрапляє у `validation[].path`. Відтворено тестовим маршрутом із синтетичним маркером; чинні health endpoints не мають такого сценарію. Виправлення: перевірені статичні шляхи, узагальнення/приховування динамічних ключів, regression-тести. Закрити до додавання endpoint зі схемою, що допускає динамічні ключі, або публікації такого endpoint. Відкладення не означає виправлення. Стан на Task 005: **відкрито**; задеплоєний API не має endpoint із динамічними ключами (усі схеми з явними properties).
 16. Reboot-тест автозапуску не виконувався (спільний сервер); `enable` перевірено.
 17. Старі релізи не прибираються автоматично; `/root/node-control-deploy/<sha>` зберігає артефакт для повторного prepare/діагностики.
 18. Перед кожним деплоєм `build-release.js` вимагає чистий каталог і commit в `origin/main`; деплой не-`main` гілок не передбачено.
 19. **мережевий доступ до PostgreSQL потребує обмеження.** У лозі PostgreSQL 2026-10-12 16:00 UTC — спроба `user "test"` з `198.51.100.7`, відхилена HBA (`no pg_hba.conf entry … no encryption`). Тобто зовнішній firewall пропускає 5432 не лише для конкретних IP. Node Control не змінював firewall/HBA; рекомендовано обмежити джерела в firewall провайдера (і переглянути `host secrets-manager … 0.0.0.0/0` без TLS) окремим рішенням.
 20. Тестова БД на тому ж кластері, що й production: ізоляція — на рівні ролей/ACL, не ресурсів (CPU/IO/connections спільні). У `public` тестової БД лишились об'єкти репетиції CLI.
-21. Authentication **не** реалізована: таблиця `users` порожня, немає хешування паролів, адміністратора, сесій, RBAC, Audit Log чи endpoints.
+21. Authentication реалізована в backend (Task 005), але в production немає адміністратора й allowed origins — вхід неможливий до Task 006 + Nginx/HTTPS і bootstrap оператором.
+22. Rate limiting — у пам'яті одного процесу, скидається при рестарті; за майбутнім reverse proxy ліміт за адресою стане глобальним (trustProxy вимкнено) — переглянути з конфігурацією proxy.
+23. Масове очищення старих сесій — ручний SQL (DEPLOYMENT); автоматично лише для користувача при його login.
+24. Failed-login / authz.denied audit — best effort: при збої запису подія втрачається (логується), доступ не надається.
 
 Повторний review Codex для `f4417d3`: 46 старих unit, 81 backend і 7 compiled smoke тестів успішні (backend/smoke на Node.js v22.23.3 поза sandbox); typecheck/lint/build/secrets/diff check успішні. Попередні витоки 500 logs і довільного 400 response усунені, startup cleanup обмежено в часі. Real-DB і сервер у цьому review не перевірялись.
 
 ## Активне та заплановане
 
-In Progress: підтвердження серверної частини Task 001. Task 004 (тестова БД, міграції, `users`) задеплоєно на `5ec6ece`; очікує review Codex.
+In Progress: Task 005 (auth/RBAC/audit) задеплоєно на `be432c0`; очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
-Next Task: authentication/RBAC + Audit Log (хешування паролів, створення першого адміністратора без default credentials, сесії, middleware, authorization-тести) на основі `users`, нові таблиці — окремими міграціями. Окремо: обмеження 5432 у зовнішньому firewall; Nginx + HTTPS для API. NC-SEC-001 закрити до будь-якого endpoint зі схемою з динамічними ключами.
+Next Task: після review Task 005 — **Task 006**: React/Vite frontend (login, навігація, захищені сторінки) на auth-контракті README/ADR-011; далі Agent і API серверів/процесів. Перед публічним запуском — release blockers вище (5432, NC-SEC-001, Nginx/HTTPS, bootstrap адміністратора).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.
