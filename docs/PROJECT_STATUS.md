@@ -140,8 +140,29 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 1. **Мережева політика PostgreSQL потребує обмеження** (з Task 004: зовнішні спроби входу, відхилені HBA). Обмеження у firewall провайдера відкладено користувачем до фінального етапу; firewall/HBA не змінювались. Відкрито.
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
-3. **Публічний сайт `control.example.com`** (`/etc/nginx/conf.d/control.example.com.conf`, Certbot, створений 2026-10-12 18:40 UTC поза задачами Node Control) віддає `current/frontend/dist` і проксює `/api/` на API. Після Task 006 UI доступний публічно за цим доменом — за явним рішенням користувача («деплоїти, сайт не чіпати»). Вхід там неможливий: `AUTH_ALLOWED_ORIGINS` порожній (login → 403), адміністратора немає. Конфіг сайту не входить у репозиторій і не перевірявся задачами Node Control (заголовки безпеки, кеш, `X-Forwarded-*`); перед відкриттям входу — привести до контракту `deploy/nginx` і погодити `AUTH_ALLOWED_ORIGINS=https://control.example.com`.
+3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. Адміністратора в production не створено (email/пароль не надано) — DEPLOYMENT «Bootstrap адміністратора».
+
+## Task 006 (оновлення) — публічний HTTPS-сайт (2026-10-12)
+
+**Active code revision на сервері: `85f047ccd86bc7b7fb90a3e614a3fec6cefe8a6a`** (`chore(deploy): serve UI via public HTTPS site, drop loopback nginx site`); previous — `fd16acb`. Runtime-код (backend/frontend) ідентичний `fd16acb`; `bfe784e` — предок (`git merge-base --is-ancestor`). Цей звіт — пізніший docs-commit, на сервер не деплоївся.
+
+| Крок | Результат |
+|---|---|
+| Аудит сайту (read-only) | `conf.d/control.example.com.conf` без змін з 18:40 UTC: `root /opt/goit-node-control/current/frontend/dist`; `/api/` → `proxy_pass http://127.0.0.1:3100` (URI зберігається); 80 → 301 на HTTPS; `nginx -t` OK |
+| TLS | Let's Encrypt `CN=control.example.com`, до 2027-01-10; ланцюжок перевіряється (`ssl_verify_result=0`); оновлення — `snap.certbot.renew.timer` |
+| Репозиторій | loopback-шаблони Nginx видалено з репозиторію й артефакту; ADR-013; тести 82/82 (Node 22), `check:local` exit 0 |
+| Артефакт | 32 файли, SHA-256 `16e1d741…c41e17bea`; production deps `fastify`, `node-pg-migrate`, `pg` |
+| Конфіг API | backup `api.env.bak-20261012T190308Z`; змінено лише `AUTH_ALLOWED_ORIGINS=https://control.example.com` (атомарно, `600 nodecontrol`); `AUTH_COOKIE_SECURE=true`; інші ключі без змін; лог старту: `authOrigins:1, cookieSecure:true` |
+| Міграції | applied=2, pending=0 (схема не змінювалась) |
+| Активація | `current` → `85f047c`; restart лише `node-control-api`; процес `nodecontrol`; listener `127.0.0.1:3100` |
+| Nginx | loopback-сайт 3101 прибрано: backup `/root/node-control-backups/nginx-remove-loopback-20261012T190332Z` (+ довідкова копія публічного конфігу), `nginx -t` → видалення лише власних 3 файлів → `nginx -t` → reload; 3101 більше не слухає. Публічний конфіг не змінювався |
+| HTTPS smoke (ззовні) | `/` 200 `no-store`; `/assets/index-*.js` 200; `/servers`, `/applications`, `/audit`, `/login` → `index.html`; `/api/auth/me` 401 `no-store` + `x-request-id`; `/api/does-not-exist` → JSON 404; login із чужим Origin → 403 (без запису в БД) |
+| Браузер | headless Chromium на `https://control.example.com/audit` → `/login`, `me` 401, 0 помилок консолі, 0 порушень CSP |
+| Journal | поточний процес: лише штатні повідомлення + 1 власний 403-запит; паролів 0 |
+| Сторонні служби | PostgreSQL/Nginx/Docker active, failed 0, менеджер секретів up/200; 3100/3101 ззовні недоступні; users/sessions/audit_log — 0 рядків |
+
+Login із правильним Origin у production не виконувався (пише audit); адміністратора не створено — вхід можливий після bootstrap оператором. Rollback: `server-release.js rollback` (→ `fd16acb`) + restart API; `api.env` — з `api.env.bak-20261012T190308Z`; Nginx — повернути файли з backup-каталогу, `nginx -t`, reload.
 
 ## Task 006 — React/Vite frontend і спільний деплой (2026-10-12)
 
@@ -235,8 +256,8 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 006 (frontend + спільний деплой із `bfe784e`) задеплоєно на `fd16acb`; очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 006 задеплоєно на `85f047c` (публічний HTTPS-сайт, `AUTH_ALLOWED_ORIGINS` налаштовано); очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
-Next Task: після review Task 006 — Agent (Node.js, systemd, вихідне захищене з'єднання) і API серверів/процесів з authorization + Audit Log. Перед публічним запуском — release blockers (5432, NC-SEC-001, публічний сайт/origins, bootstrap адміністратора).
+Next Task: bootstrap адміністратора оператором (email/пароль від користувача); після review — Agent і API серверів/процесів. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.
