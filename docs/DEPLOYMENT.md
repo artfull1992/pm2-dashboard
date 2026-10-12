@@ -68,6 +68,16 @@ node $D/server-bundle/server-release.js prepare --artifact $D/node-control-api-$
   --sha256 "$(cut -d' ' -f1 $D/node-control-api-$SHA.tar.gz.sha256)" --revision $SHA   # checksum → manifest → npm ci --omit=dev
 node $D/server-bundle/server-release.js config          # створює api.env лише якщо його немає; інакше тільки валідує
 
+# 2a. Міграції (якщо реліз їх містить) — ДО активації, з підготовленого релізу, як nodecontrol (не superuser)
+R=/opt/goit-node-control/releases/$SHA
+run_migrate() { (cd / && runuser -u nodecontrol -- env ENV_FILE=/etc/goit-node-control/api.env /usr/bin/node $R/backend/dist/migrate.js "$1"); }
+run_migrate status                                         # read-only: що pending
+install -d -m 700 /root/node-control-backups
+(umask 077 && runuser -u postgres -- pg_dump -Fc node_control_db > /root/node-control-backups/node_control_db-$(date -u +%Y%m%dT%H%M%SZ)-pre-$SHA.dump)
+pg_restore --list /root/node-control-backups/<файл>.dump >/dev/null && echo backup-ok   # перевірка читабельності
+run_migrate up                                             # одна транзакція, lock_timeout 10 с, statement_timeout 60 с
+run_migrate status                                         # pending=0
+
 # 3. Unit (із підготовленого релізу) + verify — ДО активації
 install -m 644 /opt/goit-node-control/releases/$SHA/deploy/systemd/node-control-api.service /etc/systemd/system/
 systemd-analyze verify /etc/systemd/system/node-control-api.service
@@ -93,6 +103,12 @@ node /opt/goit-node-control/current/scripts/deploy/server-release.js status   # 
 ```
 
 Не друкувати `systemctl show`/`/proc/<pid>/environ` і вміст `api.env`. Сторонні служби: `systemctl is-active postgresql@18-main nginx docker`, `docker ps`, `systemctl --failed`.
+
+### Міграції: backup, recovery, rollback
+
+- Перед кожним production `up` — `pg_dump -Fc` лише `node_control_db` у `/root/node-control-backups/` (каталог `700`, файл `600`), перевірка `pg_restore --list`. Не дамп усього кластера.
+- Міграції лише additive і сумісні з попереднім релізом (health-only API не залежить від `users`). Rollback коду (`server-release.js rollback`) **не** відкочує схему; additive-об'єкти лишаються.
+- Автоматичного `down`/drop у production немає. Відновлення з backup — окрема контрольована операція за доведеної потреби: спершу відновити в нову БД для перевірки (`createdb -O node_control_user node_control_db_restore_<ts>` + `pg_restore --no-owner --role=node_control_user -d node_control_db_restore_<ts> <dump>`), порівняти, і лише за рішенням оператора переключати/переносити дані — не знищуючи нових даних.
 
 ### Rollback
 

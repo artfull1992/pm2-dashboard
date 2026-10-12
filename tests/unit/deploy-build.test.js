@@ -46,7 +46,8 @@ test('stageArtifact copies only runtime files: no sources, tests, maps, .env or 
   dirs.push(src, stage);
   const files = {
     'package.json': '{}', 'package-lock.json': '{}', '.env': 'DB_PASS=x', '.env.example': 'x',
-    'backend/dist/main.js': '', 'backend/dist/main.js.map': '', 'backend/src/main.ts': '', 'backend/test/a.test.ts': '',
+    'backend/dist/main.js': '', 'backend/dist/main.js.map': '', 'backend/dist/migrate.js': '', 'backend/src/main.ts': '', 'backend/test/a.test.ts': '',
+    'backend/migrations/1791900000000_create-users.sql': '', 'backend/test/fixtures/migrations-failing/1791900000001_broken.sql': '',
     'deploy/systemd/node-control-api.service': '', 'scripts/deploy/server-release.js': '',
     'scripts/deploy/lib/manifest.js': '', 'scripts/setup-postgres.js': '', 'node_modules/pg/index.js': '',
   };
@@ -57,6 +58,8 @@ test('stageArtifact copies only runtime files: no sources, tests, maps, .env or 
   stageArtifact(src, stage);
   assert.deepEqual(listFiles(stage), [
     'backend/dist/main.js',
+    'backend/dist/migrate.js',
+    'backend/migrations/1791900000000_create-users.sql',
     'deploy/systemd/node-control-api.service',
     'package-lock.json',
     'package.json',

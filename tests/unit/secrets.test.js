@@ -84,3 +84,11 @@ test('with git: tracked .env fails, ignored .env passes', () => {
   assert.equal(result.envTracked, true);
   assert.equal(result.ok, false);
 });
+
+test('TEST_DB_PASS assignments and the .env.test password are treated as secrets', () => {
+  const testKey = 'TEST_DB_' + 'PASS';
+  assert.equal(scanText(`${testKey}=${fakePassword}`).length, 1);
+  assert.deepEqual(scanText(`${testKey}=`), []);
+  const dir = project({ '.env.test': `${testKey}=${fakePassword}\n`, '.gitignore': '.env\n.env.*\n', 'notes.md': `x ${fakePassword}` });
+  assert.deepEqual(checkProject(dir).findings, [{ file: 'notes.md', line: 1, pattern: 'known secret value' }]);
+});

@@ -16,6 +16,7 @@ export const ARTIFACT_PATHS = Object.freeze([
   'package.json',
   'package-lock.json',
   'backend/dist',
+  'backend/migrations',
   'deploy/systemd/node-control-api.service',
   'scripts/deploy/server-release.js',
   'scripts/deploy/lib',

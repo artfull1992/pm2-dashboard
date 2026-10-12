@@ -5,7 +5,7 @@ import { readEnvFile } from './env.js';
 
 // Placeholders like DB_PASS=, DB_PASS=<...> or ${...} are allowed; real values are not.
 export const SECRET_PATTERNS = Object.freeze([
-  { name: 'DB_PASS assignment', re: /^\s*(?:export\s+)?DB_PASS\s*=\s*(?![<$#\s]|$)\S+/m },
+  { name: 'DB_PASS assignment', re: /^\s*(?:export\s+)?(?:TEST_)?DB_PASS\s*=\s*(?![<$#\s]|$)\S+/m },
   { name: 'connection URI with password', re: /postgres(?:ql)?:\/\/[^:\s/@]+:(?![<$*])[^@\s]+@/ },
   { name: 'private key', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
   { name: 'SCRAM verifier', re: /SCRAM-SHA-256\$\d+:[A-Za-z0-9+/=]{8,}/ },
@@ -63,8 +63,7 @@ export function candidateFiles(root) {
 }
 
 export function checkProject(root) {
-  const envPassword = readEnvFile(join(root, '.env')).DB_PASS;
-  const knownSecrets = envPassword ? [envPassword] : [];
+  const knownSecrets = [readEnvFile(join(root, '.env')).DB_PASS, readEnvFile(join(root, '.env.test')).TEST_DB_PASS].filter(Boolean);
   const findings = [];
 
   for (const file of candidateFiles(root)) {

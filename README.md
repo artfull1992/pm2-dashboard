@@ -36,6 +36,7 @@ Task 001 підтверджений файлами та локальними uni
 .
 ├── agent/            # майбутній агент на керованих серверах
 ├── backend/          # Central API: TypeScript + Fastify (src/, test/, dist/ — збірка, не в Git)
+│   └── migrations/   # версійні SQL-міграції (node-pg-migrate)
 ├── frontend/         # майбутній UI
 ├── deploy/systemd/   # node-control-api.service (systemd unit)
 ├── docs/
@@ -43,6 +44,7 @@ Task 001 підтверджений файлами та локальними uni
 ├── scripts/
 │   ├── lib/          # чиста логіка: env, пароль, SCRAM, SQL, pg_hba, план налаштування, пошук секретів
 │   ├── setup-postgres.js   # npm run db:setup
+│   ├── setup-test-db.js    # ізольована тестова БД/роль (root на сервері)
 │   ├── db-check.js         # npm run db:check
 │   ├── check-secrets.js    # npm run check:secrets
 │   └── deploy/             # build-release.js (локально), server-release.js (сервер), lib/
@@ -161,7 +163,7 @@ npm run typecheck           # tsc --noEmit, strict (src + test)
 npm run lint                # ESLint + typescript-eslint strictTypeChecked, лише backend/
 npm run test:backend        # Vitest: config, API через inject, database, lifecycle — без мережевої БД
 npm run test:backend:smoke  # збирає dist і запускає скомпільований API як процес
-npm run check:local         # secrets + старі 46 unit + typecheck + lint + test:backend + smoke
+npm run check:local         # secrets + node:test unit + typecheck + lint + test:backend + smoke
 ```
 
 `check:local` не запускає production-connected тести (`test:integration`, `test:backend:db`). Старий `npm run check` не змінено.
@@ -173,16 +175,35 @@ npx -y node@22 node_modules/vitest/vitest.mjs run --config backend/vitest.config
 npm run backend:build && BACKEND_TEST_SUITE=smoke npx -y node@22 node_modules/vitest/vitest.mjs run --config backend/vitest.config.ts
 ```
 
-### Backend: перевірка з реальною PostgreSQL
+### Ізольована тестова PostgreSQL (DDL/DML-тести)
 
-Opt-in, лише `SELECT 1` через `/health/ready`, без DDL/DML; перевіряє, що після `app.close()` пул порожній. Конфігурація — **тільки** явні `TEST_DB_*`; кореневий `.env` не читається, без змінних тест падає з поясненням.
+Тести із записом працюють **лише** з окремою БД `node_control_test_db` і роллю `node_control_test_user` на тому ж кластері (створює `scripts/setup-test-db.js`, Task 004). Роль: `LOGIN`, без SUPERUSER/CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS, без членства в інших ролях, без `CONNECT` до `node_control_db`; `PUBLIC` не має доступу до тестової БД. Обидва ресурси позначені `COMMENT` — однойменні чужі ресурси скрипт не перевикористовує.
+
+Конфігурація — тільки `TEST_DB_HOST/PORT/NAME/USER/PASS` або файл, явно вказаний у `TEST_DB_ENV_FILE`; жодного fallback до `DB_*` чи `.env`. Guard (`backend/test/support/test-db.ts`) відхиляє production-імена, вимагає токен `test` в імені БД і ролі, перед DDL перевіряє `current_database()`/`current_user`. Кожен запуск працює у власній схемі `nc_test_<ms>_<hex8>` і видаляє лише її.
+
+Credentials: на сервері `/root/.config/goit-node-control/test-db.env` (`600 root`, каталог `700`), локально — копія `.env.test` (`600`, ігнорується Git). Не копіювати в `api.env`.
 
 ```bash
-ssh -N -L 15432:127.0.0.1:5432 root@203.0.113.10   # окремий термінал
-TEST_DB_HOST=127.0.0.1 TEST_DB_PORT=15432 TEST_DB_NAME=node_control_db \
-TEST_DB_USER=node_control_user TEST_DB_PASS='<пароль, не зберігати в історії shell>' \
-npm run test:backend:db
+# локально: отримати credentials і відкрити тунель (окремий термінал)
+(umask 077 && scp root@203.0.113.10:/root/.config/goit-node-control/test-db.env .env.test) && chmod 600 .env.test
+ssh -N -L 15432:127.0.0.1:5432 root@203.0.113.10
+
+TEST_DB_ENV_FILE=.env.test TEST_DB_PORT=15432 npm run test:backend:db   # міграції + readiness, реальна PostgreSQL
 ```
+
+Створення/перевірка тестових ресурсів (root на сервері, повторюваний, без тихої ротації): `node scripts/setup-test-db.js [--rotate-password]`.
+
+### Міграції
+
+`node-pg-migrate` 9.0.0, SQL-файли в `backend/migrations/` (`<13 цифр>_<name>.sql`, лише `-- Up Migration`). Tracking — таблиця `pgmigrations` у схемі `public`. `up` бере advisory lock (чекає не довше `lock_timeout` 10 с), застосовує всі pending в **одній транзакції** (помилка → `ROLLBACK`, без часткових об'єктів і записів tracking); `statement_timeout` 60 с. API міграції **не** запускає.
+
+```bash
+npm run backend:build
+ENV_FILE=<config> npm run db:migrate:status    # read-only: applied / pending / unknown
+ENV_FILE=<config> npm run db:migrate:up        # явне застосування
+```
+
+Немає `down`/`reset` у CLI: production-міграції лише вперед; відновлення — з backup (docs/DEPLOYMENT.md). Перша міграція `1791900000000_create-users` створює таблицю `users` (контракт — ADR-010). **Authentication ще не реалізована**: немає хешування, створення адміністратора, сесій чи endpoints.
 
 ### Production (сервер)
 
@@ -202,8 +223,7 @@ npm run check             # check:secrets + unit + integration
 npm run db:check          # SELECT 1 через .env, без виводу пароля
 ```
 
-Integration-тести змінюють лише `node_control_db`: тимчасова таблиця створюється і видаляється, спроба `CREATE DATABASE` має завершитись відмовою.
-Повний suite запускати лише у перевіреному виділеному тестовому середовищі без зміни production-даних; окремої test-DB конфігурації поки немає. Серверні перевірки (`pg_authid`, `pg_hba.conf`, systemd) потребують root на хості PostgreSQL; локально пропускаються. Read-only перевірки на production відокремлювати від тестів із записом.
+`npm run test:integration` (node:test) читає production `.env` і з Task 004 лише читає: перевірки прав #9/#10 виконуються через каталоги PostgreSQL, без DDL/DML. Серверні перевірки (`pg_authid`, `pg_hba.conf`, systemd) потребують root на хості PostgreSQL; локально пропускаються. Тести із записом — тільки `npm run test:backend:db` проти ізольованої тестової БД.
 
 ## Робота через VS Code
 

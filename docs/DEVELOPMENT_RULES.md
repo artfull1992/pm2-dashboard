@@ -21,12 +21,14 @@
 | `npm run typecheck` / `npm run lint` | TypeScript strict / ESLint `strictTypeChecked` для `backend/` |
 | `npm run test:backend` | Vitest: config, API (inject), database, lifecycle; без мережевої БД |
 | `npm run test:backend:smoke` | Build + запуск скомпільованого API як процесу з контрольованим env |
-| `npm run test:backend:db` | Opt-in, лише явні `TEST_DB_*`, тільки `SELECT 1` |
+| `npm run test:backend:db` | Реальна **тестова** PostgreSQL: міграції (DDL/DML у per-run схемі) + readiness. Лише явні `TEST_DB_*`/`TEST_DB_ENV_FILE`, production-цілі відхиляються |
+| `npm run db:migrate:status` / `db:migrate:up` | CLI міграцій зі зібраного `backend/dist` (`ENV_FILE` або `DB_*`); production `up` — лише за процедурою DEPLOYMENT |
+| `node scripts/setup-test-db.js` | Root на сервері: створення/перевірка ізольованої тестової БД і ролі |
 | `npm run check:local` | Secrets → старі unit → typecheck → lint → backend → smoke; без production-connected тестів |
 
-Обов'язкова цільова перевірка — Node.js 22 LTS. Integration-тести створюють/видаляють тестову таблицю в `node_control_db` та очікують відмову CREATE DATABASE. Це не повністю read-only набір. Привілейований suite потребує root на хості PostgreSQL (`runuser`, `psql`, systemd); локально пропускається з поясненням. Успіх локально не замінює серверну перевірку.
+Обов'язкова цільова перевірка — Node.js 22 LTS. Старий `tests/integration` (node:test, `.env`, production `node_control_db`) з Task 004 **лише read-only**: перевірки прав #9/#10 виконуються через каталоги PostgreSQL, без CREATE/INSERT/DROP. Тести із записом — тільки `backend/test/db/*` проти `node_control_test_db` у власній схемі `nc_test_<ms>_<hex8>`; cleanup видаляє лише цю схему, ніколи БД. Привілейований suite потребує root на хості PostgreSQL (`runuser`, `psql`, systemd); локально пропускається з поясненням. Успіх локально не замінює серверну перевірку.
 
-Production-дані під час тестування не змінювати. Повний suite запускати тільки у перевіреному виділеному тестовому середовищі; окремої test-DB конфігурації зараз немає. Read-only аудит і тести із записом розділяти. Поточний bootstrap виконує лише unit, env та read-only connectivity checks.
+Production-дані під час тестування не змінювати. Тести із записом — лише в ізольованій `node_control_test_db` (Task 004); `tests/integration` проти production — read-only. Read-only аудит і тести із записом розділяти.
 
 Для реалізації потрібні unit та integration tests; для API — API tests, користувацьких сценаріїв — E2E, прав доступу — security, багів — regression. Перевіряти реальні результати та негативні сценарії, не копіювати код у фіктивні assertions. Ціль — 100% нового/зміненого коду, де доцільно. Документаційні зміни перевіряти на узгодженість із кодом і працездатність локальних посилань; вони не потребують вигаданих API/E2E тестів.
 

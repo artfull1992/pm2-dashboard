@@ -7,7 +7,6 @@ import { hasRule, parseHba, rulesForDatabase, scopedRuleErrors } from '../../scr
 import { env, newClient, PRIVILEGED, SKIP_UNPRIVILEGED, superuserQuery, withClient } from '../helpers/context.js';
 
 const { DB_NAME, DB_USER } = DB_DEFAULTS;
-const tempName = (prefix) => `${prefix}_${process.pid}_${Date.now()}`;
 
 describe('connection', () => {
   test('#1 PostgreSQL is reachable', async () => {
@@ -61,27 +60,23 @@ describe('catalog', () => {
 });
 
 describe('privileges', () => {
-  test('#9 user can create, use and drop a table in its own database', async () => {
-    const table = tempName('nc_it_table');
-    await withClient(async (c) => {
-      try {
-        await c.query(`CREATE TABLE ${table} (id serial PRIMARY KEY, note text NOT NULL)`);
-        await c.query(`INSERT INTO ${table} (note) VALUES ($1)`, ['integration']);
-        const { rows } = await c.query(`SELECT note FROM ${table}`);
-        assert.deepEqual(rows, [{ note: 'integration' }]);
-      } finally {
-        await c.query(`DROP TABLE IF EXISTS ${table}`);
-      }
-      const { rows } = await c.query('SELECT to_regclass($1) AS t', [table]);
-      assert.equal(rows[0].t, null, 'temporary table was not cleaned up');
-    });
+  // Read-only since Task 004: this suite targets the production database from .env, so it must not run DDL/DML.
+  // The write-path checks (create/use/drop objects, CREATE DATABASE refused) run against the isolated test DB in
+  // backend/test/db/migrations.test.ts (TEST_DB_*), which proves the same privilege model without touching production.
+  test('#9 user may create objects in its own database (privilege check, read-only)', async () => {
+    const row = await withClient(async (c) => (await c.query(
+      `SELECT has_database_privilege(current_user, current_database(), 'CREATE') AS db_create,
+              has_schema_privilege(current_user, 'public', 'CREATE') AS public_create,
+              pg_get_userbyid((SELECT datdba FROM pg_database WHERE datname = current_database())) = current_user AS is_owner`,
+    )).rows[0]);
+    assert.deepEqual(row, { db_create: true, public_create: true, is_owner: true });
   });
 
-  test('#10 user cannot create other databases', async () => {
-    const database = tempName('nc_it_forbidden');
-    await withClient(async (c) => {
-      await assert.rejects(c.query(`CREATE DATABASE ${database}`), (error) => error.code === '42501');
-    });
+  test('#10 user cannot create other databases (rolcreatedb, read-only)', async () => {
+    const row = await withClient(async (c) => (await c.query(
+      'SELECT rolcreatedb, rolsuper FROM pg_roles WHERE rolname = current_user',
+    )).rows[0]);
+    assert.deepEqual(row, { rolcreatedb: false, rolsuper: false });
   });
 });
 
