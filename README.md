@@ -186,10 +186,11 @@ Integration-тести змінюють лише `node_control_db`: тимчас
 
 ```bash
 # деплой коду (без .env, node_modules, .git)
-rsync -az --delete --no-owner --no-group \
-  --exclude .git --exclude node_modules --exclude '.env' --exclude '.env.*' --include .env.example \
+# --include має стояти ДО --exclude '.env.*' (rsync застосовує перше правило, що збіглося)
+rsync -az --delete --no-owner --no-group --include .env.example \
+  --exclude .git --exclude node_modules --exclude backend/dist --exclude '.env' --exclude '.env.*' \
   ./ root@203.0.113.10:/etc/pm2-dashboard/
-ssh root@203.0.113.10 'cd /etc/pm2-dashboard && npm ci --omit=dev'
+ssh root@203.0.113.10 'cd /etc/pm2-dashboard && npm ci && npm run backend:build'
 # Повний npm run check — лише у виділеному тестовому середовищі, не проти production-даних.
 ```
 
