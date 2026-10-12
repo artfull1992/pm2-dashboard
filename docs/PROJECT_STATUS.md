@@ -141,7 +141,7 @@ Rollback підготовлено до production `up`: код — `server-relea
 1. **Мережева політика PostgreSQL потребує обмеження** (з Task 004: зовнішні спроби входу, відхилені HBA). Обмеження у firewall провайдера відкладено користувачем до фінального етапу; firewall/HBA не змінювались. Відкрито.
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
-4. Адміністратора в production не створено (email/пароль не надано) — DEPLOYMENT «Bootstrap адміністратора».
+4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
 
 ## Task 006 (оновлення) — публічний HTTPS-сайт (2026-10-12)
 
@@ -258,6 +258,6 @@ Review відтворив P2: відхилений Promise першої ініц
 
 In Progress: Task 006 задеплоєно на `85f047c` (публічний HTTPS-сайт, `AUTH_ALLOWED_ORIGINS` налаштовано); очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
-Next Task: bootstrap адміністратора оператором (email/пароль від користувача); після review — Agent і API серверів/процесів. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
+Next Task: зміна власного пароля (з поточним паролем, CSRF, audit, відкликанням інших сесій) і базове керування користувачами для admin; далі Agent і API серверів/процесів. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.
