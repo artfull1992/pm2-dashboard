@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Builds a release artifact from a committed, pushed revision — never from the working directory.
 //   node scripts/deploy/build-release.js [--revision HEAD] [--out <dir>] [--remote-branch origin/main]
-// Output: <out>/node-control-api-<sha>.tar.gz (API + frontend/dist + nginx/systemd templates), .sha256,
+// Output: <out>/node-control-api-<sha>.tar.gz (API + frontend/dist + systemd unit), .sha256,
 // and server-bundle/ (server-release.js + lib) for transfer. Backend and UI are activated together via `current`.
 
 import { spawnSync } from 'node:child_process';
@@ -20,7 +20,6 @@ export const ARTIFACT_PATHS = Object.freeze([
   'backend/migrations',
   'frontend/dist',
   'deploy/systemd/node-control-api.service',
-  'deploy/nginx',
   'scripts/deploy/server-release.js',
   'scripts/deploy/lib',
 ]);

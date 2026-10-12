@@ -134,3 +134,12 @@
 - **Права в UI** — лише UX; прямий URL перевіряється (`RequirePermission`), backend — джерело авторизації. Redirect після login — тільки внутрішній шлях.
 - **E2E:** реальний скомпільований backend і `vite preview` production-збірки; тестова БД через guards ADR-009, per-run схема, тестові користувачі лише в ній; паролі випадкові на прогін; без traces/screenshots/video.
 - **Nginx:** окремий loopback-сайт `127.0.0.1:3101` (не публічний), статика з `current/frontend/dist`, `/api/` без зміни URI, SPA fallback лише для не-`/api` шляхів, CSP `default-src 'self'` (тому в UI немає inline-стилів/скриптів), `immutable` кеш для hashed assets.
+
+## ADR-013: Публічний HTTPS-сайт замість loopback-сайту
+
+Статус: прийнято (Task 006, оновлення користувача). Замінює Nginx-пункт ADR-012.
+
+- Власник сервера налаштував `https://control.example.com` (`/etc/nginx/conf.d/control.example.com.conf`, Let's Encrypt): статика `current/frontend/dist`, `/api/` → `127.0.0.1:3100` зі збереженням URI. Ізольований loopback-сайт `127.0.0.1:3101` більше не потрібен — прибрано з сервера (з backup) і з репозиторію.
+- Конфіг сайту не є частиною артефакту й не змінюється деплоєм; задачі Node Control лише перевіряють його (root, proxy, TLS, `nginx -t`).
+- `AUTH_ALLOWED_ORIGINS=https://control.example.com`, `AUTH_COOKIE_SECURE=true`. Вхід можливий лише після створення адміністратора оператором.
+- Рекомендації власнику (не застосовані): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options DENY`, `nosniff`, `Referrer-Policy`), `Cache-Control: no-cache` для SPA-маршрутів (зараз лише для `/index.html`), `immutable` для `/assets/`, `try_files $uri =404` для `/assets/`, HSTS.

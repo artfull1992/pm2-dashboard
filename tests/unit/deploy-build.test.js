@@ -49,7 +49,7 @@ test('stageArtifact copies only runtime files: no sources, tests, maps, .env or 
     'backend/dist/main.js': '', 'backend/dist/main.js.map': '', 'backend/dist/migrate.js': '', 'backend/src/main.ts': '', 'backend/test/a.test.ts': '',
     'backend/migrations/1791900000000_create-users.sql': '', 'backend/test/fixtures/migrations-failing/1791900000001_broken.sql': '',
     'deploy/systemd/node-control-api.service': '', 'scripts/deploy/server-release.js': '',
-    'deploy/nginx/goit-node-control-loopback.conf': '', 'frontend/dist/index.html': '<html>', 'frontend/dist/assets/index-abc.js': '',
+    'deploy/nginx/site.conf': '', 'frontend/dist/index.html': '<html>', 'frontend/dist/assets/index-abc.js': '',
     'frontend/dist/assets/index-abc.js.map': '', 'frontend/src/main.tsx': '', 'frontend/test/app.test.tsx': '', 'e2e/tests/auth.spec.ts': '',
     'scripts/deploy/lib/manifest.js': '', 'scripts/setup-postgres.js': '', 'node_modules/pg/index.js': '',
   };
@@ -62,7 +62,6 @@ test('stageArtifact copies only runtime files: no sources, tests, maps, .env or 
     'backend/dist/main.js',
     'backend/dist/migrate.js',
     'backend/migrations/1791900000000_create-users.sql',
-    'deploy/nginx/goit-node-control-loopback.conf',
     'deploy/systemd/node-control-api.service',
     'frontend/dist/assets/index-abc.js',
     'frontend/dist/index.html',

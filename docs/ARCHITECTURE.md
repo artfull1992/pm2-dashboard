@@ -30,7 +30,6 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `frontend/src/auth/` | `AuthContext` (сесія в пам'яті, епохи проти гонок), guards (`RequireAuth`, `RequirePermission`, безпечний redirect) |
 | `frontend/src/pages/`, `components/` | Login, Огляд, Сервери/Застосунки (порожні стани), Журнал аудиту; Layout із навігацією за правами |
 | `e2e/` | Playwright: реальний backend + збірка UI на тестовій БД |
-| `deploy/nginx/` | Шаблони loopback-сайту й заголовків безпеки |
 | `backend/test/support/test-db.ts` | Guard real-DB тестів: лише `TEST_DB_*`, відхилення production, per-run схема |
 | `scripts/setup-test-db.js` | Root: ізольована `node_control_test_db`/`node_control_test_user` |
 | `backend/test/` | Vitest: unit/API (inject), `smoke/` (скомпільований dist), `db/` (opt-in реальна БД, лише SELECT 1) |
@@ -79,7 +78,7 @@ MVP1 охоплює кілька серверів, моніторинг, лог�
 
 API та Agent: Node.js 22 через systemd, без root за замовчуванням. PM2 використовується лише для керованих Node.js-проєктів; API/Agent не запускати через PM2. Agent залишається незалежним від PM2, обмежується дозволеними процесами, Linux-користувачем та PM2_HOME.
 
-Frontend збирається у статичні файли (`current/frontend/dist`) й обслуговується host Nginx; окремий production Node.js-процес не потрібен. API — `127.0.0.1:3100`; ізольований loopback-сайт UI — `127.0.0.1:3101` (Task 006). Публічний домен/HTTPS — окреме рішення власника (див. DEPLOYMENT, «Зовнішній публічний сайт»).
+Frontend збирається у статичні файли (`current/frontend/dist`) й обслуговується host Nginx; окремий production Node.js-процес не потрібен. API — `127.0.0.1:3100`; публічно UI і `/api/` віддає host Nginx на `https://control.example.com` (конфіг і TLS — власник сервера, DEPLOYMENT).
 
 Central API забезпечує RBAC; метрики застосунків включають CPU/RAM, uptime і restart count, серверів — CPU/RAM, диск і навантаження. Slack: також налаштування порогів і захист від alert spam. Використовувати існуючі Jenkins/менеджер секретів через API, не створювати новий Jenkins і не переписувати pipelines без потреби.
 

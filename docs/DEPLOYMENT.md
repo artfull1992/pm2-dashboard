@@ -4,8 +4,8 @@
 
 ## Факти та межі наявного процесу
 
-- Реалізовані: PostgreSQL setup/check scripts, Central API (health, auth, RBAC, audit), міграції, frontend (React/Vite), deployment scripts (`scripts/deploy/`), шаблони `deploy/systemd/`, `deploy/nginx/`. Agent і API серверів/процесів відсутні.
-- Затверджені: user `nodecontrol`, unit `node-control-api.service`, `/opt/goit-node-control`, `/etc/goit-node-control/api.env`, API `127.0.0.1:3100`; frontend — `current/frontend/dist`, ізольований loopback Nginx-сайт `127.0.0.1:3101` (нижче).
+- Реалізовані: PostgreSQL setup/check scripts, Central API (health, auth, RBAC, audit), міграції, frontend (React/Vite), deployment scripts (`scripts/deploy/`), шаблон `deploy/systemd/`. Agent і API серверів/процесів відсутні.
+- Затверджені: user `nodecontrol`, unit `node-control-api.service`, `/opt/goit-node-control`, `/etc/goit-node-control/api.env`, API `127.0.0.1:3100`; frontend — `current/frontend/dist`, публічний сайт `https://control.example.com` (нижче).
 - Історичний rsync у `/etc/pm2-dashboard/` (Task 001/002) **не використовується**; там лишаються стара збірка й legacy `.env` (джерело `DB_*` для одноразового створення `api.env`).
 - За історичним серверним звітом кластер PostgreSQL — `18/main`, unit `postgresql@18-main`; конфігурації — `/etc/postgresql/18/main/`. Поточний серверний стан у цій сесії не перевірявся через SSH.
 - `db:setup` потребує root і змінює роль, БД, ACL та HBA; його не запускати для read-only аудиту. Node.js-сервіси в майбутньому повинні працювати з мінімальними правами без root, якщо необхідність не доведено.
@@ -139,38 +139,23 @@ DELETE FROM sessions WHERE expires_at < now() - interval '1 day' OR revoked_at <
 
 Відкликати всі сесії (інцидент): `UPDATE sessions SET revoked_at = now() WHERE revoked_at IS NULL;`
 
-### Frontend і Nginx (Task 006)
-
-Контракт:
+### Frontend і публічний HTTPS-сайт (Task 006)
 
 | Параметр | Значення |
 |---|---|
 | Збірка | `build-release.js`: `npm run frontend:build` з того самого `git archive`; `frontend/dist` у артефакті й manifest; перевірка bundle (немає `.map`, серверних імен конфігурації, секретних шаблонів) |
-| Статика | `/opt/goit-node-control/current/frontend/dist` — `root:root`, читання для `www-data`; UI і API перемикаються одним `current` |
-| Ізольований сайт | `/etc/nginx/sites-available/goit-node-control-loopback.conf` → `sites-enabled/`, `listen 127.0.0.1:3101` (не публічний) |
-| Заголовки | `/etc/nginx/snippets/goit-node-control-headers.conf`: CSP `default-src 'self'`, `X-Frame-Options DENY`, `nosniff`, `Referrer-Policy no-referrer` |
-| Кеш | `index.html` і SPA-маршрути — `no-cache`; `/assets/*` (hash у назві) — `max-age=31536000, immutable`; `/api/*` — `no-store` від API |
-| `/api/` | `proxy_pass http://127.0.0.1:3100` без URI (шлях і query без змін); невідомий `/api/*` → JSON 404 API, не `index.html`; Origin передається як є |
-| Логи | `/var/log/nginx/goit-node-control.{access,error}.log` |
+| Статика | `/opt/goit-node-control/current/frontend/dist` (`root:root`, читання для `www-data`); UI і API перемикаються одним `current` |
+| Сайт | `https://control.example.com` — `/etc/nginx/conf.d/control.example.com.conf`, **керує власник сервера** (Certbot), скрипти Node Control його не встановлюють і не змінюють |
+| TLS | Let's Encrypt, `CN=control.example.com`; оновлення — `snap.certbot.renew.timer`; HTTP → 301 на HTTPS |
+| `/api/` | `proxy_pass http://127.0.0.1:3100` без URI (шлях і query без змін); невідомий `/api/*` → JSON 404 API; Origin передається як є; `X-Forwarded-*` API ігнорує (`trustProxy` вимкнено) |
+| SPA | `location /` → `try_files $uri $uri/ /index.html`; `/index.html` — `Cache-Control: no-store` |
+| API-конфіг | `AUTH_ALLOWED_ORIGINS=https://control.example.com`, `AUTH_COOKIE_SECURE=true` |
 
-Встановлення (root; лише власні файли):
+Окремий loopback-сайт `127.0.0.1:3101` (перша редакція Task 006) прибрано: файли збережено в `/root/node-control-backups/nginx-*`, шаблони видалено з репозиторію й артефакту.
 
-```bash
-nginx -t                                                    # baseline
-TS=$(date -u +%Y%m%dT%H%M%SZ); B=/root/node-control-backups/nginx-$TS; install -d -m 700 $B
-for f in /etc/nginx/sites-available/goit-node-control-loopback.conf /etc/nginx/snippets/goit-node-control-headers.conf; do [ -e $f ] && cp -p $f $B/; done
-R=/opt/goit-node-control/releases/$SHA
-install -m 644 $R/deploy/nginx/goit-node-control-headers.conf /etc/nginx/snippets/
-install -m 644 $R/deploy/nginx/goit-node-control-loopback.conf /etc/nginx/sites-available/
-ln -sfn /etc/nginx/sites-available/goit-node-control-loopback.conf /etc/nginx/sites-enabled/goit-node-control-loopback.conf
-nginx -t && systemctl reload nginx                           # reload лише після успішного nginx -t
-```
+Перевірка після деплою: `curl -sI https://control.example.com/` (200), прямі SPA-маршрути (`/servers`, `/audit` → `index.html`), `/assets/*` (200), `GET /api/auth/me` без cookie → 401 `no-store`, невідомий `/api/*` → JSON 404, `POST /api/auth/login` з чужим Origin → 403 (без запису в БД). Login із правильним Origin у production не перевіряється (пише audit) — повний auth-flow лише E2E на тестовій БД.
 
-Перевірка: `ssh -N -L 3101:127.0.0.1:3101 root@203.0.113.10` → `http://127.0.0.1:3101/` (UI), `/servers` (SPA fallback), `/api/auth/me` (401), `/api/nope` (JSON 404). Production login лишається вимкненим (`AUTH_ALLOWED_ORIGINS` порожній, `AUTH_COOKIE_SECURE=true`); повний login/logout перевіряється лише E2E на тестовій БД.
-
-Rollback: `server-release.js rollback` повертає узгоджену пару UI/API (одна `current`) + `systemctl restart node-control-api`; конфіги Nginx — з `$B` (або видалити symlink власного сайту), `nginx -t`, `systemctl reload nginx`.
-
-**Зовнішній публічний сайт.** На сервері є `/etc/nginx/conf.d/control.example.com.conf` (Certbot, 443/80), створений 2026-10-12 18:40 UTC поза задачами Node Control: `root /opt/goit-node-control/current/frontend/dist`, `/api/` → `127.0.0.1:3100`. Будь-який реліз із `frontend/dist` автоматично стає публічним через цей сайт. Задачі Node Control його не змінюють; рішення про публікацію — за власником (див. PROJECT_STATUS).
+Rollback: `server-release.js rollback` повертає узгоджену пару UI/API + `systemctl restart node-control-api`; `api.env` — з `api.env.bak-<ts>`. Конфіг сайту не змінюється деплоєм.
 
 ### Міграції: backup, recovery, rollback
 

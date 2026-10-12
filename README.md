@@ -39,7 +39,7 @@ Task 001 підтверджений файлами та локальними uni
 │   └── migrations/   # версійні SQL-міграції (node-pg-migrate)
 ├── frontend/         # React + Vite UI (src/, test/, dist/ — збірка, не в Git)
 ├── e2e/              # Playwright E2E (реальний backend + UI, тестова БД)
-├── deploy/           # systemd/ (unit), nginx/ (loopback-сайт, заголовки безпеки)
+├── deploy/           # systemd/ (unit)
 ├── docs/
 │   └── server-audit.md
 ├── scripts/
@@ -231,12 +231,7 @@ ENV_FILE=<config> npm run db:migrate:up        # явне застосуванн
 
 ### Production (сервер)
 
-Central API працює на `control-server` як systemd-сервіс (з Task 003) `node-control-api.service` під користувачем `nodecontrol`, лише на `127.0.0.1:3100`; конфіг — `/etc/goit-node-control/api.env`, релізи — `/opt/goit-node-control/releases/<sha>`. Публічного доступу немає (Nginx — наступний етап). Фактичний стан деплою — [PROJECT_STATUS](docs/PROJECT_STATUS.md). Процедура збирання, передачі, активації та rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#central-api-deployment-contract-task-003). Доступ з VS Code / локальної машини:
-
-```bash
-ssh -N -L 3100:127.0.0.1:3100 root@203.0.113.10
-curl -s http://127.0.0.1:3100/health/live
-```
+Central API — systemd `node-control-api.service` під `nodecontrol` на `127.0.0.1:3100`; UI — статика з того самого релізу. Публічна адреса — **https://control.example.com** (host Nginx + Let's Encrypt, `/api/` → API). `AUTH_ALLOWED_ORIGINS=https://control.example.com`, cookie `Secure`. Адміністратора створює оператор через CLI (DEPLOYMENT). Процедура деплою й rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); фактичний стан і release blockers — [PROJECT_STATUS](docs/PROJECT_STATUS.md).
 
 ## Тести та перевірки
 
