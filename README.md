@@ -140,6 +140,8 @@ npm run backend:start     # node backend/dist/main.js
 | Інша помилка з 4xx `statusCode` (у т.ч. malformed JSON, 413, 415) | той самий статус; `error` = `message` = стандартний HTTP-текст (`Bad Request`, `Unsupported Media Type`, нестандартний → `Client Error`) |
 | Будь-що інше (5xx, без статусу, не-`Error`) | `500 {"statusCode":500,"error":"Internal Server Error","message":"Internal Server Error"}` |
 
+Відоме відкладене зауваження **NC-SEC-001**: Ajv `instancePath` для динамічних ключів може містити ключ із запиту, тому твердження про шляхи лише зі схеми має це обмеження. Деталі та критерії виправлення — [PROJECT_STATUS](docs/PROJECT_STATUS.md). Чинні health endpoints такого сценарію не мають.
+
 ### Логи
 
 Fastify/pino JSON у stdout. У запиті логуються лише `method`, `path` (без query string) і `reqId`; заголовки й тіла не логуються, а `authorization`, `cookie`, `proxy-authorization`, `x-api-key`, `set-cookie` додатково редагуються.
