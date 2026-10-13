@@ -173,6 +173,19 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 Межі: production-процеси в тестах не використовувались; UI на production перевіряється без виконання дій.
 
+**Деплой (центральний сервер, ~14:2x UTC).** Deployed code revision: **`3ff465367b99991a148d4475d773736d2ce5aca1`** (`feat(frontend): unify service inventory and process actions`); previous — `b4ada6d` (ціль rollback). Цей запис — пізніший docs-commit, на сервер не деплоївся.
+
+| Крок | Результат |
+|---|---|
+| Baseline | `control-server`; current `b4ada6d`, previous `ffb32b0`; API active, ready 200; Nginx/PostgreSQL/Docker active, failed 0 |
+| Артефакт | 44 файли, SHA-256 `c8b8a14e…82e7ae1`, `sha256sum -c` OK, manifest revision `3ff4653`; `backend/dist` ідентичний попередньому релізу; міграції pending=0 (нових немає); unit-файл без змін |
+| Активація | `current` → `3ff4653`, `previous` → `b4ada6d`; restart лише `node-control-api` (процес `nodecontrol`, listener лише `127.0.0.1:3100`) |
+| Після деплою | live/ready 200; HTTPS `/`, `/servers/<id>`, `/applications` → 200; JS/CSS assets 200, публічний бандл = `current/frontend/dist` і містить нову таблицю й меню; анонімні `/api/auth/me`, `…/control`, `POST …/control-commands` → 401; журнал: `pm2ControlEnabled:true` (без змін), 0 error/fatal, 0 секретів, 0 відповідей 4xx агенту; `nginx -t` OK (конфіг не змінювався) |
+| Без змін керування/PM2 | `api.env` не змінювався (mtime 13:41:44, з моменту ввімкнення); allowlist `root:root 644`, 5 записів, не змінювався; broker/Agent/exporter active (Agent `b4ada6d` — не передеплоювався); 0 команд у БД, 0 виконаних broker; God Daemon 3807 і 5 PM2-процесів із часом старту 6 жовтня — без змін |
+| Rollback | не застосовувався (за потреби: `server-release.js rollback` → `b4ada6d` + restart лише API) |
+
+Ручна перевірка оператора (потрібна сесія): «Сервери» → `app-server` → «Сервіси сервера» — 5 рядків, колонка «Дії», меню відкривається; дію не виконувати, якщо вона не потрібна.
+
 ## Task 009 — production enable керування на app-server (2026-10-13, ~13:39–13:43 UTC)
 
 Користувач попросив виконати потрібні дії на сервері й обрав allowlist «Усі 5, start/stop/restart». Код не змінювався (API/UI і Agent — `b4ada6d`, Agent уже 0.3.0).
