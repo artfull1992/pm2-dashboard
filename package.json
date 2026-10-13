@@ -32,7 +32,8 @@
     "test:frontend": "vitest run --config frontend/vitest.config.ts",
     "test:e2e": "npm run backend:build && npm run agent:build && npm run frontend:build && playwright test -c e2e/playwright.config.ts",
     "agent:build": "rm -rf agent/dist && tsc -p agent/tsconfig.build.json",
-    "test:agent": "vitest run --config agent/vitest.config.ts"
+    "test:agent": "vitest run --config agent/vitest.config.ts",
+    "test:agent:pm2": "NC_TEST_REAL_PM2=1 vitest run --config agent/vitest.config.ts test/pm2-real.test.ts"
   },
   "dependencies": {
     "fastify": "5.12.5",

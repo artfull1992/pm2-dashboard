@@ -4,7 +4,7 @@
 
 ## Реалізовано
 
-ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/` — React/Vite UI (Task 006); `agent/` — Node.js Agent із вихідним HTTPS heartbeat (Task 007). Є версійні міграції (`users`, `sessions`, `audit_log`). Є реєстр серверів і heartbeat Agent (Task 007); PM2/процеси, логи застосунків і WebSocket відсутні.
+ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/` — React/Vite UI (Task 006); `agent/` — Node.js Agent із вихідним HTTPS heartbeat (Task 007). Є версійні міграції (`users`, `sessions`, `audit_log`). Є реєстр серверів і heartbeat Agent (Task 007) та read-only PM2 inventory через локальний exporter (Task 008, ADR-016); керування процесами, логи застосунків і WebSocket відсутні.
 
 | Шлях | Фактична відповідальність |
 |---|---|
@@ -28,11 +28,15 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `backend/src/bootstrap-cli.ts`, `bootstrap-admin.ts` | CLI створення першого адміністратора (без HTTP) |
 | `frontend/src/api/` | API-клієнт (timeout, cancel, runtime-валідація) і типи контракту |
 | `frontend/src/auth/` | `AuthContext` (сесія в пам'яті, епохи проти гонок), guards (`RequireAuth`, `RequirePermission`, безпечний redirect) |
-| `frontend/src/pages/`, `components/` | Login, Огляд, Сервери/Застосунки (порожні стани), Журнал аудиту; Layout із навігацією за правами |
+| `frontend/src/pages/`, `components/` | Login, Огляд, Сервери, Застосунки (PM2 inventory, лише перегляд), Журнал аудиту; Layout із навігацією за правами |
 | `e2e/` | Playwright: реальний backend + збірка UI + Agent на тестовій БД |
 | `backend/src/servers/` | Реєстр серверів (SQL, keyset), credentials агентів (digest), heartbeat (FOR SHARE + монотонний upsert), контракт snapshot |
 | `agent/src/` | Agent: конфіг (HTTPS-only, файл 600), snapshot (`node:os`), heartbeat (timeout, `redirect: 'error'`), цикл (без overlap, backoff + jitter) |
-| `frontend/src/pages/Server*.tsx` | Список/деталі серверів, опитування лише видимої вкладки, одноразовий діалог ключа |
+| `frontend/src/pages/Server*.tsx` | Список/деталі серверів, опитування лише видимої вкладки, одноразовий діалог ключа, секція застосунків PM2 |
+| `agent/src/pm2/`, `agent/src/pm2-exporter.ts` | PM2 exporter (ADR-016): клієнт протоколу PM2 лише для `getMonitorData` до існуючого daemon, allowlist-санітизація, запуск від власника PM2 через systemd timer |
+| `agent/src/inventory/` | Контракт snapshot, атомарний запис / безпечне читання файлу, звіт Agent → API (окремий цикл) |
+| `backend/src/servers/inventory*.ts` | Machine `POST /api/agent/inventory`, `GET /api/applications`, `GET /api/servers/:id/applications`; SQL з впорядкуванням і заміною набору |
+| `frontend/src/pages/ApplicationsPage.tsx`, `components/Inventory.tsx` | Таблиця процесів, фільтри/курсор в URL, явна свіжість (актуально/застаріло/недоступно/офлайн) |
 | `backend/test/support/test-db.ts` | Guard real-DB тестів: лише `TEST_DB_*`, відхилення production, per-run схема |
 | `scripts/setup-test-db.js` | Root: ізольована `node_control_test_db`/`node_control_test_user` |
 | `backend/test/` | Vitest: unit/API (inject), `smoke/` (скомпільований dist), `db/` (opt-in реальна БД, лише SELECT 1) |
@@ -90,3 +94,17 @@ Central API забезпечує RBAC; метрики застосунків в�
 Після MVP, успішних тестів і стабілізації production окремо розглянути Docker для API/Agents за новим завданням. Зараз не створювати Dockerfile/Compose, контейнерні залежності чи контейнери. PostgreSQL і Nginx залишаються на хості; їх перенесення не погоджено.
 
 Деплой і невизначені параметри — [DEPLOYMENT](DEPLOYMENT.md).
+
+## PM2 inventory (Task 008, ADR-016)
+
+```mermaid
+flowchart LR
+  PM2[PM2 daemon власника] -- rpc.sock, лише getMonitorData --> Exp[Exporter / systemd timer / власник PM2]
+  Exp -- атомарний JSON 0640 --> File[/var/lib/goit-node-control-pm2/inventory.json/]
+  File -- читання, група nc-pm2-inventory --> Agent[Agent / nodecontrol-agent]
+  Agent -- HTTPS POST /api/agent/inventory --> API[Central API]
+  API --> DB[(server_inventories / server_applications)]
+  UI[Застосунки / Сервер] -- GET /api/applications --> API
+```
+
+Лише читання: керуючих маршрутів і команд немає. Exporter не має мережі й секретів API, Agent не має доступу до PM2, API не має доступу до серверів.

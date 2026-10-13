@@ -1,0 +1,48 @@
+# GOIT Node Control — PM2 inventory exporter (ADR-016). One run = one read of an ALREADY RUNNING PM2 daemon +
+# one atomic snapshot write. Instance name = the Linux user that owns PM2 (never root), e.g.
+#   node-control-pm2-exporter@deploy.service  (started by node-control-pm2-exporter@deploy.timer)
+# Config (no secrets): /etc/goit-node-control-pm2-exporter/%i.env — NC_PM2_HOME, NC_PM2_SNAPSHOT_FILE, NC_PM2_SOURCE.
+# The exporter never starts/stops/restarts PM2 or its processes; a missing daemon is reported as unavailable.
+
+[Unit]
+Description=GOIT Node Control PM2 inventory exporter (%i)
+Documentation=https://github.com/artfull1992/pm2-dashboard/blob/main/docs/DEPLOYMENT.md
+# The unit refuses to run for root even if instantiated as @root.
+ConditionUser=!root
+
+[Service]
+Type=oneshot
+User=%i
+EnvironmentFile=/etc/goit-node-control-pm2-exporter/%i.env
+ExecStart=/usr/bin/node /opt/goit-node-control-agent/current/agent/dist/pm2-exporter.js
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=node-control-pm2-exporter
+UMask=0027
+
+# Hardening. Needs: read access to PM2_HOME and connect() to its rpc.sock (works on a read-only mount), write access
+# only to the snapshot directory, no network (AF_UNIX only). PM2_HOME under /home stays visible read-only.
+ReadWritePaths=/var/lib/goit-node-control-pm2
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any

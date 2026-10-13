@@ -210,6 +210,50 @@ journalctl -u node-control-agent -n 5 -o cat      # "outcome":"accepted"
 
 Rollback Agent: `server-release.js rollback --base /opt/goit-node-control-agent` + restart, або `systemctl disable --now node-control-agent`. Rollback API на реліз до Task 007: endpoint heartbeat зникне (404) — агенти перейдуть у backoff; дані реєстру (additive-таблиці) лишаються.
 
+### PM2 inventory exporter (Task 008, ADR-016)
+
+Лише читання. Exporter постачається в артефакті Agent (`agent/dist/pm2-exporter.js`, `deploy/systemd/node-control-pm2-exporter@.service|.timer`). Він працює від **власника PM2** (не root), раз на 30 с читає існуючий daemon (`getMonitorData`) і атомарно пише `/var/lib/goit-node-control-pm2/inventory.json`. PM2 і проєкти не перезапускаються, глобальний PM2 і системний Node.js не змінюються. Немає daemon → snapshot `unavailable/daemon_not_running`, daemon не запускається.
+
+Потрібні параметри від оператора: Linux-користувач, від якого працює PM2 (`PM2_OWNER`), і абсолютний `PM2_HOME` (зазвичай `/home/<user>/.pm2`). Не вгадувати й не сканувати чужі home-каталоги. PM2 від root — не підтримується.
+
+```bash
+# на керованій ноді (root). Agent уже оновлено до релізу з inventory (див. «Agent» вище).
+PM2_OWNER=<user>                 # власник PM2 (не root)
+PM2_HOME=/home/<user>/.pm2       # абсолютний шлях
+# 0. Лише перевірки (нічого не змінюють; pm2-команди НЕ запускати):
+id "$PM2_OWNER"; stat -c '%U %a %F %n' "$PM2_HOME" "$PM2_HOME/rpc.sock"; /usr/bin/node --version
+id -nG nodecontrol-agent         # Agent НЕ має бути в основній групі власника PM2 (rpc.sock = 775)
+# 1. Вузька група читання snapshot: лише Agent (exporter пише через setgid-каталог, у групі не потрібен)
+getent group nc-pm2-inventory || groupadd --system nc-pm2-inventory
+usermod -aG nc-pm2-inventory nodecontrol-agent
+# 2. Каталог snapshot: власник — PM2 owner, група читання, setgid, без запису для групи/інших
+install -d -o "$PM2_OWNER" -g nc-pm2-inventory -m 2750 /var/lib/goit-node-control-pm2
+# 3. Конфіг exporter (без секретів)
+install -d -m 755 /etc/goit-node-control-pm2-exporter
+printf 'NC_PM2_HOME=%s\nNC_PM2_SNAPSHOT_FILE=/var/lib/goit-node-control-pm2/inventory.json\nNC_PM2_SOURCE=pm2\n' "$PM2_HOME" \
+  | install -m 644 /dev/stdin "/etc/goit-node-control-pm2-exporter/$PM2_OWNER.env"
+# 4. Unit-шаблони з активного релізу Agent
+install -m 644 /opt/goit-node-control-agent/current/deploy/systemd/node-control-pm2-exporter@.service \
+               /opt/goit-node-control-agent/current/deploy/systemd/node-control-pm2-exporter@.timer /etc/systemd/system/
+systemd-analyze verify "/etc/systemd/system/node-control-pm2-exporter@$PM2_OWNER.service" && systemctl daemon-reload
+# 5. Один пробний запуск і перевірка (state ok або причина unavailable; без імен процесів у журналі)
+systemctl start "node-control-pm2-exporter@$PM2_OWNER.service"
+journalctl -u "node-control-pm2-exporter@$PM2_OWNER" -n 3 -o cat
+stat -c '%U:%G %a' /var/lib/goit-node-control-pm2/inventory.json      # <owner>:nc-pm2-inventory 640
+# 6. Таймер
+systemctl enable --now "node-control-pm2-exporter@$PM2_OWNER.timer"
+# 7. Agent: увімкнути inventory (токен у файлі не змінюється) і перезапустити
+grep -q '^NC_AGENT_INVENTORY_FILE=' /etc/goit-node-control-agent/agent.env \
+  || printf 'NC_AGENT_INVENTORY_FILE=/var/lib/goit-node-control-pm2/inventory.json\n' >> /etc/goit-node-control-agent/agent.env
+stat -c '%U %a' /etc/goit-node-control-agent/agent.env                # nodecontrol-agent 600
+systemctl restart node-control-agent
+journalctl -u node-control-agent -n 5 -o cat                            # "msg":"inventory","outcome":"accepted","state":"ok"
+```
+
+Перевірки після: PM2-процеси не перезапускалися (`restart_time`/аптайм у UI не змінилися), heartbeat «Онлайн», у UI «Застосунки» — процеси з позначкою «Актуально». Журнали exporter/Agent містять лише стан, причину й кількість.
+
+Rollback inventory (PM2 і проєкти не зачіпаються): `systemctl disable --now node-control-pm2-exporter@$PM2_OWNER.timer`; прибрати рядок `NC_AGENT_INVENTORY_FILE` з `agent.env` і `systemctl restart node-control-agent` (heartbeat продовжує працювати). Каталог/файл snapshot і група можуть лишитися (без секретів) або бути видалені вручну. Rollback API до релізу без inventory: Agent отримує 404 і переходить на рідкі спроби; таблиці inventory лишаються (additive).
+
 ### Міграції: backup, recovery, rollback
 
 - Перед кожним production `up` — `pg_dump -Fc` лише `node_control_db` у `/root/node-control-backups/` (каталог `700`, файл `600`), перевірка `pg_restore --list`. Не дамп усього кластера.

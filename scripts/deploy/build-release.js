@@ -35,6 +35,8 @@ export const AGENT_ARTIFACT_PATHS = Object.freeze([
   'agent/dist',
   'agent/package.json',
   'deploy/systemd/node-control-agent.service',
+  'deploy/systemd/node-control-pm2-exporter@.service',
+  'deploy/systemd/node-control-pm2-exporter@.timer',
   'scripts/deploy/server-release.js',
   'scripts/deploy/lib',
 ]);

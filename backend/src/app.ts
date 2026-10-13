@@ -3,6 +3,8 @@ import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServ
 import type { Limiter } from './auth/password.js';
 import { registerAuth } from './auth/plugin.js';
 import { type AuthStore, createPgAuthStore } from './auth/store.js';
+import { createPgInventoryStore, type InventoryStore } from './servers/inventory-store.js';
+import { registerInventoryRoutes } from './servers/inventory-routes.js';
 import { registerServerRoutes } from './servers/routes.js';
 import { createPgServerStore, type ServerStore } from './servers/store.js';
 import type { AuthConfig, LogLevel } from './config.js';
@@ -34,6 +36,10 @@ export interface BuildAppOptions {
     createServerStore?: (database: Database) => ServerStore;
     /** Test seam: bounds concurrent heartbeat transactions. */
     heartbeatLimiter?: Limiter;
+    /** Test seam for the PM2 inventory store (ADR-016). */
+    createInventoryStore?: (database: Database) => InventoryStore;
+    /** Test seam: bounds concurrent inventory transactions. */
+    inventoryLimiter?: Limiter;
     extra?: Omit<Parameters<typeof registerAuth>[1], 'config' | 'store'>;
   };
 }
@@ -77,6 +83,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     requestIdHeader: false,
     trustProxy: options.trustedProxies && options.trustedProxies.length > 0 ? [...options.trustedProxies] : false,
     genReqId: () => randomUUID(),
+    // Strict schemas: `additionalProperties: false` REJECTS unknown fields (400) instead of Fastify's default of
+    // silently stripping them — a spoofed field (e.g. serverId in an Agent payload) is an error, not ignored input.
+    ajv: { customOptions: { removeAdditional: false } },
   });
 
   const database = options.createDatabase(app.log.child({ component: 'database' }));
@@ -114,6 +123,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const serverStore = (options.auth.createServerStore ?? createPgServerStore)(database);
     registerAuth(app, { agentResolver: serverStore, ...options.auth.extra, config: options.auth.config, store });
     registerServerRoutes(app, { store: serverStore, ...(options.auth.heartbeatLimiter ? { heartbeatLimiter: options.auth.heartbeatLimiter } : {}) });
+    const inventoryStore = (options.auth.createInventoryStore ?? createPgInventoryStore)(database);
+    registerInventoryRoutes(app, { store: inventoryStore, ...(options.auth.inventoryLimiter ? { inventoryLimiter: options.auth.inventoryLimiter } : {}) });
   }
 
   app.setNotFoundHandler({}, async (_request, reply) => {

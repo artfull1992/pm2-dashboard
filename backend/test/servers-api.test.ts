@@ -189,7 +189,11 @@ describe('machine authentication (heartbeat)', () => {
     const admin = await session('admin');
     const a = await provisioned(admin, 'a');
     const b = await provisioned(admin, 'b');
-    const res = await heartbeat(a.token, { ...validSnapshot(), serverId: b.serverId, receivedAt: '1999-01-01T00:00:00Z' });
+    // A spoofed identity/time field is rejected outright (strict schema, Task 008), not silently stripped.
+    const spoofed = await heartbeat(a.token, { ...validSnapshot(), serverId: b.serverId, receivedAt: '1999-01-01T00:00:00Z' });
+    expect(spoofed.statusCode).toBe(400);
+    expect(servers.heartbeats.size).toBe(0);
+    const res = await heartbeat(a.token, validSnapshot());
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ status: 'accepted', intervalSeconds: 30 });
     // Agent response contract (agent/src/heartbeat.ts parseAcceptedBody): exactly these keys, ISO-8601 UTC with ms,

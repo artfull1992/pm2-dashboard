@@ -43,9 +43,9 @@ test.describe('admin', () => {
     await login(page, 'admin', '/servers');
     await expect(page.getByRole('heading', { name: 'Ще немає підключених серверів' })).toBeVisible();
     await page.goto('/applications');
-    await expect(page.getByRole('heading', { name: 'Ще немає підключених застосунків' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Ще немає даних про процеси' })).toBeVisible();
     await page.reload();
-    await expect(page.getByRole('heading', { name: 'Ще немає підключених застосунків' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Ще немає даних про процеси' })).toBeVisible();
   });
 });
 

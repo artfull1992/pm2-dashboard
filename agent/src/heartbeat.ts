@@ -83,22 +83,35 @@ export function parseAcceptedBody(text: string): { intervalSeconds: number } | n
   return { intervalSeconds };
 }
 
-export async function sendHeartbeat(config: AgentConfig, snapshot: Snapshot, signal: AbortSignal, fetchImpl: FetchLike = fetch): Promise<HeartbeatOutcome> {
-  // One deadline for the whole exchange: connect, headers and body.
+/** Outcome of one authenticated machine POST; `ok` only after a fully read body accepted by `parseOk`. */
+export type MachinePostOutcome<T> =
+  | { kind: 'ok'; value: T }
+  | Exclude<HeartbeatOutcome, { kind: 'accepted' }>
+  | { kind: 'not_found' }; // 404: the API does not know this route (older API version)
+
+/**
+ * One authenticated POST to a machine route of the configured origin (heartbeat, inventory). One deadline covers
+ * connect, headers and body; the success body is read with a byte bound and validated by `parseOk`; error bodies
+ * are discarded unread. Nothing about the request or response is logged here.
+ */
+export async function machinePost<T>(
+  config: AgentConfig, path: `/api/agent/${string}`, payload: unknown, signal: AbortSignal,
+  parseOk: (text: string) => T | null, fetchImpl: FetchLike = fetch,
+): Promise<MachinePostOutcome<T>> {
   const timeout = AbortSignal.timeout(config.timeoutSeconds * 1000);
   const combined = AbortSignal.any([signal, timeout]);
-  const failure = (): HeartbeatOutcome => {
+  const failure = (): MachinePostOutcome<T> => {
     if (signal.aborted) return { kind: 'aborted' };
     if (timeout.aborted) return { kind: 'timeout' };
     return { kind: 'network' };
   };
   let response: Response;
   try {
-    response = await fetchImpl(new URL('/api/agent/heartbeat', config.apiUrl).href, {
+    response = await fetchImpl(new URL(path, config.apiUrl).href, {
       method: 'POST',
       redirect: 'error',
       headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify(snapshot),
+      body: JSON.stringify(payload),
       signal: combined,
     });
   } catch {
@@ -111,6 +124,7 @@ export async function sendHeartbeat(config: AgentConfig, snapshot: Snapshot, sig
     if (response.status === 401 || response.status === 403) return { kind: 'unauthorized' };
     if (response.status === 429) return { kind: 'rate_limited', retryAfterSeconds: parseRetryAfter(response.headers.get('retry-after')) };
     if (response.status === 400 || response.status === 413) return { kind: 'rejected' };
+    if (response.status === 404) return { kind: 'not_found' };
     return { kind: 'unavailable' };
   }
 
@@ -126,8 +140,16 @@ export async function sendHeartbeat(config: AgentConfig, snapshot: Snapshot, sig
   } catch {
     return { kind: 'invalid_response' };
   }
-  const accepted = parseAcceptedBody(text);
-  return accepted ? { kind: 'accepted', intervalSeconds: accepted.intervalSeconds } : { kind: 'invalid_response' };
+  const value = parseOk(text);
+  return value === null ? { kind: 'invalid_response' } : { kind: 'ok', value };
+}
+
+export async function sendHeartbeat(config: AgentConfig, snapshot: Snapshot, signal: AbortSignal, fetchImpl: FetchLike = fetch): Promise<HeartbeatOutcome> {
+  const outcome = await machinePost(config, '/api/agent/heartbeat', snapshot, signal, parseAcceptedBody, fetchImpl);
+  if (outcome.kind === 'ok') return { kind: 'accepted', intervalSeconds: outcome.value.intervalSeconds };
+  // The heartbeat route exists in every API version: a 404 there is an unexpected server answer.
+  if (outcome.kind === 'not_found') return { kind: 'unavailable' };
+  return outcome;
 }
 
 export interface BackoffState {

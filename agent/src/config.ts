@@ -1,10 +1,11 @@
 import { readFileSync, statSync } from 'node:fs';
+import { isAbsolute, normalize } from 'node:path';
 import { parseEnv } from 'node:util';
 
 // Agent configuration (ADR-015). One env file (ENV_FILE, mode 600, owned by the agent's service user) holds the
 // API URL and the bearer token. Errors name keys and rules only — never values.
 
-export const AGENT_VERSION = '0.1.0';
+export const AGENT_VERSION = '0.2.0';
 const TOKEN_RE = /^ncag_[A-Za-z0-9_-]{43}$/;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 
@@ -15,6 +16,21 @@ export interface AgentConfig {
   timeoutSeconds: number;
   /** Upper bound for any backoff / Retry-After wait. */
   maxBackoffSeconds: number;
+  /** PM2 inventory reporting (ADR-016); null = disabled (no NC_AGENT_INVENTORY_FILE). */
+  inventory: InventoryConfig | null;
+}
+
+export interface InventoryConfig {
+  /** Absolute path of the exporter's snapshot file (read-only for the Agent). */
+  file: string;
+  intervalSeconds: number;
+  /** An exporter snapshot older than this is reported as stale, never as a fresh collection. */
+  maxAgeSeconds: number;
+  /**
+   * Local E2E only: accept a snapshot owned by the Agent's own user. Allowed only together with the insecure
+   * loopback API mode; in production the Agent must never be able to write (forge) its own inventory.
+   */
+  allowSameOwner: boolean;
 }
 
 export class AgentConfigError extends Error {
@@ -65,8 +81,25 @@ export function loadAgentConfig(env: Env): AgentConfig {
   const timeoutSeconds = integer(env, 'NC_AGENT_TIMEOUT_SECONDS', 10, 1, 60, issues);
   const maxBackoffSeconds = integer(env, 'NC_AGENT_MAX_BACKOFF_SECONDS', 900, 30, 3600, issues);
 
+  let inventory: InventoryConfig | null = null;
+  const inventoryFile = env.NC_AGENT_INVENTORY_FILE;
+  const allowSameOwner = env.NC_AGENT_INVENTORY_ALLOW_SAME_OWNER === 'true';
+  const loopbackDev = env.NC_AGENT_ALLOW_INSECURE_LOOPBACK === 'true' && apiUrl?.protocol === 'http:' && LOOPBACK_HOSTS.has(apiUrl.hostname);
+  if (allowSameOwner && !loopbackDev) issues.push('NC_AGENT_INVENTORY_ALLOW_SAME_OWNER is only allowed with the insecure loopback test mode');
+  if (inventoryFile !== undefined && inventoryFile !== '') {
+    if (!isAbsolute(inventoryFile) || normalize(inventoryFile) !== inventoryFile || inventoryFile.includes('\0')) {
+      issues.push('NC_AGENT_INVENTORY_FILE must be a normalized absolute path');
+    }
+    inventory = {
+      file: inventoryFile,
+      intervalSeconds: integer(env, 'NC_AGENT_INVENTORY_INTERVAL_SECONDS', 60, 30, 600, issues),
+      maxAgeSeconds: integer(env, 'NC_AGENT_INVENTORY_MAX_AGE_SECONDS', 120, 30, 3600, issues),
+      allowSameOwner,
+    };
+  }
+
   if (issues.length > 0 || !apiUrl) throw new AgentConfigError(issues);
-  return { apiUrl, token, intervalSeconds, timeoutSeconds, maxBackoffSeconds };
+  return { apiUrl, token, intervalSeconds, timeoutSeconds, maxBackoffSeconds, inventory };
 }
 
 /** The env file holds a secret: refuse it unless it is owned by us and not accessible to group/other. */

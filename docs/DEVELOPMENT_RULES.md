@@ -34,7 +34,8 @@ Auth/RBAC (Task 005): кожен новий `/api`-маршрут деклару
 | `npm run frontend:dev` / `frontend:build` / `frontend:preview` | Vite лише на 127.0.0.1; `/api` проксюється на 127.0.0.1:3100 без зміни Origin |
 | `npm run test:frontend` | Vitest + jsdom: API-клієнт, auth/гонки, маршрути, audit |
 | `npm run test:e2e` | Playwright: реальний backend + збірка UI; лише `TEST_DB_*`, per-run схема, без traces/screenshots |
-| `npm run test:agent` / `agent:build` | Vitest для Agent (конфіг, snapshot, TLS/redirect, backoff, loop); збірка `agent/dist` |
+| `npm run test:agent` / `agent:build` | Vitest для Agent і PM2 exporter (конфіг, snapshot, TLS/redirect, backoff, loop, протокол PM2 на фейковому daemon, санітизація, безпека файлу); збірка `agent/dist` |
+| `npm run test:agent:pm2` | Opt-in: справжній одноразовий PM2 (`pm2@7.0.4` через npx, не залежність проєкту — AGPL) у тимчасовому `PM2_HOME`; доказ відсутності auto-start. Ніколи проти PM2 користувачів чи production |
 | `npm run check:local` | Secrets → старі unit → typecheck → lint → backend → smoke; без production-connected тестів |
 
 Обов'язкова цільова перевірка — Node.js 22 LTS. Старий `tests/integration` (node:test, `.env`, production `node_control_db`) з Task 004 **лише read-only**: перевірки прав #9/#10 виконуються через каталоги PostgreSQL, без CREATE/INSERT/DROP. Тести із записом — тільки `backend/test/db/*` проти `node_control_test_db` у власній схемі `nc_test_<ms>_<hex8>`; cleanup видаляє лише цю схему, ніколи БД. Привілейований suite потребує root на хості PostgreSQL (`runuser`, `psql`, systemd); локально пропускається з поясненням. Успіх локально не замінює серверну перевірку.
@@ -63,3 +64,10 @@ Commit має описувати фактичну зміну. Push — у пот
 Перед commit запускати `npm run typecheck` і `npm run lint` (backend, frontend, e2e); для старих JS-скриптів lint не налаштований. За актуальним bootstrap-запитом документаційний push дозволений після успішних релевантних перевірок документів, unit-тестів і секретів із чесним зазначенням недоступності БД. Це не дозвіл на деплой із failing tests.
 
 Фактичний workflow та backward-compatible rollback міграцій — [DEPLOYMENT](DEPLOYMENT.md).
+
+### PM2 inventory (Task 008)
+
+- Код exporter не імпортує `pm2` і `child_process` і викликає лише `getMonitorData` (це перевіряє тест). Нові PM2-методи — лише окремим рішенням (ADR).
+- Сирий `pm2_env` не серіалізується, не логується і не передається далі: тільки allowlist-поля; тести — із синтетичними секретами в усіх полях `pm2_env`.
+- Відсутні метрики — `null`, не 0; `unavailable` ≠ порожній список.
+- JSON schemas на `/api` строгі (Ajv `removeAdditional: false`): нові клієнти не можуть надсилати недокументовані поля.

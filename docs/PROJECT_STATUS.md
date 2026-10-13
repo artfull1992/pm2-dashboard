@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-13 (Task 007.1). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-13 (Task 008). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -142,6 +142,31 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Task 008 — read-only PM2 inventory і застосунки (2026-10-13)
+
+Стан на початок: `main` = `81e1933`, дерево чисте. Виправлення Task 007.1 у коді й тестах підтверджено: прив'язка стану до id, `CredentialControls` з key, `readBoundedBytes`/`parseAcceptedBody`. На сервері API/UI і Agent — `0ba0824`. Підключено окремий сервер `app-server` (hostname `app-server`, Agent 0.1.0, heartbeat надходить). SSH-доступу до нього в цій сесії немає. Локальний Agent центрального сервера — disabled.
+
+**Реалізовано (ADR-016):**
+- **PM2 exporter** (`agent/src/pm2/`, `agent/dist/pm2-exporter.js`): власний клієнт протоколу PM2 лише для `getMonitorData` до **існуючого** daemon, без пакета pm2 і без auto-start; allowlist-санітизація (секрети `pm2_env` не виходять за межі пам'яті exporter); атомарний snapshot-файл; systemd-шаблони `node-control-pm2-exporter@<owner>.service|.timer` (не root, лише AF_UNIX, без мережі).
+- **Agent 0.2.0:** окремий незалежний цикл inventory (`NC_AGENT_INVENTORY_FILE`), безпечне читання файлу, звіт `ok|stale|unavailable`, строгий контракт відповіді, пауза після 404 старого API.
+- **API:** міграція `1791900000003_pm2-inventory` (additive: `server_inventories`, `server_applications`); `POST /api/agent/inventory` (machine auth, identity з credential, ≤ 500 процесів / 512 KiB, конкурентність 4+8); `GET /api/applications` (keyset, фільтри server/status) і `GET /api/servers/:id/applications` (`monitoring:read`). Reconciliation: заміна набору, `unavailable`/`stale` зберігають останні дані з позначкою, старіший snapshot ігнорується, той самий — без оновлення свіжості.
+- **Strict schemas на всіх `/api`:** Ajv `removeAdditional: false`. Зайві поля тепер дають 400, а не мовчки обрізаються. Наслідок: heartbeat із підробленим `serverId` → 400 (тест оновлено). Чинні клієнти не зачеплені.
+- **UI:**
+  - «Застосунки»: реальні процеси, фільтри й курсор в URL (identity-safe), явна свіжість (актуально / застарілі / exporter недоступний / сервер офлайн), «—» для невідомих метрик;
+  - секція «Застосунки PM2» на сторінці сервера зі станом інтеграції;
+  - кнопок керування немає; імена рендеряться лише як текст.
+- **Не реалізовано:** start/stop/restart/delete, логи, redeploy, Jenkins, кілька PM2 owners на сервер.
+
+| Перевірка (Node v22.23.3) | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 85/85, typecheck, lint, backend 322/322, smoke 10/10, agent 99/99 (+2 opt-in пропущено), збірка agent, frontend 86/86, збірка UI |
+| Agent/exporter (`agent/test/inventory.test.ts`, 28) | санітизація з синтетичними секретами в усіх полях `pm2_env`; `null` замість штучного 0; дублікати/ліміти; протокол на фейковому daemon (по 1 байту, error/чужий id/завеликий frame/сміття/тиша → protocol_error/timeout); відсутній daemon → `daemon_not_running` без змін у `PM2_HOME`; статична перевірка: без `pm2`/`child_process`, лише `getMonitorData`; атомарний запис 0640, відмова при symlink/group-writable/чужому каталозі; читання — відмова при власному файлі Agent, symlink, writable, oversize, malformed; stale без процесів; 404 → 900 с; heartbeat не блокується зависанням inventory |
+| Справжній PM2 (`npm run test:agent:pm2`, pm2@7.0.4, тимчасовий `PM2_HOME`) | 2/2: без daemon → `daemon_not_running`, `PM2_HOME` лишився порожнім (daemon не стартував); з daemon → процес `online`, у файлі немає секрету з argv/env; після `pm2 kill` → `daemon_not_running`, `rpc.sock`/`pm2.pid` не з'явились |
+| API (`backend/test/inventory-api.test.ts`, 31) | identity лише з credential (зайвий `serverId` → 400); 401/403 machine/browser separation; revoked → 401; 16 невалідних payload → 400 без запису; 413; 503 (ліміт/збій) без секретів у логах; права viewer/operator/admin; пагінація/фільтри/валідація курсора; маршрутів керування немає (404) |
+| Real-DB (`test:backend:db`, тестова БД, per-run schema) | 49/49 (+11 inventory): constraints, заміна набору, повторне використання `pm_id`, порожній ≠ unavailable, stale, зміна source без orphans, старіший snapshot ігнорується, свіжість за серверним годинником, конкурентні звіти (найновіший перемагає), revoked/inactive → unauthorized, keyset через 3 сторінки |
+| Frontend (`applications.test.tsx`, 13) | дані/stale/offline/unavailable/порожньо/помилка/403/401; XSS-ім'я лише текстом; немає кнопок керування; фільтр не показує рядки попереднього фільтра; A→B на сторінці сервера (повільно/503) без даних A; відповідь для чужого сервера відхиляється |
+| E2E (Playwright, тестова БД) | 10/10: новий сценарій — справжні backend+UI+скомпільований Agent із синтетичним snapshot → «Актуально», фільтр, viewer, `unavailable` зберігає 3 процеси з позначкою |
 
 ## Task 007.1 — виправлення після review Codex (2026-10-13)
 
@@ -355,8 +380,8 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 007.1 задеплоєно: API/UI і Agent `0ba0824`. Agent installed, disabled: оператор видав ключ у UI, але `agent.env` ще не записано. Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 008 (read-only PM2 inventory) — код і центральний деплой; активація exporter на сервері `app-server` очікує параметрів оператора (PM2 owner, `PM2_HOME`, доступ). Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
-Next Task: PM2 read-only inventory через Agent (явно дозволені Linux-користувачі/PM2_HOME), далі дозволені керуючі операції з авторизацією та audit. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
+Next Task: явно дозволені PM2-операції (RBAC, audit, перелік дозволених процесів) поверх inventory. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.

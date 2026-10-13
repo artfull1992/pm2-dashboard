@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
-import { ApiError, serversApi } from '../api/client';
+import { ApiError, applicationsApi, serversApi } from '../api/client';
 import type { IssuedCredential, ServerDetail } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { Dialog } from '../components/Dialog';
+import { ApplicationsTable, formatUptime, InventorySummary } from '../components/Inventory';
 import { ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { usePolledResource } from '../components/usePolledResource';
 import { formatDate, mutationErrorMessage, StatusBadge } from './ServersPage';
@@ -12,13 +13,6 @@ import { formatDate, mutationErrorMessage, StatusBadge } from './ServersPage';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const GiB = 1024 ** 3;
 const formatGiB = (bytes: number) => `${(bytes / GiB).toFixed(1)} ГіБ`;
-
-function formatUptime(seconds: number): string {
-  const days = Math.floor(seconds / 86_400);
-  const hours = Math.floor((seconds % 86_400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return `${days > 0 ? `${String(days)} д ` : ''}${String(hours)} год ${String(minutes)} хв`;
-}
 
 function Snapshot({ server }: { server: ServerDetail }) {
   const s = server.snapshot;
@@ -38,6 +32,32 @@ function Snapshot({ server }: { server: ServerDetail }) {
 }
 
 type Confirm = null | 'issue' | 'revoke';
+
+/**
+ * PM2 inventory of this server (read-only). Its own polled resource keyed by the server id: after navigation to
+ * another server nothing of the previous server's applications is shown (Task 007.1 rule).
+ */
+function ServerApplications({ serverId }: { serverId: string }) {
+  const load = useCallback((signal: AbortSignal) => applicationsApi.forServer(serverId, signal), [serverId]);
+  const { state, reload } = usePolledResource(load, serverId);
+  const data = state.status === 'ready' ? state.data : state.status === 'error' ? state.data : null;
+  const current = data && data.serverId === serverId ? data : null;
+  return (
+    <section className="card" aria-labelledby="apps-title">
+      <h2 id="apps-title" className="card__title">Застосунки PM2</h2>
+      {state.status === 'loading' ? <LoadingState /> : null}
+      {state.status === 'error' ? (
+        <ErrorState title="Не вдалося оновити застосунки" onRetry={reload}>{`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}`}</ErrorState>
+      ) : null}
+      {current ? (
+        <>
+          <InventorySummary inventory={current.inventory} serverStatus={current.serverStatus} />
+          {current.items.length > 0 ? <ApplicationsTable items={current.items} showServer={false} caption="PM2-процеси сервера" /> : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
 
 // Mounted with key = server id + session (see ServerDetailPage): switching server or session remounts it, so a
 // confirmation, error or issued token of the previous server/session can never be shown or acted upon.
@@ -190,6 +210,7 @@ export function ServerDetailPage() {
               <Snapshot server={server} />
             </article>
           </div>
+          <ServerApplications key={server.id} serverId={server.id} />
           {can('servers:manage') ? <CredentialControls key={`${server.id}:${sessionKey}`} server={server} onChanged={reload} /> : null}
         </>
       ) : null}

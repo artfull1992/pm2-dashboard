@@ -181,3 +181,98 @@ export function parseRevokeResult(value: unknown): { serverId: string; revoked: 
   expect(isObject(value) && isString(value.serverId, 36) && typeof value.revoked === 'boolean');
   return { serverId: value.serverId, revoked: value.revoked };
 }
+
+// PM2 inventory (ADR-016) — read-only. Every field is validated; unknown values are rejected, never rendered as HTML.
+export const PROCESS_STATUSES = ['online', 'stopping', 'stopped', 'launching', 'errored', 'one-launch-status', 'waiting restart', 'unknown'] as const;
+export type ProcessStatus = (typeof PROCESS_STATUSES)[number];
+export type InventoryState = 'not_reported' | 'current' | 'stale' | 'unavailable';
+
+export interface ApplicationItem {
+  key: string;
+  serverId: string;
+  serverName: string;
+  serverStatus: ServerStatus;
+  source: string;
+  pmId: number;
+  name: string;
+  status: ProcessStatus;
+  uptimeSeconds: number | null;
+  restarts: number | null;
+  cpuPercent: number | null;
+  memoryBytes: number | null;
+  execMode: 'fork' | 'cluster' | null;
+  firstSeenAt: string;
+  inventoryState: Exclude<InventoryState, 'not_reported'>;
+  capturedAt: string | null;
+  collectedAt: string | null;
+}
+
+export interface ApplicationPage {
+  items: ApplicationItem[];
+  nextCursor: string | null;
+  freshWindowSeconds: number;
+}
+
+export interface InventoryInfo {
+  state: InventoryState;
+  reason: string | null;
+  source: string | null;
+  capturedAt: string | null;
+  collectedAt: string | null;
+  reportedAt: string | null;
+  processCount: number | null;
+}
+
+export interface ServerApplications {
+  serverId: string;
+  serverStatus: ServerStatus;
+  inventory: InventoryInfo;
+  items: ApplicationItem[];
+  freshWindowSeconds: number;
+}
+
+const isServerStatus = (v: unknown): v is ServerStatus => v === 'online' || v === 'offline' || v === 'never_connected';
+const isNullableDate = (v: unknown): v is string | null => v === null || isDate(v);
+const isNullableCount = (v: unknown, max: number): v is number | null => v === null || isCount(v, max);
+
+function parseApplicationItem(value: unknown): ApplicationItem {
+  expect(isObject(value));
+  const v = value;
+  expect(isString(v.key, 200) && isString(v.serverId, 36) && UUID_RE.test(v.serverId) && isString(v.serverName, 100) && isServerStatus(v.serverStatus));
+  expect(isString(v.source, 64) && typeof v.pmId === 'number' && Number.isInteger(v.pmId) && isCount(v.pmId, 1_000_000));
+  expect(isString(v.name, 128) && v.name.length > 0 && (PROCESS_STATUSES as readonly unknown[]).includes(v.status));
+  expect(isNullableCount(v.uptimeSeconds, 315_576_000) && isNullableCount(v.restarts, 1_000_000_000));
+  expect(isNullableCount(v.cpuPercent, 10_000) && isNullableCount(v.memoryBytes, 2 ** 50));
+  expect(v.execMode === null || v.execMode === 'fork' || v.execMode === 'cluster');
+  expect(isDate(v.firstSeenAt) && (v.inventoryState === 'current' || v.inventoryState === 'stale' || v.inventoryState === 'unavailable'));
+  expect(isNullableDate(v.capturedAt) && isNullableDate(v.collectedAt));
+  return {
+    key: v.key, serverId: v.serverId, serverName: v.serverName, serverStatus: v.serverStatus, source: v.source, pmId: v.pmId, name: v.name,
+    status: v.status as ProcessStatus, uptimeSeconds: v.uptimeSeconds, restarts: v.restarts, cpuPercent: v.cpuPercent, memoryBytes: v.memoryBytes,
+    execMode: v.execMode, firstSeenAt: v.firstSeenAt, inventoryState: v.inventoryState, capturedAt: v.capturedAt, collectedAt: v.collectedAt,
+  };
+}
+
+export function parseApplicationPage(value: unknown): ApplicationPage {
+  expect(isObject(value) && Array.isArray(value.items) && value.items.length <= 100);
+  expect(isNullableString(value.nextCursor) && isCount(value.freshWindowSeconds, 3600));
+  return { items: value.items.map(parseApplicationItem), nextCursor: value.nextCursor, freshWindowSeconds: value.freshWindowSeconds };
+}
+
+export function parseServerApplications(value: unknown): ServerApplications {
+  expect(isObject(value) && isObject(value.inventory) && Array.isArray(value.items) && value.items.length <= 500);
+  const { serverId, serverStatus, inventory: i, freshWindowSeconds } = value;
+  expect(isString(serverId, 36) && UUID_RE.test(serverId) && isServerStatus(serverStatus) && isCount(freshWindowSeconds, 3600));
+  expect(i.state === 'not_reported' || i.state === 'current' || i.state === 'stale' || i.state === 'unavailable');
+  expect((i.reason === null || (isString(i.reason, 40) && /^[a-z_]+$/.test(i.reason))) && (i.source === null || isString(i.source, 64)));
+  expect(isNullableDate(i.capturedAt) && isNullableDate(i.collectedAt) && isNullableDate(i.reportedAt) && isNullableCount(i.processCount, 500));
+  const items = value.items.map(parseApplicationItem);
+  expect(items.every((item) => item.serverId === serverId));
+  return {
+    serverId, serverStatus, freshWindowSeconds, items,
+    inventory: {
+      state: i.state, reason: i.reason, source: i.source, capturedAt: i.capturedAt, collectedAt: i.collectedAt,
+      reportedAt: i.reportedAt, processCount: i.processCount,
+    },
+  };
+}

@@ -1,8 +1,7 @@
 import { Link } from 'react-router';
 import { useAuth } from '../auth/AuthContext';
-import { EmptyState } from '../components/StatusMessage';
 
-// Honest empty states: there is no Agent / server API yet, so nothing here pretends to have data or controls.
+// Static navigation pages: no data is shown here, so nothing pretends to be live.
 
 export function DashboardPage() {
   const { state } = useAuth();
@@ -14,26 +13,15 @@ export function DashboardPage() {
       <div className="cards">
         <article className="card">
           <h2 className="card__title">Сервери</h2>
-          <p className="card__text">Ще немає підключених серверів.</p>
+          <p className="card__text">Реєстр серверів, стан агентів і ключі.</p>
           <Link className="card__link" to="/servers">Перейти до серверів</Link>
         </article>
         <article className="card">
           <h2 className="card__title">Застосунки</h2>
-          <p className="card__text">Ще немає підключених застосунків.</p>
+          <p className="card__text">PM2-процеси підключених серверів (лише перегляд).</p>
           <Link className="card__link" to="/applications">Перейти до застосунків</Link>
         </article>
       </div>
-    </section>
-  );
-}
-
-export function ApplicationsPage() {
-  return (
-    <section className="page" aria-labelledby="apps-title">
-      <h1 id="apps-title" className="page__title">Застосунки</h1>
-      <EmptyState title="Ще немає підключених застосунків">
-        Застосунки з’являться тут, коли агент передасть дані про процеси.
-      </EmptyState>
     </section>
   );
 }

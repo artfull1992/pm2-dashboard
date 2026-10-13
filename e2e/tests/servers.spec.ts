@@ -1,12 +1,7 @@
-import { type ChildProcess, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { expect, type Page, test } from '@playwright/test';
+import { startAgent } from '../support/agent.js';
 import { inRunSchema } from '../support/db.js';
-import { credentials, type E2eRole, UI_ORIGIN } from '../support/env.js';
-
-const ROOT = join(import.meta.dirname, '..', '..');
+import { credentials, type E2eRole } from '../support/env.js';
 
 async function login(page: Page, role: E2eRole) {
   const { email, password } = credentials(role);
@@ -15,27 +10,6 @@ async function login(page: Page, role: E2eRole) {
   await page.getByLabel('Пароль').fill(password);
   await page.getByRole('button', { name: 'Увійти' }).click();
   await expect(page.getByRole('heading', { name: 'Огляд' })).toBeVisible();
-}
-
-/** Starts the compiled Agent with a 600 env file; output is captured, never printed (it must not contain the token). */
-function startAgent(token: string) {
-  const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-agent-'));
-  const envFile = join(dir, 'agent.env');
-  writeFileSync(envFile, [
-    `NC_AGENT_API_URL=${UI_ORIGIN}`, 'NC_AGENT_ALLOW_INSECURE_LOOPBACK=true', `NC_AGENT_TOKEN=${token}`,
-    'NC_AGENT_INTERVAL_SECONDS=5', 'NC_AGENT_TIMEOUT_SECONDS=5', 'NC_AGENT_MAX_BACKOFF_SECONDS=30',
-  ].join('\n') + '\n', { mode: 0o600 });
-  const child: ChildProcess = spawn(process.execPath, [join(ROOT, 'agent', 'dist', 'main.js')], {
-    env: { PATH: process.env.PATH ?? '', ENV_FILE: envFile }, stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let output = '';
-  child.stdout?.on('data', (c: Buffer) => { output += c.toString(); });
-  child.stderr?.on('data', (c: Buffer) => { output += c.toString(); });
-  const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
-  return {
-    output: () => output,
-    stop: async () => { child.kill('SIGTERM'); const code = await exited; rmSync(dir, { recursive: true, force: true }); return code; },
-  };
 }
 
 test('admin provisions a server, the Agent reports in, revoke stops it; viewer cannot manage', async ({ page, browser }) => {
@@ -90,7 +64,7 @@ test('admin provisions a server, the Agent reports in, revoke stops it; viewer c
          JOIN agent_credentials c ON c.server_id = h.server_id WHERE h.server_id = $1`, [serverId])).rows[0]);
     expect(row).toEqual({ before_revoke: true });
     const audit = await inRunSchema(async (q) => (await q(
-      `SELECT event FROM audit_log WHERE event LIKE 'server.%' OR event LIKE 'agent.%' ORDER BY id`)).rows.map((r) => r.event));
+      `SELECT event FROM audit_log WHERE (event LIKE 'server.%' OR event LIKE 'agent.%') AND details->>'serverId' = $1 ORDER BY id`, [serverId])).rows.map((r) => r.event));
     expect(audit).toEqual(['server.created', 'agent.credential_issued', 'agent.credential_revoked']);
   } finally {
     const code = await agent.stop();

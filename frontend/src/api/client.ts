@@ -1,6 +1,7 @@
 import {
-  type AuditPage, ContractError, type IssuedCredential, parseAuditPage, parseIssuedCredential, parseRevokeResult, parseServerDetail,
-  parseServerPage, parseServerSummary, parseSessionInfo, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
+  type ApplicationPage, type AuditPage, ContractError, type IssuedCredential, parseApplicationPage, parseAuditPage, parseIssuedCredential,
+  parseRevokeResult, parseServerApplications, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
+  type ProcessStatus, type ServerApplications, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
 } from './types';
 
 // Central API client (ADR-012):
@@ -137,6 +138,35 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const serverPath = (id: string): `/api/${string}` => {
   if (!UUID_RE.test(id)) throw new ApiError('invalid_request');
   return `/api/servers/${id}`;
+};
+
+export interface ApplicationFilter {
+  serverId: string | null;
+  status: ProcessStatus | null;
+  cursor: string | null;
+}
+
+export const applicationsApi = {
+  list: (filter: ApplicationFilter, signal?: AbortSignal): Promise<ApplicationPage> => {
+    const query = new URLSearchParams({ limit: '50' });
+    if (filter.serverId !== null) {
+      if (!UUID_RE.test(filter.serverId)) throw new ApiError('invalid_request');
+      query.set('serverId', filter.serverId);
+    }
+    if (filter.status !== null) query.set('status', filter.status);
+    if (filter.cursor !== null) query.set('cursor', filter.cursor);
+    return apiRequest(`/api/applications?${query.toString()}`, { parse: parseApplicationPage, ...(signal ? { signal } : {}) });
+  },
+  /** The reply must belong to the requested server; anything else is a contract violation (never shown). */
+  forServer: (id: string, signal?: AbortSignal): Promise<ServerApplications> =>
+    apiRequest(`${serverPath(id)}/applications`, {
+      parse: (value) => {
+        const result = parseServerApplications(value);
+        if (result.serverId !== id) throw new ContractError();
+        return result;
+      },
+      ...(signal ? { signal } : {}),
+    }),
 };
 
 export const serversApi = {

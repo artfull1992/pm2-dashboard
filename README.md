@@ -247,7 +247,20 @@ Agent (`agent/`): `ENV_FILE` (600, власник — користувач аг�
 
 ```bash
 npm run agent:build && npm run test:agent
+npm run test:agent:pm2   # opt-in: справжній одноразовий PM2 у тимчасовому PM2_HOME (pm2@7.0.4 через npx)
 ```
+
+### PM2 inventory (Task 008, ADR-016) — лише перегляд
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `GET /api/applications?limit=1..100&cursor=&serverId=&status=` | `monitoring:read` | `200 {items:[ApplicationItem], nextCursor, freshWindowSeconds}` (keyset за `name, server_id, pm_id`) | 400, 401, 403, 503 |
+| `GET /api/servers/:id/applications` | `monitoring:read` | `200 {serverId, serverStatus, inventory:{state, reason, source, capturedAt, collectedAt, reportedAt, processCount}, items, freshWindowSeconds}` | 400, 401, 403, 404, 503 |
+| `POST /api/agent/inventory` | **machine** (Bearer) | `200 {status:"accepted"\|"ignored", receivedAt, intervalSeconds (30–600)}` | 400, 401, 403, 413, 429, 503 |
+
+`ApplicationItem = {key, serverId, serverName, serverStatus, source, pmId, name, status, uptimeSeconds, restarts, cpuPercent, memoryBytes, execMode, firstSeenAt, inventoryState: current|stale|unavailable, capturedAt, collectedAt}`. `null` — метрика невідома (не 0). Звіт Agent: `{version:1, state:"ok"|"stale"|"unavailable", reason, source, capturedAt, processes}`; зайві поля → 400 (strict schemas на всіх `/api`). Керування процесами **не реалізоване**.
+
+Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HOME` (абсолютний), `NC_PM2_SNAPSHOT_FILE` (поза `PM2_HOME`), `NC_PM2_SOURCE` (типово `pm2`), `NC_PM2_TIMEOUT_SECONDS` (1–60), `NC_PM2_MAX_PROCESSES` (≤500). Agent: `NC_AGENT_INVENTORY_FILE` (вмикає inventory), `NC_AGENT_INVENTORY_INTERVAL_SECONDS` (30–600, типово 60), `NC_AGENT_INVENTORY_MAX_AGE_SECONDS` (30–3600, типово 120).
 
 ### Production (сервер)
 
@@ -314,7 +327,7 @@ Production-деплой — лише артефактом із запушено�
 
 ## Наступні етапи
 
-1. PM2 read-only inventory через Agent, потім дозволені керуючі операції (з авторизацією та Audit Log). Окремий backlog: керування користувачами, зміна пароля.
+1. Явно дозволені PM2-операції (RBAC, audit, перелік дозволених процесів) поверх read-only inventory (Task 008). Окремий backlog: керування користувачами, зміна пароля.
 2. Перед публічним запуском — release blockers (PROJECT_STATUS): обмеження 5432, NC-SEC-001, рішення щодо публічного HTTPS-сайту та `AUTH_ALLOWED_ORIGINS`, bootstrap адміністратора.
 3. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики.
 

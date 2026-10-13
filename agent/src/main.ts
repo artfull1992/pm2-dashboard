@@ -2,6 +2,7 @@
 // Exit codes: 0 graceful stop; 2 invalid configuration (systemd should not loop on it); 1 unexpected error.
 import { runAgent } from './agent.js';
 import { AGENT_VERSION, AgentConfigError, loadAgentConfig, readSecureEnvFile } from './config.js';
+import { runInventory } from './inventory/report.js';
 
 const log = (level: 'info' | 'warn' | 'error', event: Record<string, unknown>) => {
   process.stdout.write(`${JSON.stringify({ level, time: new Date().toISOString(), ...event })}\n`);
@@ -19,10 +20,18 @@ try {
   const file = process.env.ENV_FILE;
   const env = file ? { ...readSecureEnvFile(file), ...pickAgentEnv(process.env) } : pickAgentEnv(process.env);
   const config = loadAgentConfig(env);
-  log('info', { msg: 'agent started', version: AGENT_VERSION, apiOrigin: config.apiUrl.origin, intervalSeconds: config.intervalSeconds });
-  await runAgent(config, controller.signal, {
-    logger: { info: (e) => { log('info', e); }, warn: (e) => { log('warn', e); } },
+  log('info', {
+    msg: 'agent started', version: AGENT_VERSION, apiOrigin: config.apiUrl.origin, intervalSeconds: config.intervalSeconds,
+    inventory: config.inventory ? { enabled: true, intervalSeconds: config.inventory.intervalSeconds } : { enabled: false },
   });
+  const logger = { info: (e: Record<string, unknown>) => { log('info', e); }, warn: (e: Record<string, unknown>) => { log('warn', e); } };
+  // Two independent sequential loops: inventory problems never delay or stop the heartbeat (and vice versa).
+  const inventory = runInventory(config, controller.signal, { logger }).catch((error: unknown) => {
+    // An unexpected inventory bug stops only the inventory loop (metadata-only log); the heartbeat keeps running.
+    log('error', { msg: 'inventory loop stopped', name: error instanceof Error ? error.name : 'unknown' });
+    return 0;
+  });
+  await Promise.all([runAgent(config, controller.signal, { logger }), inventory]);
   log('info', { msg: 'agent stopped' });
 } catch (error) {
   if (error instanceof AgentConfigError) {

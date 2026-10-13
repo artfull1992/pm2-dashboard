@@ -6,7 +6,8 @@ import { AuditPage } from './pages/AuditPage';
 import { LoginPage } from './pages/LoginPage';
 import { ServerDetailPage } from './pages/ServerDetailPage';
 import { ServersPage } from './pages/ServersPage';
-import { ApplicationsPage, DashboardPage, NotFoundPage } from './pages/SimplePages';
+import { ApplicationsPage } from './pages/ApplicationsPage';
+import { DashboardPage, NotFoundPage } from './pages/SimplePages';
 
 /** Remounts the private area per session, so no component state of one session survives into another. */
 function PrivateArea() {

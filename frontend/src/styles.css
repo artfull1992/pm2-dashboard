@@ -142,3 +142,13 @@ h1, h2, p { margin: 0; }
 .dialog__body { display: grid; gap: 10px; }
 .dialog__body input { font: inherit; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); width: 100%; }
 .dialog__actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+
+/* PM2 inventory (Task 008) */
+.badge--stale { color: var(--warning); }
+.badge--errored { color: var(--danger); }
+.notice--warning { border-color: var(--warning); }
+.notice p { margin: 0 0 4px; }
+.notice p:last-child { margin-bottom: 0; }
+.filters { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 16px; }
+.filters .field { flex: 0 1 260px; }
+.pager { display: flex; gap: 8px; margin-top: 12px; }
