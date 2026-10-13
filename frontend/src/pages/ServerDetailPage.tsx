@@ -6,7 +6,7 @@ import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { Dialog } from '../components/Dialog';
 import { ApplicationsTable, formatUptime, InventorySummary } from '../components/Inventory';
-import { ProcessControl } from '../components/ProcessControl';
+import { ProcessControl, type RowActions } from '../components/ProcessControl';
 import { ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { usePolledResource } from '../components/usePolledResource';
 import { formatDate, mutationErrorMessage, StatusBadge } from './ServersPage';
@@ -38,7 +38,7 @@ type Confirm = null | 'issue' | 'revoke';
  * PM2 inventory of this server (read-only). Its own polled resource keyed by the server id: after navigation to
  * another server nothing of the previous server's applications is shown (Task 007.1 rule).
  */
-function ServerApplications({ serverId, refresh }: { serverId: string; refresh: number }) {
+function ServerApplications({ serverId, refresh, renderActions }: { serverId: string; refresh: number; renderActions?: RowActions | undefined }) {
   const load = useCallback((signal: AbortSignal) => applicationsApi.forServer(serverId, signal), [serverId]);
   const { state, reload } = usePolledResource(load, serverId);
   // A finished control command asks for a fresh inventory view (the exporter/Agent cadence still applies).
@@ -46,19 +46,24 @@ function ServerApplications({ serverId, refresh }: { serverId: string; refresh: 
   const data = state.status === 'ready' ? state.data : state.status === 'error' ? state.data : null;
   const current = data && data.serverId === serverId ? data : null;
   return (
-    <section className="card" aria-labelledby="apps-title">
-      <h2 id="apps-title" className="card__title">Застосунки PM2</h2>
+    <>
+      <div className="services-heading"><div><p className="eyebrow">PM2 · Застосунки</p><h2 id="apps-title" className="card__title">Сервіси сервера</h2></div><button type="button" className="button" onClick={reload}>↻ Оновити</button></div>
       {state.status === 'loading' ? <LoadingState /> : null}
       {state.status === 'error' ? (
         <ErrorState title="Не вдалося оновити застосунки" onRetry={reload}>{`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}`}</ErrorState>
       ) : null}
       {current ? (
         <>
+          <div className="service-overview" aria-label="Зведення за останнім збором">
+            <div><span>Усього сервісів</span><strong>{current.items.length}</strong></div>
+            <div><span>Працюють</span><strong>{current.items.filter((app) => app.status === 'online').length}</strong></div>
+            <div><span>Потребують уваги</span><strong>{current.items.filter((app) => app.status !== 'online').length}</strong></div>
+          </div>
           <InventorySummary inventory={current.inventory} serverStatus={current.serverStatus} />
-          {current.items.length > 0 ? <ApplicationsTable items={current.items} showServer={false} caption="PM2-процеси сервера" /> : null}
+          {current.items.length > 0 ? <ApplicationsTable items={current.items} showServer={false} caption="PM2-процеси сервера" renderActions={renderActions} /> : <p className="card__text">Немає зібраних процесів PM2.</p>}
         </>
       ) : null}
-    </section>
+    </>
   );
 }
 
@@ -215,8 +220,9 @@ export function ServerDetailPage() {
               <Snapshot server={server} />
             </article>
           </div>
-          <ServerApplications key={server.id} serverId={server.id} refresh={refresh} />
-          <ProcessControl key={`${server.id}:${sessionKey}`} serverId={server.id} serverName={server.name} onFinished={bumpRefresh} />
+          <ProcessControl key={`${server.id}:${sessionKey}`} serverId={server.id} serverName={server.name} onFinished={bumpRefresh}>
+            {(renderActions) => <ServerApplications serverId={server.id} refresh={refresh} renderActions={renderActions} />}
+          </ProcessControl>
           {can('servers:manage') ? <CredentialControls key={`${server.id}:${sessionKey}`} server={server} onChanged={reload} /> : null}
         </>
       ) : null}

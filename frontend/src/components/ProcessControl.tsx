@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ApiError, controlApi } from '../api/client';
-import { type CommandView, type ControlAction, type ControlTarget, FINAL_COMMAND_STATUSES } from '../api/types';
+import { type ApplicationItem, type CommandView, type ControlAction, type ControlTarget, FINAL_COMMAND_STATUSES } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { formatDate } from '../pages/ServersPage';
 import { Dialog } from './Dialog';
@@ -57,7 +57,45 @@ function controlError(error: unknown): string {
 
 const newKey = () => crypto.randomUUID();
 
-export function ProcessControl({ serverId, serverName, onFinished }: { serverId: string; serverName: string; onFinished: () => void }) {
+export type RowActions = (app: ApplicationItem) => ReactNode;
+
+function ActionMenu({ name, actions, disabled, onSelect }: { name: string; actions: ControlAction[]; disabled: boolean; onSelect: (action: ControlAction) => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const id = useId();
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setOpen(false); trigger.current?.focus(); }
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', closeOutside); document.removeEventListener('keydown', escape); };
+  }, [open]);
+  return (
+    <div className="action-menu" ref={root} onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+    }}>
+      <button ref={trigger} type="button" className="button action-menu__trigger" disabled={disabled}
+        aria-label={`Дії: ${name}`} aria-expanded={open && !disabled} aria-controls={id}
+        onClick={() => { setOpen(!open); }}>Дії <span aria-hidden="true">⌄</span></button>
+      {open && !disabled ? <div id={id} className="action-menu__list" role="group" aria-label={`Дії для ${name}`}>
+        {actions.map((action) => <button key={action} type="button"
+          className={`action-menu__item ${action === 'stop' ? 'action-menu__item--danger' : ''}`}
+          onClick={() => { trigger.current?.focus(); setOpen(false); onSelect(action); }}>{ACTION_LABELS[action]}</button>)}
+      </div> : null}
+    </div>
+  );
+}
+
+export function ProcessControl({ serverId, serverName, onFinished, children }: {
+  serverId: string; serverName: string; onFinished: () => void;
+  children: (actions: RowActions | undefined) => ReactNode;
+}) {
   const { state: auth, can, sessionExpired } = useAuth();
   const loadView = useCallback((signal: AbortSignal) => controlApi.view(serverId, signal), [serverId]);
   const loadCommands = useCallback((signal: AbortSignal) => controlApi.commands(serverId, signal), [serverId]);
@@ -70,10 +108,14 @@ export function ProcessControl({ serverId, serverName, onFinished }: { serverId:
   const [error, setError] = useState<string | null>(null);
   const [tracked, setTracked] = useState<CommandView | null>(null);
   const inflight = useRef<AbortController | null>(null);
+  const statusRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => () => { inflight.current?.abort(); }, []);
 
   // Follow the tracked command until it is final (bounded by its deadline + grace on the server side).
   const trackedId = tracked?.id ?? null;
+  // After a confirmed request the row menu is disabled until the command is final, so focus goes to the command
+  // status (instead of being lost on a disabled trigger); it runs after the dialog has restored its own focus.
+  useEffect(() => { if (trackedId) statusRef.current?.focus(); }, [trackedId]);
   const trackedFinal = tracked ? FINAL_COMMAND_STATUSES.includes(tracked.status) : true;
   useEffect(() => {
     if (!trackedId || trackedFinal) return;
@@ -115,12 +157,31 @@ export function ProcessControl({ serverId, serverName, onFinished }: { serverId:
   const v = view.state.status === 'ready' ? view.state.data : view.state.status === 'error' ? view.state.data : null;
   const current = v && v.serverId === serverId ? v : null;
   const canControl = can('processes:control');
-  const ready = current !== null && current.enabled && current.serverStatus === 'online' && current.broker?.state === 'ok' && current.broker.fresh;
+  const ready = view.state.status === 'ready' && current !== null && current.enabled && current.serverStatus === 'online' && current.broker?.state === 'ok' && current.broker.daemon === 'ok' && current.broker.allowlist === 'ok' && current.broker.fresh;
   const list = commands.state.status === 'ready' ? commands.state.data : commands.state.status === 'error' ? commands.state.data : null;
 
+  const renderActions: RowActions = (app) => {
+    // Both name and PM2 id must agree; never infer control identity from the inventory alone.
+    const candidates = current?.targets.filter((t) => t.name === app.name && t.pmId === app.pmId) ?? [];
+    const target = candidates.length === 1 ? candidates[0] : undefined;
+    const named = current?.targets.find((t) => t.name === app.name);
+    // Without a ready broker report the targets are unknown: say so instead of claiming the process is not allowed.
+    const unavailableReason = !ready ? 'Керування зараз недоступне'
+      : named && named.matchStatus !== 'ok' ? MATCH_LABELS[named.matchStatus] : named ? 'Ідентичність процесу не підтверджена' : 'Не дозволено керування';
+    const blocked = app.inventoryState !== 'current' || app.serverStatus !== 'online' || !ready || !target || target.matchStatus !== 'ok' || pending || !trackedFinal;
+    return <div className="service-actions">
+      {target && target.actions.length > 0 ? <ActionMenu name={app.name} actions={target.actions}
+        disabled={blocked} onSelect={(action) => { setError(null); setConfirm({ target, action, key: newKey() }); }} /> : null}
+      {target && (app.inventoryState !== 'current' || app.serverStatus !== 'online') ? <span className="hint">Потрібні актуальні дані</span> : null}
+      {!target ? <span className="hint">{unavailableReason}</span> : null}
+      {target && target.matchStatus !== 'ok' ? <span className="hint">{MATCH_LABELS[target.matchStatus]}</span> : null}
+      {tracked && target?.targetKey === tracked.targetKey ? <span className="hint">{({ queued: 'Команда очікує агента', dispatched: 'Команда виконується', succeeded: 'Команду завершено', failed: 'Помилка команди', rejected: 'Команду відхилено', expired: 'Дедлайн минув', unknown: 'Потрібна перевірка результату' })[tracked.status]}</span> : null}
+    </div>;
+  };
+
   return (
-    <section className="card" aria-labelledby="control-title">
-      <h2 id="control-title" className="card__title">Керування PM2</h2>
+    <section className="card services-card" aria-labelledby="apps-title">
+      {children(canControl ? renderActions : undefined)}
       {view.state.status === 'loading' ? <LoadingState /> : null}
       {view.state.status === 'error' ? <ErrorState title="Не вдалося оновити стан керування" onRetry={view.reload}>{`Сервіс тимчасово недоступний.${formatRetry(view.state.retryAfterSeconds)}`}</ErrorState> : null}
       {current ? (
@@ -132,33 +193,11 @@ export function ProcessControl({ serverId, serverName, onFinished }: { serverId:
           ) : null}
           {current.broker?.allowlist === 'invalid' ? <p className="notice notice--warning" role="status">Локальний allowlist некоректний — усі дії відхиляються.</p> : null}
           {current.enabled && current.serverStatus !== 'online' ? <p className="notice notice--warning" role="status">Сервер не онлайн — дії недоступні.</p> : null}
-          {current.targets.length === 0 ? (
-            <p className="card__text">Немає дозволених процесів (локальний allowlist порожній або broker не звітував).</p>
-          ) : (
-            <ul className="control-targets">
-              {current.targets.map((t) => (
-                <li key={t.targetKey}>
-                  <span className="mono">{t.name}</span> <span className="hint">({t.targetKey}{t.pmId !== null ? `, PM2 id ${String(t.pmId)}` : ''}) — {MATCH_LABELS[t.matchStatus]}</span>
-                  {canControl ? (
-                    <span className="button-row">
-                      {t.actions.map((a) => (
-                        <button key={a} type="button" className={`button ${a === 'stop' ? 'button--danger' : ''}`}
-                          disabled={!ready || t.matchStatus !== 'ok' || pending || (tracked !== null && !trackedFinal)}
-                          onClick={() => { setError(null); setConfirm({ target: t, action: a, key: newKey() }); }}>
-                          {ACTION_LABELS[a]}
-                        </button>
-                      ))}
-                    </span>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
         </>
       ) : null}
 
       {tracked ? (
-        <p className={`notice ${tracked.status === 'succeeded' ? '' : 'notice--warning'}`} role="status" aria-live="polite">
+        <p ref={statusRef} tabIndex={-1} className={`notice ${tracked.status === 'succeeded' ? '' : 'notice--warning'}`} role="status" aria-live="polite">
           {`${ACTION_LABELS[tracked.action]} «${tracked.targetKey}»: ${commandStatusText(tracked)}`}
         </p>
       ) : null}

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import type { ApplicationItem, InventoryInfo, ProcessStatus, ServerStatus } from '../api/types';
 import { formatDate, StatusBadge } from '../pages/ServersPage';
@@ -55,10 +56,10 @@ export function formatMemory(bytes: number | null): string {
 export const formatCpu = (cpu: number | null) => (cpu === null ? '—' : `${cpu.toFixed(1)} %`);
 export const formatCount = (n: number | null) => (n === null ? '—' : String(n));
 
-export function ApplicationsTable({ items, showServer, caption }: { items: ApplicationItem[]; showServer: boolean; caption: string }) {
+export function ApplicationsTable({ items, showServer, caption, renderActions }: { items: ApplicationItem[]; showServer: boolean; caption: string; renderActions?: ((app: ApplicationItem) => ReactNode) | undefined }) {
   return (
     <div className="table-wrap">
-      <table className="table">
+      <table className="table service-table">
         <caption className="visually-hidden">{caption}</caption>
         <thead>
           <tr>
@@ -71,12 +72,13 @@ export function ApplicationsTable({ items, showServer, caption }: { items: Appli
             <th scope="col">CPU*</th>
             <th scope="col">Пам'ять*</th>
             <th scope="col">Дані</th>
+            {renderActions ? <th scope="col">Дії</th> : null}
           </tr>
         </thead>
         <tbody>
           {items.map((app) => (
             <tr key={app.key}>
-              <th scope="row" className="mono">{app.name}</th>
+              <th scope="row"><div className="service-name"><span className="service-icon" aria-hidden="true">▤</span><span className="mono">{app.name}</span></div></th>
               {showServer ? <td><Link to={`/servers/${app.serverId}`}>{app.serverName}</Link> <StatusBadge status={app.serverStatus} /></td> : null}
               <td>{app.pmId}{app.execMode ? <span className="hint"> · {app.execMode}</span> : null}</td>
               <td><ProcessStatusBadge status={app.status} /></td>
@@ -85,6 +87,7 @@ export function ApplicationsTable({ items, showServer, caption }: { items: Appli
               <td>{formatCpu(app.cpuPercent)}</td>
               <td>{formatMemory(app.memoryBytes)}</td>
               <td><FreshnessBadge state={app.inventoryState} serverStatus={app.serverStatus} /><br /><span className="hint">зібрано {formatDate(app.collectedAt)}</span></td>
+              {renderActions ? <td className="service-action-cell">{renderActions(app)}</td> : null}
             </tr>
           ))}
         </tbody>

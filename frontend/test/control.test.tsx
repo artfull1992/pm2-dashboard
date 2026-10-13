@@ -16,7 +16,7 @@ const XSS = '<img src=x onerror="window.__pwned=1">';
 const detail = (id: string, name: string) => ({
   id, name, isActive: true, createdAt: '2026-10-12T10:00:00.000Z', status: 'online', lastSeenAt: new Date().toISOString(), hasActiveCredential: true, snapshot: null,
 });
-const apps = (id: string) => ({ serverId: id, serverStatus: 'online', inventory: { state: 'current', reason: null, source: 'pm2', capturedAt: null, collectedAt: null, reportedAt: null, processCount: 0 }, items: [], freshWindowSeconds: 180 });
+const apps = (id: string, name = 'api') => ({ serverId: id, serverStatus: 'online', inventory: { state: 'current', reason: null, source: 'pm2', capturedAt: null, collectedAt: null, reportedAt: null, processCount: 1 }, items: [{ key: `${id}:pm2:3`, serverId: id, serverName: id === A ? 'alpha' : 'beta', serverStatus: 'online', source: 'pm2', pmId: 3, name, status: 'online', uptimeSeconds: 100, restarts: 0, cpuPercent: 1, memoryBytes: 1024, execMode: 'fork', firstSeenAt: '2026-10-13T10:00:00.000Z', inventoryState: 'current', capturedAt: null, collectedAt: null }], freshWindowSeconds: 180 });
 const target = (over: Record<string, unknown> = {}) => ({ targetKey: 'api-prod', name: 'api', pmId: 3, actions: ['restart', 'stop'], matchStatus: 'ok', ...over });
 const control = (id: string, over: Record<string, unknown> = {}) => ({
   serverId: id, enabled: true, serverStatus: 'online', broker: { state: 'ok', daemon: 'ok', allowlist: 'ok', reportedAt: new Date().toISOString(), fresh: true },
@@ -46,7 +46,7 @@ function backend(role: 'operator' | 'viewer' | 'admin', route: Route = () => und
     if (req.url === '/api/auth/me') return json(200, session(role));
     for (const [id, name] of [[A, 'alpha'], [B, 'beta']] as const) {
       if (req.url === `/api/servers/${id}`) return json(200, detail(id, name));
-      if (req.url === `/api/servers/${id}/applications`) return json(200, apps(id));
+      if (req.url === `/api/servers/${id}/applications`) return json(200, apps(id, (controlFor(id) as { targets: { name: string }[] }).targets[0]?.name));
       if (req.url === `/api/servers/${id}/control`) return json(200, controlFor(id));
       if (req.url.startsWith(`/api/servers/${id}/control-commands?`)) return json(200, { items: [] });
     }
@@ -54,7 +54,8 @@ function backend(role: 'operator' | 'viewer' | 'admin', route: Route = () => und
   });
 }
 const posts = (calls: RecordedRequest[]) => calls.filter((c) => c.method === 'POST' && c.url.includes('/control-commands'));
-const section = async () => within(await screen.findByRole('region', { name: 'Керування PM2' }));
+const section = async () => within(await screen.findByRole('region', { name: 'Сервіси сервера' }));
+const openActions = async () => { await userEvent.setup().click(await screen.findByRole('button', { name: /^Дії:/ })); };
 
 describe('process control on the server page', () => {
   it('viewer sees the allowlisted targets but no action buttons; names render as text', async () => {
@@ -70,6 +71,7 @@ describe('process control on the server page', () => {
     ['control disabled in the API', { enabled: false }, /вимкнене на сервері API/],
     ['broker report stale', { broker: { state: 'ok', daemon: 'ok', allowlist: 'ok', reportedAt: '2026-10-13T10:00:00.000Z', fresh: false } }, /давно не звітував/],
     ['broker unavailable', { broker: { state: 'unavailable', daemon: null, allowlist: null, reportedAt: new Date().toISOString(), fresh: true } }, /недоступний/],
+    ['allowlist invalid', { broker: { state: 'ok', daemon: 'ok', allowlist: 'invalid', reportedAt: new Date().toISOString(), fresh: true } }, /allowlist некоректний/],
     ['server offline', { serverStatus: 'offline' }, /Сервер не онлайн/],
     ['identity changed', { targets: [target({ matchStatus: 'fingerprint_mismatch', pmId: null })] }, /fingerprint/],
   ])('%s → buttons disabled with an explanation', async (_n, over, text) => {
@@ -77,7 +79,51 @@ describe('process control on the server page', () => {
     renderAt(`/servers/${A}`);
     const s = await section();
     expect(await s.findByText(text)).toBeTruthy();
-    for (const b of s.getAllByRole('button', { name: /Перезапустити|Зупинити/ })) expect((b as HTMLButtonElement).disabled).toBe(true);
+    const trigger = s.queryByRole<HTMLButtonElement>('button', { name: /^Дії:/ });
+    if (trigger) expect(trigger.disabled).toBe(true);
+    else expect(s.getByText(/Керування зараз недоступне|fingerprint/)).toBeTruthy();
+    expect(s.queryByRole('button', { name: 'Перезапустити' })).toBeNull();
+  });
+
+  it('actions live in the service row; Escape and outside click close the disclosure without commands', async () => {
+    const calls = backend('operator');
+    renderAt(`/servers/${A}`);
+    await openActions();
+    const trigger = screen.getByRole('button', { name: 'Дії: api' });
+    const row = trigger.closest('tr');
+    expect(row?.textContent).toContain('api');
+    expect(within(row as HTMLElement).getByRole('button', { name: 'Перезапустити' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Керування PM2' })).toBeNull();
+    const user = userEvent.setup();
+    await user.keyboard('{Escape}');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+    await user.click(trigger);
+    await user.click(screen.getByRole('heading', { name: 'alpha' }));
+    expect(screen.queryByRole('button', { name: 'Перезапустити' })).toBeNull();
+    expect(posts(calls)).toEqual([]);
+  });
+
+  it.each([
+    ['not allowlisted', []],
+    ['wrong PM2 identity', [target({ pmId: 99 })]],
+    ['ambiguous control mapping', [target(), target({ targetKey: 'duplicate' })]],
+  ])('%s cannot create a command from an inventory row', async (_name, targets) => {
+    const calls = backend('operator', undefined, (id) => control(id, { targets }));
+    renderAt(`/servers/${A}`);
+    const s = await section();
+    await s.findByText(/Не дозволено керування|Ідентичність процесу не підтверджена/);
+    expect(s.queryByRole('button', { name: /^Дії:/ })).toBeNull();
+    expect(posts(calls)).toEqual([]);
+  });
+
+  it('stale inventory blocks actions even when the broker reports a matching target', async () => {
+    backend('operator', (req) => req.url === `/api/servers/${A}/applications`
+      ? json(200, { ...apps(A), items: apps(A).items.map((app) => ({ ...app, inventoryState: 'stale' })) }) : undefined);
+    renderAt(`/servers/${A}`);
+    const s = await section();
+    await s.findByText('Потрібні актуальні дані');
+    expect(s.getByRole<HTMLButtonElement>('button', { name: 'Дії: api' }).disabled).toBe(true);
   });
 
   it('confirmation names server, process and target; cancel sends nothing; confirm sends only key/action/target with CSRF', async () => {
@@ -85,11 +131,13 @@ describe('process control on the server page', () => {
     renderAt(`/servers/${A}`);
     const s = await section();
     const user = userEvent.setup();
+    await openActions();
     await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
     let dialog = await screen.findByRole('dialog', { name: 'Перезапустити процес?' });
     expect(dialog.textContent).toContain('«api» (api-prod) на сервері «alpha»');
     await user.click(within(dialog).getByRole('button', { name: 'Скасувати' }));
     expect(posts(calls)).toEqual([]);
+    await openActions();
     await user.click(s.getByRole('button', { name: 'Перезапустити' }));
     dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
@@ -101,6 +149,9 @@ describe('process control on the server page', () => {
     expect(body).toMatchObject({ targetKey: 'api-prod', action: 'restart' });
     expect(body.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
     expect(await s.findByText(/У черзі/)).toBeTruthy();
+    // The row menu is now disabled (command not final): focus moves to the command status, not to <body>.
+    await waitFor(() => { expect(document.activeElement?.textContent).toMatch(/Перезапустити «api-prod»: У черзі/); });
+    expect(s.getByRole<HTMLButtonElement>('button', { name: 'Дії: api' }).disabled).toBe(true);
   });
 
   it('"accepted" is not success: success is shown only after the confirmed command status', async () => {
@@ -113,12 +164,13 @@ describe('process control on the server page', () => {
     renderAt(`/servers/${A}`);
     const s = await section();
     const user = userEvent.setup();
+    await openActions();
     await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     expect(await s.findByText(/У черзі/)).toBeTruthy();
     expect(s.queryByText(/Виконано/)).toBeNull();
     status = 'dispatched';
-    expect(await s.findByText(/виконується/, undefined, { timeout: 4000 })).toBeTruthy();
+    expect(await s.findByText(/Передано агенту, виконується/, undefined, { timeout: 4000 })).toBeTruthy();
     status = 'succeeded';
     expect(await s.findByText(/Виконано й підтверджено/, undefined, { timeout: 4000 })).toBeTruthy();
   });
@@ -132,6 +184,7 @@ describe('process control on the server page', () => {
     renderAt(`/servers/${A}`);
     const s = await section();
     const user = userEvent.setup();
+    await openActions();
     await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     expect(await s.findByText(/Результат невідомий .*дія могла виконатися/, undefined, { timeout: 4000 })).toBeTruthy();
@@ -148,6 +201,7 @@ describe('process control on the server page', () => {
     renderAt(`/servers/${A}`);
     const s = await section();
     const user = userEvent.setup();
+    await openActions();
     await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
@@ -171,6 +225,7 @@ describe('process control on the server page', () => {
     renderAt(`/servers/${A}`);
     const s = await section();
     const user = userEvent.setup();
+    await openActions();
     await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     await act(async () => { await nav.current?.(`/servers/${B}`); });

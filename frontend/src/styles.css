@@ -1,19 +1,19 @@
 /* GOIT Node Control UI. No inline styles anywhere (CSP style-src 'self'). */
 :root {
   color-scheme: light dark;
-  --bg: #f5f7fa;
+  --bg: #f3f5fa;
   --surface: #ffffff;
   --surface-2: #eef1f5;
   --text: #16202c;
   --text-muted: #4a5868;
   --border: #d5dce5;
-  --primary: #1f5fbf;
+  --primary: #4f46e5;
   --primary-text: #ffffff;
   --danger: #b42318;
   --success: #116b3a;
   --warning: #8a5300;
   --focus: #f0a500;
-  --radius: 10px;
+  --radius: 14px;
   --sidebar: 248px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
   font-size: 16px;
@@ -97,11 +97,11 @@ h1, h2, p { margin: 0; }
 }
 
 /* Pages */
-.page { display: grid; gap: 16px; max-width: 1200px; }
-.page__title { font-size: 1.6rem; }
+.page { display: grid; gap: 16px; max-width: 1440px; }
+.page__title { font-size: 1.9rem; letter-spacing: -.04em; }
 .page__lead { color: var(--text-muted); }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; display: grid; gap: 8px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; display: grid; gap: 12px; box-shadow: 0 4px 18px rgb(15 23 42 / 3%); }
 .card__title { font-size: 1.1rem; }
 .card__text { color: var(--text-muted); }
 
@@ -156,3 +156,45 @@ h1, h2, p { margin: 0; }
 /* PM2 control (Task 009) */
 .control-targets, .control-history { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
 .control-targets li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* Unified service workspace: native buttons and normal-flow disclosure avoid clipped menus on mobile. */
+.brand { letter-spacing: -.03em; }
+.nav__link--active { color: var(--primary); background: color-mix(in srgb, var(--primary) 9%, var(--surface)); }
+.services-card { padding: 24px; gap: 18px; }
+.services-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.services-heading .card__title { font-size: 1.35rem; letter-spacing: -.025em; }
+.eyebrow { color: var(--primary); font-size: .72rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
+.service-overview { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.service-overview > div { padding: 14px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); display: flex; flex-direction: column; gap: 4px; }
+.service-overview span { font-size: .8rem; color: var(--text-muted); }
+.service-overview strong { font-size: 1.7rem; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
+.service-overview > div:nth-child(2) strong { color: var(--success); }
+.service-table { font-size: .85rem; }
+.service-table thead th { font-size: .75rem; color: var(--text-muted); padding: 14px 12px; }
+.service-table tbody th { background: transparent; }
+.service-table tbody td, .service-table tbody th { padding: 16px 12px; vertical-align: middle; }
+.service-table tbody tr:hover { background: color-mix(in srgb, var(--primary) 3%, var(--surface)); }
+.service-table td { font-variant-numeric: tabular-nums; }
+.service-table .hint { font-size: .76rem; }
+.service-name { display: flex; gap: 10px; align-items: center; }
+.service-name .mono { white-space: normal; min-width: 140px; }
+.service-icon { display: grid; place-items: center; color: var(--primary); background: color-mix(in srgb, var(--primary) 9%, var(--surface)); border: 1px solid color-mix(in srgb, var(--primary) 15%, var(--border)); border-radius: 9px; width: 32px; height: 32px; flex-shrink: 0; font-size: 1rem; }
+.badge { border: 0; padding: 4px 9px; background: color-mix(in srgb, currentColor 9%, var(--surface)); white-space: nowrap; font-size: .75rem; }
+.badge::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: middle; }
+.table-wrap > .hint { padding: 10px 12px; background: var(--bg); }
+.service-actions { display: grid; gap: 6px; min-width: 96px; max-width: 210px; }
+.action-menu__trigger { display: flex; gap: 16px; align-items: center; justify-content: space-between; font-size: .85rem; min-height: 36px; padding: 6px 12px; }
+.action-menu__trigger[aria-expanded="true"] { border-color: var(--primary); color: var(--primary); }
+.action-menu__list { display: grid; margin-top: 6px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: 0 6px 20px rgb(15 23 42 / 8%); min-width: 155px; }
+.action-menu__item { background: transparent; border: 0; padding: 9px 10px; text-align: left; font: inherit; font-size: .82rem; color: var(--text); cursor: pointer; border-radius: 6px; }
+.action-menu__item:hover { background: var(--surface-2); }
+.action-menu__item--danger { color: var(--danger); }
+.control-history li { padding: 10px 12px; background: var(--bg); border-radius: 8px; font-size: .85rem; }
+@media (max-width: 760px) {
+  .services-card { padding: 16px; }
+  .service-overview { gap: 6px; }
+  .service-overview > div { padding: 10px; }
+  .service-overview span { font-size: .72rem; }
+  .facts { grid-template-columns: 1fr; gap: 4px; }
+  .facts dd { margin-bottom: 8px; }
+}

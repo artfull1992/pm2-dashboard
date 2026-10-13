@@ -79,20 +79,30 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     await dialog.getByRole('button', { name: /закрити/ }).click();
     const serverUrl = page.url();
     const serverId = new URL(serverUrl).pathname.split('/').at(-1) ?? '';
-    agent = startAgent(token, { NC_AGENT_CONTROL_SOCKET: brokerEnv.NC_BROKER_SOCKET });
+    const snapshotFile = join(base, 'inventory.json');
+    const exported = spawnSync(process.execPath, [join(ROOT, 'agent', 'dist', 'pm2-exporter.js')], {
+      env: { PATH: process.env.PATH ?? '', NC_PM2_HOME: home, NC_PM2_SNAPSHOT_FILE: snapshotFile }, encoding: 'utf8',
+    });
+    expect(exported.status).toBe(0);
+    agent = startAgent(token, {
+      NC_AGENT_CONTROL_SOCKET: brokerEnv.NC_BROKER_SOCKET, NC_AGENT_INVENTORY_FILE: snapshotFile,
+      NC_AGENT_INVENTORY_ALLOW_SAME_OWNER: 'true', NC_AGENT_INVENTORY_MAX_AGE_SECONDS: '3600',
+    });
 
-    // Operator: the allowlisted target becomes controllable; the other process is not listed at all.
+    // Operator: the allowlisted target becomes controllable; the other process is visible in inventory but has no control actions.
     const opContext = await browser.newContext();
     const op = await opContext.newPage();
     await login(op, 'operator');
     await op.goto(serverUrl);
-    const control = op.getByRole('region', { name: 'Керування PM2' });
+    const control = op.getByRole('region', { name: 'Сервіси сервера' });
     await expect(async () => {
       await op.reload();
-      await expect(control.getByText('готовий до керування')).toBeVisible({ timeout: 3_000 });
+      await expect(control.getByRole('button', { name: 'Дії: e2e-allowed' })).toBeEnabled({ timeout: 3_000 });
+      await control.getByRole('button', { name: 'Дії: e2e-allowed' }).click();
       await expect(control.getByRole('button', { name: 'Зупинити' })).toBeEnabled({ timeout: 3_000 });
     }).toPass({ timeout: 60_000 });
-    await expect(control.getByText('e2e-other')).toHaveCount(0);
+    await expect(control.getByText('e2e-other', { exact: true })).toBeVisible();
+    await expect(control.getByRole('button', { name: 'Дії: e2e-other' })).toHaveCount(0);
 
     await control.getByRole('button', { name: 'Зупинити' }).click();
     const confirm = op.getByRole('dialog', { name: 'Зупинити процес?' });
@@ -102,6 +112,8 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     expect(statusOf('e2e-allowed')).toBe('stopped');
     expect(statusOf('e2e-other')).toBe('online');
 
+    await expect(control.getByRole('button', { name: 'Дії: e2e-allowed' })).toBeEnabled({ timeout: 30_000 });
+    await control.getByRole('button', { name: 'Дії: e2e-allowed' }).click();
     await expect(control.getByRole('button', { name: 'Запустити', exact: true })).toBeEnabled({ timeout: 30_000 });
     await control.getByRole('button', { name: 'Запустити', exact: true }).click();
     await op.getByRole('dialog', { name: 'Запустити процес?' }).getByRole('button', { name: 'Запустити', exact: true }).click();
@@ -119,8 +131,9 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     const viewer = await viewerContext.newPage();
     await login(viewer, 'viewer');
     await viewer.goto(serverUrl);
-    const viewerControl = viewer.getByRole('region', { name: 'Керування PM2' });
-    await expect(viewerControl.getByText('готовий до керування')).toBeVisible({ timeout: 15_000 });
+    const viewerControl = viewer.getByRole('region', { name: 'Сервіси сервера' });
+    await expect(viewerControl.getByRole('rowheader', { name: 'e2e-allowed' })).toBeVisible({ timeout: 15_000 });
+    await expect(viewerControl.getByRole('button', { name: /^Дії:/ })).toHaveCount(0);
     await expect(viewerControl.getByRole('button', { name: /^(Запустити|Зупинити|Перезапустити)$/ })).toHaveCount(0);
     const status = await viewer.evaluate(async (id) => {
       const me = await (await fetch('/api/auth/me', { credentials: 'same-origin' })).json() as { csrfToken: string };
@@ -141,9 +154,11 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     await page.goto(serverUrl);
     await expect(async () => {
       await page.reload();
-      await expect(page.getByRole('region', { name: 'Керування PM2' }).getByText(/Broker недоступний/)).toBeVisible({ timeout: 3_000 });
+      await expect(page.getByRole('region', { name: 'Сервіси сервера' }).getByText(/Broker недоступний/)).toBeVisible({ timeout: 3_000 });
     }).toPass({ timeout: 60_000 });
-    for (const b of await page.getByRole('region', { name: 'Керування PM2' }).getByRole('button', { name: /Зупинити|Перезапустити/ }).all()) await expect(b).toBeDisabled();
+    // No broker report → no targets: the row offers no actions and says why (not "not allowed").
+    await expect(page.getByRole('button', { name: 'Дії: e2e-allowed' })).toHaveCount(0);
+    await expect(page.getByRole('row', { name: /e2e-allowed/ }).getByText('Керування зараз недоступне')).toBeVisible();
   } finally {
     if (agent) { const code = await agent.stop(); expect(code).toBe(0); }
     if (broker) { broker.kill('SIGTERM'); await new Promise((r) => { broker?.once('exit', r); }); }
