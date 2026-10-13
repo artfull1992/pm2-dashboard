@@ -217,7 +217,8 @@ Rollback Agent: `server-release.js rollback --base /opt/goit-node-control-agent`
 Потрібні параметри від оператора: Linux-користувач, від якого працює PM2 (`PM2_OWNER`), і абсолютний `PM2_HOME` (зазвичай `/home/<user>/.pm2`). Не вгадувати й не сканувати чужі home-каталоги. PM2 від root — не підтримується.
 
 ```bash
-# на керованій ноді (root). Agent уже оновлено до релізу з inventory (див. «Agent» вище).
+# на керованій ноді (root). Agent уже оновлено до релізу, що містить 7cdc50e (НЕ ffb32b0: там unit exporter із
+# ConditionUser=!root, через який instance пропускається). Перевірка: git merge-base --is-ancestor 7cdc50e <release-sha>
 PM2_OWNER=<user>                 # власник PM2 (не root: instance @root завершиться з exit 2)
 PM2_HOME=/home/<user>/.pm2       # абсолютний шлях
 # 0. Лише перевірки (нічого не змінюють; pm2-команди НЕ запускати):

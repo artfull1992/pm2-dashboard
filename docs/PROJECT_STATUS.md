@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-13 (Task 008.1). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-13 (Task 008.2). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -143,6 +143,31 @@ Rollback підготовлено до production `up`: код — `server-relea
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
 
+## Task 008.2 — перевірка підключення PM2 inventory та виправлення рекомендованої ревізії (2026-10-13)
+
+Підключення `app-server` уже виконано в межах Task 008.1 (11:33–11:38 UTC, деталі нижче). У Task 008.2 повторно, read-only, підтверджено стан і виправлено документацію: у Task 008 рекомендувався `ffb32b0` з дефектним unit. Історичні записи про задеплоєний `ffb32b0` (центральний API/UI) лишаються фактами.
+
+- **Ревізія для встановлення:** реліз Agent `7cdc50eb0acf5070fe829670e4bcd2830375b5b7`; `git merge-base --is-ancestor 7cdc50e 7cdc50e` — так. Артефакт: sha256 `32d8b3b4…cff3367a`, `sha256sum -c` OK; копія в `/root/node-control-deploy/7cdc50e…/` на центральному сервері.
+- **Центральний сервер:** `current` реліз Agent `ffb32b0` → `7cdc50e` (prepare `--no-install` + activate). Unit Agent там disabled/inactive, без restart, unit-файл без змін. Мета — щоб `current` більше не містив дефектного шаблону. API/UI лишився на `ffb32b0` (код не змінювався, без restart).
+
+| Перевірка (read-only, ~11:5x UTC) | Результат |
+|---|---|
+| Agent | release `7cdc50e` (previous `81e1933`), 0.2.0, enabled/active, процес `nodecontrol-agent`, групи `nodecontrol-agent nc-pm2-inventory` |
+| Node.js | `/usr/bin/node` v22.15.0 (не змінювалась) |
+| Unit exporter | `ConditionUser` — 0 рядків, `User=%i`; з моменту встановлення 0 записів «unmet condition» |
+| Виконання від PM2 owner | рядки «inventory exported» у журналі мають `_UID=1000` (`ubuntu`); `_UID=0` — лише службові повідомлення systemd |
+| Timer | `node-control-pm2-exporter@ubuntu.timer` enabled/active; 18 запусків за 10 хв, 0 warn/error |
+| Snapshot | `state ok`, 5 процесів, вік 6 с; лише allowlist-ключі; каталог `ubuntu:nc-pm2-inventory 2750`, файл `640`; конфіг exporter `root 644` |
+| Доступ Agent | читає файл; запису у файл і каталог немає; доступу до `/home/ubuntu/.pm2/rpc.sock` немає |
+| `agent.env` | `nodecontrol-agent 600`; ключі `NC_AGENT_API_URL`, `NC_AGENT_TOKEN`, `NC_AGENT_INVENTORY_FILE`; у журналі Agent за 10 хв: 0 warn/error, 0 збігів `ncag_` |
+| Центральна БД | heartbeat 18 с тому (0.2.0); inventory `ok`, 5 процесів, збір 52 с тому → «Актуально» |
+| Без рестартів | God Daemon PID 3807 (6 жовтня) і 5 дочірніх PID із часом старту 6 жовтня — як у baseline |
+| Порти | listener-и ідентичні baseline; у Agent/exporter їх немає |
+
+**Ручна перевірка оператора (одна):** увійти на https://control.example.com → «Застосунки»: 5 процесів сервера `app-server` з позначкою «Актуально», заповнені аптайм, рестарти, CPU і RAM. Сторінка сервера → «Застосунки PM2» → «Актуально: зібрано …». Адмінські credentials у цій роботі не використовувались.
+
+Rollback і невиконане: див. Task 008.1. Відкритих блокерів для inventory немає.
+
 ## Task 008.1 — виправлення unit exporter після review Codex (2026-10-13)
 
 Стан на початок: `main` = `8e28579`, дерево чисте. Центральний сервер — API/UI і реліз Agent `ffb32b0`, unit-шаблони exporter ніде не встановлені. `app-server` — Agent 0.1.0, inventory немає.
@@ -221,6 +246,8 @@ Rollback (не застосовувався): `sudo systemctl disable --now node
 | Після деплою | live/ready 200; HTTPS `/`, `/applications`, `/servers/<id>` → 200, bundle = `current`; анонімні `/api/auth/me`, `/api/applications`, `/api/servers/:id/applications` → 401; `POST /api/agent/inventory` без токена/з невідомим токеном → 401, з Origin → 403; **старий Agent 0.1.0 продовжує heartbeat** (останній — 27 с, 0 відповідей 4xx після strict schemas); journal: 0 error/fatal, 0 збігів секретів; `nginx -t` OK; Nginx/PostgreSQL/Docker active, failed 0; migrations pending=0 |
 
 **Віддалена активація (`app-server`) — не виконана.** Немає SSH-доступу й не відомі PM2 owner та `PM2_HOME`. Потрібно: оновити Agent до `ffb32b0` (реліз + restart, `agent.env` і токен не змінюються) і встановити exporter за DEPLOYMENT («PM2 inventory exporter»). До цього UI показує для сервера «Агент ще не передавав inventory PM2».
+
+> **Виправлення (Task 008.2):** рекомендація вище застаріла — `ffb32b0` містить дефектний unit exporter (`ConditionUser=!root`, instance пропускався). Встановлювати лише запушений реліз, що містить `7cdc50e` (`git merge-base --is-ancestor 7cdc50e <release-sha>`). Фактично `app-server` активовано з релізом `7cdc50e` — див. Task 008.1/008.2.
 
 Rollback (не застосовувався): API — `server-release.js rollback` (→ `0ba0824`) + restart `node-control-api`; таблиці inventory лишаються (additive), відновлення БД не потрібне. Реліз Agent — `server-release.js rollback --base /opt/goit-node-control-agent` (→ `0ba0824`), unit лишається disabled. Exporter ніде не активовано, тож і вимикати нічого.
 
