@@ -218,7 +218,7 @@ Rollback Agent: `server-release.js rollback --base /opt/goit-node-control-agent`
 
 ```bash
 # на керованій ноді (root). Agent уже оновлено до релізу з inventory (див. «Agent» вище).
-PM2_OWNER=<user>                 # власник PM2 (не root)
+PM2_OWNER=<user>                 # власник PM2 (не root: instance @root завершиться з exit 2)
 PM2_HOME=/home/<user>/.pm2       # абсолютний шлях
 # 0. Лише перевірки (нічого не змінюють; pm2-команди НЕ запускати):
 id "$PM2_OWNER"; stat -c '%U %a %F %n' "$PM2_HOME" "$PM2_HOME/rpc.sock"; /usr/bin/node --version
@@ -238,7 +238,7 @@ install -m 644 /opt/goit-node-control-agent/current/deploy/systemd/node-control-
 systemd-analyze verify "/etc/systemd/system/node-control-pm2-exporter@$PM2_OWNER.service" && systemctl daemon-reload
 # 5. Один пробний запуск і перевірка (state ok або причина unavailable; без імен процесів у журналі)
 systemctl start "node-control-pm2-exporter@$PM2_OWNER.service"
-journalctl -u "node-control-pm2-exporter@$PM2_OWNER" -n 3 -o cat
+journalctl -u "node-control-pm2-exporter@$PM2_OWNER" -n 3 -o cat     # "Finished …" і "inventory exported"; НЕ "skipped, unmet condition"
 stat -c '%U:%G %a' /var/lib/goit-node-control-pm2/inventory.json      # <owner>:nc-pm2-inventory 640
 # 6. Таймер
 systemctl enable --now "node-control-pm2-exporter@$PM2_OWNER.timer"

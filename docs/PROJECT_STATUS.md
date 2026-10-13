@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-13 (Task 008). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-13 (Task 008.1). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -142,6 +142,31 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Task 008.1 — виправлення unit exporter після review Codex (2026-10-13)
+
+Стан на початок: `main` = `8e28579`, дерево чисте. Центральний сервер — API/UI і реліз Agent `ffb32b0`, unit-шаблони exporter ніде не встановлені. `app-server` — Agent 0.1.0, inventory немає.
+
+**P1.** `ConditionUser=!root` у `node-control-pm2-exporter@.service` перевіряє користувача system manager (root), а не `User=%i`. Через це кожен instance пропускався. **Виправлення:** умову прибрано, `User=%i` залишено. Заборона root — лише в коді: `loadExporterConfig` перевіряє фактичний UID до будь-якого доступу до `PM2_HOME`, `@root` завершується з exit 2. Hardening unit без змін. Додано статичний regression-тест `tests/unit/systemd-units.test.js`: на старому unit він падає, на новому проходить.
+
+**Runtime-перевірка systemd на центральному сервері** (ізольована тимчасова конфігурація: тестовий системний користувач `nc-pm2-systest`, порожній `PM2_HOME` без daemon, `/var/lib/goit-node-control-pm2`; після перевірки все видалено, `/etc/systemd/system` повернуто до стану без exporter units):
+
+| Сценарій | Результат |
+|---|---|
+| Старий unit (`ffb32b0`) | `systemctl start` → «skipped, unmet condition check ConditionUser=!root», snapshot не записано — дефект відтворено |
+| Новий unit, `@nc-pm2-systest` | `systemd-analyze verify` OK; «Finished …»; snapshot `nc-pm2-systest:nc-pm2-systest 640`, `unavailable/daemon_not_running`, 0 процесів; `PM2_HOME` лишився порожнім (daemon не створено) |
+| `@root` | exporter відмовив сам: `Result=exit-code`, `ExecMainStatus=2`; snapshot не змінився |
+| Timer `@nc-pm2-systest` | active; 4 запуски «inventory exported» за 80 с; `capturedAt` оновився (11:02:25 → 11:03:31 UTC); `PM2_HOME` порожній |
+
+| Перевірка (Node v22.23.3) | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 88/88 (+3 unit-тести systemd), backend 322/322, smoke 10/10, agent 99/99 (+2 opt-in), frontend 86/86, typecheck, lint, збірки |
+| `npm run test:agent:pm2` (справжній pm2@7.0.4, тимчасовий `PM2_HOME`) | 2/2. Перші запуски через `npx -p node@22 -- npm run` падали з exit 127: вкладений `npx` успадковував `npm_config_package=node@22`. Тест тепер очищує `npm_*` env; тимчасові каталоги створюються лише в opt-in режимі |
+| Real-DB (тестова БД) | 49/49 |
+| E2E | 10/10; 0 схем `nc_test_*` після прогону |
+| `git diff --check`, `check:secrets` | OK |
+
+**Інцидент на локальній машині розробника (не сервер).** Під час діагностики exit 127 я виконав `npx pm2@7.0.4 --version` без `PM2_HOME`. Це запустило PM2 daemon у `~/.pm2` на Mac розробника — саме та поведінка auto-start, від якої захищає exporter. Каталог створено в момент діагностики, він не містив процесів (`module_conf.json = {}`, порожні `pids`/`logs`). Daemon зупинено через `pm2 kill`, `~/.pm2` видалено; сторонніх PM2 daemon немає. Висновок для процедур: **не запускати жодних `pm2`-команд поза тимчасовим `PM2_HOME`**, навіть `--version`.
 
 ## Task 008 — read-only PM2 inventory і застосунки (2026-10-13)
 

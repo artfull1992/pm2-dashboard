@@ -13,14 +13,19 @@ import { collectInventory, loadExporterConfig, runExporter } from '../src/pm2/ex
 const enabled = process.env.NC_TEST_REAL_PM2 === '1';
 const PM2 = 'pm2@7.0.4';
 const SECRET = 'SYNTHETIC_REAL_PM2_SECRET_51f0';
-const base = mkdtempSync(join(tmpdir(), 'ncpm2-'));
+// Temporary directories exist only when the opt-in suite runs (a skipped suite leaves nothing behind).
+const base = enabled ? mkdtempSync(join(tmpdir(), 'ncpm2-')) : '';
 const home = join(base, 'h');
 const out = join(base, 'out');
-mkdirSync(home, { mode: 0o700 });
-mkdirSync(out, { mode: 0o750 });
+if (enabled) {
+  mkdirSync(home, { mode: 0o700 });
+  mkdirSync(out, { mode: 0o750 });
+}
 
 function pm2(...args: string[]) {
-  const r = spawnSync('npx', ['-y', PM2, ...args], { env: { ...process.env, PM2_HOME: home, NC_E2E_SECRET: SECRET }, encoding: 'utf8', timeout: 120_000 });
+  // npm_* variables of an outer `npx -p node@22 -- npm run` (e.g. npm_config_package) would redirect this nested npx.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('npm_')));
+  const r = spawnSync('npx', ['-y', PM2, ...args], { env: { ...env, PM2_HOME: home, NC_E2E_SECRET: SECRET }, encoding: 'utf8', timeout: 120_000 });
   if (r.status !== 0) throw new Error(`pm2 ${args[0] ?? ''} failed (exit ${String(r.status)})`);
 }
 
@@ -28,7 +33,7 @@ afterAll(() => {
   if (enabled && existsSync(join(home, 'rpc.sock'))) {
     try { pm2('kill'); } catch { /* best effort */ }
   }
-  rmSync(base, { recursive: true, force: true });
+  if (base) rmSync(base, { recursive: true, force: true });
 });
 
 describe.skipIf(!enabled)('real PM2 daemon (disposable PM2_HOME)', () => {

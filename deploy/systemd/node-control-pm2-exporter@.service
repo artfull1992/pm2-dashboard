@@ -7,11 +7,12 @@
 [Unit]
 Description=GOIT Node Control PM2 inventory exporter (%i)
 Documentation=https://github.com/artfull1992/pm2-dashboard/blob/main/docs/DEPLOYMENT.md
-# The unit refuses to run for root even if instantiated as @root.
-ConditionUser=!root
 
 [Service]
 Type=oneshot
+# The process runs as the PM2 owner (instance name). There is deliberately NO ConditionUser=: in the system manager
+# it tests the manager's own user (root), not User=, and would skip every instance. Root is refused by the exporter
+# itself (loadExporterConfig checks the real UID before touching PM2_HOME), so @root fails with exit code 2.
 User=%i
 EnvironmentFile=/etc/goit-node-control-pm2-exporter/%i.env
 ExecStart=/usr/bin/node /opt/goit-node-control-agent/current/agent/dist/pm2-exporter.js
