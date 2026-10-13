@@ -143,6 +143,23 @@ Rollback підготовлено до production `up`: код — `server-relea
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
 
+## Task 009 — production enable керування на app-server (2026-10-13, ~13:39–13:43 UTC)
+
+Користувач попросив виконати потрібні дії на сервері й обрав allowlist «Усі 5, start/stop/restart». Код не змінювався (API/UI і Agent — `b4ada6d`, Agent уже 0.3.0).
+
+| Крок | Результат |
+|---|---|
+| Baseline | Agent `b4ada6d` active; God Daemon 3807, 5 PM2-процесів (PID і час старту 6 жовтня); listener-и записані. Fingerprint через `pm2-broker.js fingerprint` від `ubuntu` (лише існуючий daemon, без шляхів/env): усі 5 — `fork_mode`, `instances 1`, імена унікальні |
+| Broker | група `nc-pm2-control`; `/etc/goit-node-control-pm2-broker/ubuntu.env` і allowlist `root:root 644`; unit із релізу, `systemd-analyze verify` OK; `node-control-pm2-broker@ubuntu` enabled/active, процес `ubuntu` / група `nc-pm2-control`; `/run/goit-node-control-pm2-broker` `750`, сокет `660 ubuntu:nc-pm2-control`, журнал `/var/lib/goit-node-control-pm2-broker` `700`. Спершу з порожнім allowlist |
+| Agent | `nodecontrol-agent` додано лише до `nc-pm2-control` (доступу до `rpc.sock` немає — перевірено); backup `agent.env.bak-20261013T133958Z`; додано лише `NC_AGENT_CONTROL_SOCKET` (600 `nodecontrol-agent`, токен не змінювався); restart лише Agent → `control: enabled`, `control poll ok, broker ok`; heartbeat/inventory `accepted` |
+| Allowlist | backup попередньої (порожньої) версії; 5 цілей (`targetKey` = ім'я PM2): `catalog-api`, `billing-api`, `orders-api-v2`, `orders-api`, `public-api`, дії `start/stop/restart`, fingerprint з baseline |
+| API | backup `api.env.bak-20261013T134144Z` (600 `nodecontrol`); додано `PM2_CONTROL_ENABLED=true`; restart лише `node-control-api`; лог старту `pm2ControlEnabled:true`, `trustedProxies:1`, `authOrigins:1`; 0 error/fatal, 0 відповідей 4xx агенту |
+| Результат | у БД: broker `ok`, daemon `ok`, allowlist `ok`, 5 цілей `match_status ok` (pm_id 0–4); команд — 0 (жодна дія не виконувалась); PM2-процеси й час їх старту без змін; нових listener-ів немає; exporter timer active |
+
+Ручна перевірка оператора: «Сервери» → `app-server` → «Керування PM2» — 5 цілей «готовий до керування»; перша дія (наприклад, перезапуск некритичного процесу) з підтвердженням → «Виконано й підтверджено»; audit `process.command_*`.
+
+Rollback / аварійне вимкнення: `PM2_CONTROL_ENABLED` прибрати або `false` в `api.env` (backup є) + restart API; або спорожнити allowlist (backup є) — діє без перезапуску; або `systemctl disable --now node-control-pm2-broker@ubuntu`; або прибрати `NC_AGENT_CONTROL_SOCKET` (backup `agent.env.bak-20261013T133958Z`) + restart Agent. PM2-процеси при цьому не зупиняються; журнал broker не видаляти.
+
 ## Task 009 — керування явно дозволеними PM2-процесами (2026-10-13)
 
 **Active code revision:** центральний API/UI і реліз Agent — `b4ada6d07bcdc834959f889de37620688c756a15` (`feat(pm2): add allowlisted process control with audited commands`; previous API `ffb32b0`, Agent `7cdc50e`); `app-server` Agent — `b4ada6d` (0.3.0, previous `7cdc50e`). Предки: `7cdc50e`, `0ba0824`, `005fa62`, `bfe784e`. Цей звіт — пізніший docs-commit. **Production control вимкнений.**
@@ -523,7 +540,7 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 009 — керування дозволеними PM2-процесами реалізоване й перевірене в ізольованому середовищі; production control вимкнений. Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 009 — керування дозволеними PM2-процесами задеплоєне й (на запит користувача) увімкнене для 5 процесів `app-server` (start/stop/restart); жодної дії ще не виконано. Очікує ручної перевірки оператором і review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
 Next Task: production-увімкнення керування для погоджених оператором цілей (allowlist), потім логи/redeploy окремими задачами. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
