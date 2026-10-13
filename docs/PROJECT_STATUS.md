@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-13 (Task 008.2). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-13 (Task 009). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -142,6 +142,46 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Task 009 — керування явно дозволеними PM2-процесами (2026-10-13)
+
+Стан на початок: `main` = `6ef1343`, дерево чисте. Центральний сервер: API/UI `ffb32b0`, реліз Agent `7cdc50e`. `app-server`: Agent 0.2.0 (`7cdc50e`), exporter `@ubuntu`, inventory `ok`.
+
+**Реалізовано (ADR-017).** Операції `start`/`stop`/`restart` лише для процесів із root-owned allowlist на ноді; створення/видалення/reload/deploy, логи, shell, «all», cluster — ні.
+- **Broker** (`agent/dist/pm2-broker.js`, `node-control-pm2-broker@<owner>`):
+  - працює від власника PM2, лише unix-сокет `0660 <owner>:nc-pm2-control`, без мережі;
+  - викликає тільки `startProcessId`/`stopProcessId`/`restartProcessId({id})` (тип `Pm2Method` дозволяє ще `getMonitorData` — нічого більше);
+  - ідентичність: ім'я + fork/1 instance + fingerprint definition (pm_id не є ідентичністю);
+  - перевірка перед дією і пост-перевірка; дії строго послідовні;
+  - durable журнал дедуплікації (`started` до PM2-виклику, `completed` після; повторна доставка → збережений результат; збій під час дії → `unknown/interrupted`).
+- **Agent 0.3.0:** окремий цикл опитування (10 с, лише якщо задано `NC_AGENT_CONTROL_SOCKET`), передача команди broker, повтор лише підтвердження результату; heartbeat/inventory незалежні.
+- **API** (міграція `1791900000004_process-control`, additive):
+  - `control_commands` (стани `queued → dispatched → succeeded|failed|rejected|expired|unknown`, idempotency `(actor, key)`, одна активна команда на ціль);
+  - `server_control_status`/`server_control_targets`;
+  - browser: `GET …/control`, `POST …/control-commands` (`processes:control` + Origin + CSRF), `GET` команд;
+  - machine: `POST /api/agent/control/poll|result`;
+  - claim: `FOR UPDATE SKIP LOCKED`, lease 45 с, ≤ 3 доставки тієї самої команди, повторна перевірка ролі/активності актора й цілі, неблокувальний advisory-lock на сервер;
+  - дедлайн 120 с; без результату до дедлайн + 120 с → `unknown/no_result` (пізній підтверджений результат замінює його);
+  - кожен перехід + audit `process.command_*` — одна транзакція;
+  - `PM2_CONTROL_ENABLED` (типово `false`).
+- **UI:** секція «Керування PM2» на сторінці сервера:
+  - кнопки лише для `processes:control` і лише для свіжих, збіжних цілей на онлайн-сервері;
+  - підтвердження із сервером/процесом/ціллю; ключ idempotency на діалог; жодних автоповторів;
+  - статус до фінального (успіх — лише після підтвердження);
+  - чесні тексти для `failed`/`rejected`/`expired`/`unknown`; історія команд; прив'язка до сервера і сесії.
+- Не гарантується exactly-once через мережу: якщо журнал broker втрачено до дедлайну, повторна доставка може виконати дію ще раз (описано в ADR-017).
+
+| Перевірка (Node v22.23.3) | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 89/89, backend 342/342, smoke 10/10, agent 122/122 (+3 opt-in), frontend 97/97, typecheck, lint, збірки |
+| Agent/broker (`agent/test/control.test.ts`, 23) | tampered allowlist (власник, права, symlink, дублікати, wildcard, розмір); ідентичність (pm_id reuse, дублікати імен, cluster, змінений fingerprint); виконавець (усі відмови до PM2-виклику, дедлайн, без daemon — без auto-start, pm2_error, timeout → unknown, identity_changed, verification_failed); дедуплікація і crash; журнал; сокет 0660, сміття відкидається, послідовне виконання, `broker_busy`; Agent: «не надіслано» vs «надіслано без відповіді», повтор лише підтвердження, heartbeat не блокується |
+| Real-DB (`test:backend:db`, тестова БД) | 60/60 (+11 control): constraints; умови створення; idempotency і конкурентні запити; audit-збій → команди немає; claim/lease/один виконавець; прив'язка до сервера і revoked credential; повторна перевірка актора/цілі; expired / redelivery ×3 / unknown / пізнє підтвердження; конкурентні poll |
+| API (`backend/test/control-api.test.ts`, 20) | viewer 403 (+authz.denied), operator/admin 201; сесія/Origin/CSRF/Bearer; вимкнено → 409 без звернення до store; 10 спроб передати pm_id/шлях/env/shell/delete/reload/all/wildcard → 400; machine/browser separation; strict poll/result |
+| Frontend (`frontend/test/control.test.tsx`, 11) | viewer без кнопок; 5 причин вимкнених кнопок; підтвердження і тіло запиту; успіх лише після підтвердженого статусу; `unknown`; 409 без автоповтору; повтор із тим самим ключем; A→B під час запиту |
+| Справжній PM2 (`npm run test:agent:pm2`, pm2@7.0.4, тимчасовий `PM2_HOME`) | 3/3: exporter (як раніше) + broker: stop/start/restart дозволеного процесу з перевіркою стану, повторна доставка без другого restart, `start` online → `invalid_state`, недозволений процес незмінний, після `pm2 kill` → `failed/daemon_unavailable` без нового daemon |
+| E2E (`npm run test:e2e`) | 10/10 (+1 opt-in пропущено); `servers.spec`/`inventory.spec` — точний збіг «Онлайн» (новий текст «Сервер не онлайн» інакше давав хибний збіг) |
+| E2E зі справжнім PM2 (`npm run test:e2e:pm2`, окремий прогін) | 1/1: оператор у браузері зупиняє й запускає дозволений процес через API → Agent → broker → одноразовий PM2; стан PM2 підтверджено, інший процес online; audit 2×(requested, dispatched, succeeded); viewer без кнопок, API → 403; broker зупинено → «Broker недоступний», кнопки вимкнені |
+| Залишки | 0 схем `nc_test_*`; сторонніх PM2 daemon і `~/.pm2` немає; тимчасові каталоги видалено |
 
 ## Task 008.2 — перевірка підключення PM2 inventory та виправлення рекомендованої ревізії (2026-10-13)
 
@@ -464,8 +504,8 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 008.1 — фікс unit (`7cdc50e`) і PM2 inventory на `app-server` активовано (Agent 0.2.0, exporter `@ubuntu`, 5 процесів «Актуально»). Центральний API лишається на `ffb32b0` (код API/UI не змінювався). Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 009 — керування дозволеними PM2-процесами реалізоване й перевірене в ізольованому середовищі; production control вимкнений. Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
-Next Task: явно дозволені PM2-операції (RBAC, audit, перелік дозволених процесів) поверх inventory. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
+Next Task: production-увімкнення керування для погоджених оператором цілей (allowlist), потім логи/redeploy окремими задачами. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.

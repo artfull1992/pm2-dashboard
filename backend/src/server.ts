@@ -40,7 +40,7 @@ export async function runServer(options: RunServerOptions): Promise<number> {
     readinessTimeoutMs: config.readinessTimeoutMs,
     createDatabase: (log) => makeDatabase(config.db, log),
     ...(options.logStream ? { logStream: options.logStream } : {}),
-    auth: { config: config.auth },
+    auth: { config: config.auth, controlEnabled: config.pm2Control.enabled },
     trustedProxies: config.api.trustedProxies,
   });
   if (config.auth.allowedOrigins.length === 0) {

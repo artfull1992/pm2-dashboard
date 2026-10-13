@@ -33,7 +33,7 @@ test('admin provisions a server, the Agent reports in, revoke stops it; viewer c
   try {
     await expect(async () => {
       await page.reload();
-      await expect(page.getByText('Онлайн')).toBeVisible({ timeout: 2_000 });
+      await expect(page.getByText('Онлайн', { exact: true })).toBeVisible({ timeout: 2_000 });
     }).toPass({ timeout: 30_000 });
     await expect(page.getByText('linux / ').or(page.getByText('darwin / '))).toBeVisible();
 
@@ -42,7 +42,7 @@ test('admin provisions a server, the Agent reports in, revoke stops it; viewer c
     const viewer = await viewerContext.newPage();
     await login(viewer, 'viewer');
     await viewer.goto(page.url());
-    await expect(viewer.getByText('Онлайн')).toBeVisible();
+    await expect(viewer.getByText('Онлайн', { exact: true })).toBeVisible();
     await expect(viewer.getByRole('button', { name: /ключ/i })).toHaveCount(0);
     const serverId = new URL(page.url()).pathname.split('/').at(-1) ?? '';
     const status = await viewer.evaluate(async (id) => {

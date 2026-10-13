@@ -255,6 +255,48 @@ journalctl -u node-control-agent -n 5 -o cat                            # "msg":
 
 Rollback inventory (PM2 і проєкти не зачіпаються): `systemctl disable --now node-control-pm2-exporter@$PM2_OWNER.timer`; прибрати рядок `NC_AGENT_INVENTORY_FILE` з `agent.env` і `systemctl restart node-control-agent` (heartbeat продовжує працювати). Каталог/файл snapshot і група можуть лишитися (без секретів) або бути видалені вручну. Rollback API до релізу без inventory: Agent отримує 404 і переходить на рідкі спроби; таблиці inventory лишаються (additive).
 
+### Керування PM2 (Task 009, ADR-017) — production enable лише явно
+
+Типовий стан після деплою: `PM2_CONTROL_ENABLED` не задано (= `false`), Agent без `NC_AGENT_CONTROL_SOCKET`, broker не встановлений. Будь-який із трьох кроків нижче, не виконаний, лишає керування вимкненим (fail closed). PM2 і проєкти при встановленні не перезапускаються.
+
+**Потрібно від оператора:** для кожного процесу — ім'я в PM2, бажаний `targetKey` (`^[a-z0-9][a-z0-9._-]{0,63}$`) і дозволені дії (`start`/`stop`/`restart`). Cluster-процеси та процеси з повторюваними іменами не підтримуються.
+
+```bash
+# --- Крок 1. Broker на керованій ноді (root). PM2_OWNER/PM2_HOME — ті самі, що для exporter.
+PM2_OWNER=<user>; PM2_HOME=/home/<user>/.pm2
+getent group nc-pm2-control || groupadd --system nc-pm2-control
+install -d -m 755 /etc/goit-node-control-pm2-broker
+printf 'NC_PM2_HOME=%s\nNC_BROKER_ALLOWLIST=/etc/goit-node-control-pm2-broker/%s.allowlist.json\n' "$PM2_HOME" "$PM2_OWNER" \
+  | install -m 644 /dev/stdin "/etc/goit-node-control-pm2-broker/$PM2_OWNER.env"
+# Порожня allowlist (root:root 644): broker відхиляє все, доки оператор не додасть цілі.
+printf '{"version":1,"targets":[]}\n' | install -m 644 -o root -g root /dev/stdin "/etc/goit-node-control-pm2-broker/$PM2_OWNER.allowlist.json"
+install -m 644 /opt/goit-node-control-agent/current/deploy/systemd/node-control-pm2-broker@.service /etc/systemd/system/
+systemd-analyze verify "/etc/systemd/system/node-control-pm2-broker@$PM2_OWNER.service" && systemctl daemon-reload
+# Fingerprint потрібних процесів (виводить pm_id, name, exec_mode, fingerprint — без шляхів/env; лише існуючий daemon):
+runuser -u "$PM2_OWNER" -- env NC_PM2_HOME="$PM2_HOME" NC_BROKER_ALLOWLIST=/etc/goit-node-control-pm2-broker/$PM2_OWNER.allowlist.json \
+  /usr/bin/node /opt/goit-node-control-agent/current/agent/dist/pm2-broker.js fingerprint
+# Заповнити allowlist (root), наприклад:
+# {"version":1,"targets":[{"id":"api-prod","name":"api","actions":["restart"],"fingerprint":"sha256:…"}]}
+systemctl enable --now "node-control-pm2-broker@$PM2_OWNER.service"
+journalctl -u "node-control-pm2-broker@$PM2_OWNER" -n 3 -o cat       # "broker started"
+stat -c '%U:%G %a' /run/goit-node-control-pm2-broker /run/goit-node-control-pm2-broker/broker.sock   # <owner>:nc-pm2-control 750 / 660
+
+# --- Крок 2. Agent: доступ лише до сокета broker (НЕ до rpc.sock), backup конфігу, restart лише Agent.
+usermod -aG nc-pm2-control nodecontrol-agent
+cp -p /etc/goit-node-control-agent/agent.env /etc/goit-node-control-agent/agent.env.bak-$(date -u +%Y%m%dT%H%M%SZ)
+grep -q '^NC_AGENT_CONTROL_SOCKET=' /etc/goit-node-control-agent/agent.env \
+  || printf 'NC_AGENT_CONTROL_SOCKET=/run/goit-node-control-pm2-broker/broker.sock\n' >> /etc/goit-node-control-agent/agent.env
+systemctl restart node-control-agent
+journalctl -u node-control-agent -n 5 -o cat                             # "control poll", broker ok
+
+# --- Крок 3. API (центральний сервер): увімкнути керування глобально (backup api.env, restart лише API).
+#   PM2_CONTROL_ENABLED=true  у /etc/goit-node-control/api.env  (600 nodecontrol)
+```
+
+Перевірка: UI → сервер → «Керування PM2»: цілі «готовий до керування»; operator/admin виконує дію з підтвердженням; статус «Виконано й підтверджено»; audit `process.command_*`.
+
+**Rollback / аварійне вимкнення** (у будь-якому порядку, PM2-процеси не зупиняються): `PM2_CONTROL_ENABLED=false` + restart API (нові команди → 409, черга не видається й експірує); прибрати `NC_AGENT_CONTROL_SOCKET` з `agent.env` + restart Agent; `systemctl disable --now node-control-pm2-broker@<owner>`; спорожнити allowlist. Журнал broker (`/var/lib/goit-node-control-pm2-broker`) не видаляти: він захищає від повторного виконання. Таблиці керування лишаються (additive).
+
 ### Міграції: backup, recovery, rollback
 
 - Перед кожним production `up` — `pg_dump -Fc` лише `node_control_db` у `/root/node-control-backups/` (каталог `700`, файл `600`), перевірка `pg_restore --list`. Не дамп усього кластера.

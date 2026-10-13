@@ -1,5 +1,6 @@
 import {
-  type ApplicationPage, type AuditPage, ContractError, type IssuedCredential, parseApplicationPage, parseAuditPage, parseIssuedCredential,
+  type ApplicationPage, type AuditPage, type CommandView, ContractError, type ControlAction, type ControlView, type IssuedCredential,
+  parseApplicationPage, parseAuditPage, parseCommandList, parseCommandView, parseControlView, parseIssuedCredential,
   parseRevokeResult, parseServerApplications, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
   type ProcessStatus, type ServerApplications, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
 } from './types';
@@ -165,6 +166,33 @@ export const applicationsApi = {
         if (result.serverId !== id) throw new ContractError();
         return result;
       },
+      ...(signal ? { signal } : {}),
+    }),
+};
+
+export const controlApi = {
+  view: (serverId: string, signal?: AbortSignal): Promise<ControlView> =>
+    apiRequest(`${serverPath(serverId)}/control`, {
+      parse: (v) => { const r = parseControlView(v); if (r.serverId !== serverId) throw new ContractError(); return r; },
+      ...(signal ? { signal } : {}),
+    }),
+  commands: (serverId: string, signal?: AbortSignal): Promise<CommandView[]> =>
+    apiRequest(`${serverPath(serverId)}/control-commands?limit=10`, {
+      parse: (v) => { const r = parseCommandList(v); if (r.some((c) => c.serverId !== serverId)) throw new ContractError(); return r; },
+      ...(signal ? { signal } : {}),
+    }),
+  command: (id: string, signal?: AbortSignal): Promise<CommandView> => {
+    if (!UUID_RE.test(id)) throw new ApiError('invalid_request');
+    return apiRequest(`/api/control-commands/${id}`, {
+      parse: (v) => { const r = parseCommandView(v); if (r.id !== id) throw new ContractError(); return r; },
+      ...(signal ? { signal } : {}),
+    });
+  },
+  /** Never retried automatically: the caller reuses the same idempotency key only on an explicit user retry. */
+  create: (serverId: string, body: { targetKey: string; action: ControlAction; idempotencyKey: string }, csrfToken: string, signal?: AbortSignal): Promise<CommandView> =>
+    apiRequest(`${serverPath(serverId)}/control-commands`, {
+      method: 'POST', body, csrfToken,
+      parse: (v) => { const r = parseCommandView(v); if (r.serverId !== serverId) throw new ContractError(); return r; },
       ...(signal ? { signal } : {}),
     }),
 };

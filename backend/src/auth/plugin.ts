@@ -112,6 +112,7 @@ const auditItemSchema = {
       properties: {
         reason: { type: 'string' }, permission: { type: 'string' }, route: { type: 'string' },
         serverId: { type: 'string' }, rotated: { type: 'boolean' }, revoked: { type: 'boolean' },
+        commandId: { type: 'string' }, targetKey: { type: 'string' }, action: { type: 'string' },
       },
     },
   },

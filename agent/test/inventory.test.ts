@@ -209,8 +209,13 @@ describe('exporter', () => {
       const text = readFileSync(join(src, file), 'utf8');
       expect(text).not.toMatch(/from ['"](node:)?child_process['"]|from ['"]pm2['"]|require\(/);
     }
+    // The exporter itself only reads: no PM2 action method name appears in its code (control lives in src/control).
+    for (const file of ['pm2/exporter.ts', 'pm2-exporter.ts', 'pm2/sanitize.ts']) {
+      expect(readFileSync(join(src, file), 'utf8')).not.toMatch(/ProcessId|deleteProcess|reload|killMe|sendSignal/);
+    }
+    // The whole codebase may only call these four PM2 methods (typed allowlist in rpc.ts).
     const rpc = readFileSync(join(src, 'pm2/rpc.ts'), 'utf8');
-    expect(rpc.match(/method: '([A-Za-z]+)'/g)).toEqual(["method: 'getMonitorData'"]);
+    expect(rpc).toMatch(/export type Pm2Method = 'getMonitorData' \| 'startProcessId' \| 'stopProcessId' \| 'restartProcessId';/);
   });
 
   it('PM2_HOME / socket that are not ours or not what they claim → pm2_home_invalid', async () => {

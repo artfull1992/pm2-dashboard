@@ -5,7 +5,7 @@ import { parseEnv } from 'node:util';
 // Agent configuration (ADR-015). One env file (ENV_FILE, mode 600, owned by the agent's service user) holds the
 // API URL and the bearer token. Errors name keys and rules only — never values.
 
-export const AGENT_VERSION = '0.2.0';
+export const AGENT_VERSION = '0.3.0';
 const TOKEN_RE = /^ncag_[A-Za-z0-9_-]{43}$/;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 
@@ -18,6 +18,8 @@ export interface AgentConfig {
   maxBackoffSeconds: number;
   /** PM2 inventory reporting (ADR-016); null = disabled (no NC_AGENT_INVENTORY_FILE). */
   inventory: InventoryConfig | null;
+  /** PM2 control via the local broker (ADR-017); null = disabled (no NC_AGENT_CONTROL_SOCKET). */
+  control: { socket: string } | null;
 }
 
 export interface InventoryConfig {
@@ -98,8 +100,17 @@ export function loadAgentConfig(env: Env): AgentConfig {
     };
   }
 
+  let control: { socket: string } | null = null;
+  const controlSocket = env.NC_AGENT_CONTROL_SOCKET;
+  if (controlSocket !== undefined && controlSocket !== '') {
+    if (!isAbsolute(controlSocket) || normalize(controlSocket) !== controlSocket || controlSocket.includes('\0')) {
+      issues.push('NC_AGENT_CONTROL_SOCKET must be a normalized absolute path');
+    }
+    control = { socket: controlSocket };
+  }
+
   if (issues.length > 0 || !apiUrl) throw new AgentConfigError(issues);
-  return { apiUrl, token, intervalSeconds, timeoutSeconds, maxBackoffSeconds, inventory };
+  return { apiUrl, token, intervalSeconds, timeoutSeconds, maxBackoffSeconds, inventory, control };
 }
 
 /** The env file holds a secret: refuse it unless it is owned by us and not accessible to group/other. */

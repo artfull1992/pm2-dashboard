@@ -14,7 +14,20 @@ export type AuditEvent =
   | { event: 'authz.denied'; outcome: 'denied'; details: { permission: string; route: string } }
   | { event: 'server.created'; outcome: 'success'; details: { serverId: string } }
   | { event: 'agent.credential_issued'; outcome: 'success'; details: { serverId: string; rotated: boolean } }
-  | { event: 'agent.credential_revoked'; outcome: 'success'; details: { serverId: string; revoked: boolean } };
+  | { event: 'agent.credential_revoked'; outcome: 'success'; details: { serverId: string; revoked: boolean } }
+  // PM2 process control lifecycle (ADR-017). reason is a server-defined code; never PM2 output.
+  | { event: ProcessCommandEvent; outcome: AuditOutcome; details: ProcessCommandDetails };
+
+export type ProcessCommandEvent =
+  | 'process.command_requested' | 'process.command_rejected' | 'process.command_expired' | 'process.command_dispatched'
+  | 'process.command_succeeded' | 'process.command_failed' | 'process.command_unknown';
+export interface ProcessCommandDetails {
+  serverId: string;
+  commandId: string;
+  targetKey: string;
+  action: string;
+  reason?: string;
+}
 
 export interface AuditContext {
   actorUserId: string | null;

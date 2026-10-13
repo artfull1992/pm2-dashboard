@@ -12,7 +12,13 @@ import { connect, type Socket } from 'node:net';
 // The reply contains full pm2_env objects (application env vars included); it is bounded in size, parsed in memory
 // and handed to the sanitiser — never logged or written anywhere.
 
-export type RpcFailure = 'daemon_not_running' | 'permission_denied' | 'timeout' | 'protocol_error';
+export type RpcFailure = 'daemon_not_running' | 'permission_denied' | 'timeout' | 'protocol_error' | 'pm2_error';
+
+/**
+ * The only PM2 daemon methods this codebase may call. The exporter uses getMonitorData only; the control broker
+ * (ADR-017) additionally uses the three per-id process actions. No create/delete/reload/signal/stdin methods.
+ */
+export type Pm2Method = 'getMonitorData' | 'startProcessId' | 'stopProcessId' | 'restartProcessId';
 
 export class RpcError extends Error {
   constructor(readonly reason: RpcFailure) {
@@ -89,11 +95,26 @@ export interface RpcCallOptions {
 
 /**
  * Calls `getMonitorData` once and resolves with the raw result (to be sanitised immediately by the caller).
- * Exactly one request per connection; the connection is always destroyed afterwards.
+ * A PM2-side error reply is a protocol error for the exporter.
  */
-export function getMonitorData({ socketPath, timeoutMs, maxReplyBytes = MAX_REPLY_BYTES }: RpcCallOptions): Promise<unknown> {
+export async function getMonitorData(options: RpcCallOptions): Promise<unknown> {
+  try {
+    return await callDaemon(options, 'getMonitorData', {});
+  } catch (error) {
+    if (error instanceof RpcError && error.reason === 'pm2_error') throw new RpcError('protocol_error');
+    throw error;
+  }
+}
+
+let callSeq = 0;
+
+/**
+ * One call of an allowed PM2 method on an EXISTING daemon. Exactly one request per connection; the connection is
+ * always destroyed afterwards. A PM2 error reply becomes `pm2_error` — its text is never surfaced or logged.
+ */
+export function callDaemon({ socketPath, timeoutMs, maxReplyBytes = MAX_REPLY_BYTES }: RpcCallOptions, method: Pm2Method, arg: unknown): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const id = `nc-pm2-exporter:${String(process.pid)}:0`;
+    const id = `nc-node-control:${String(process.pid)}:${String(callSeq++)}`;
     let settled = false;
     const socket: Socket = connect({ path: socketPath });
     // Chunks are only concatenated when enough bytes for the next decoding step have arrived (no quadratic copying).
@@ -113,7 +134,7 @@ export function getMonitorData({ socketPath, timeoutMs, maxReplyBytes = MAX_REPL
     socket.on('error', (error) => { finish(new RpcError(failureFor(error))); });
     socket.on('close', () => { finish(new RpcError('protocol_error')); });
     socket.on('connect', () => {
-      socket.write(encodeFrame([{ type: 'call', method: 'getMonitorData', args: [{}] }, id]));
+      socket.write(encodeFrame([{ type: 'call', method, args: [arg] }, id]));
     });
     socket.on('data', (chunk: Buffer) => {
       total += chunk.length;
@@ -134,7 +155,8 @@ export function getMonitorData({ socketPath, timeoutMs, maxReplyBytes = MAX_REPL
       const [reply, replyId] = frame.args;
       if (frame.args.length !== 2 || replyId !== id || typeof reply !== 'object' || reply === null) { finish(new RpcError('protocol_error')); return; }
       const body = reply as { args?: unknown; error?: unknown };
-      if (body.error !== undefined || !Array.isArray(body.args)) { finish(new RpcError('protocol_error')); return; }
+      if (body.error !== undefined) { finish(new RpcError('pm2_error')); return; }
+      if (!Array.isArray(body.args)) { finish(new RpcError('protocol_error')); return; }
       finish(null, body.args[0]);
     });
   });

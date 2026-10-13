@@ -117,6 +117,7 @@ test('agent artifact contains only the compiled agent, its package.json, unit an
     'agent/dist/main.js': '', 'agent/dist/main.js.map': '', 'agent/src/main.ts': '', 'agent/test/agent.test.ts': '', 'agent/package.json': '{}',
     'agent/.env': 'NC_AGENT_TOKEN=x', 'deploy/systemd/node-control-agent.service': '', 'deploy/systemd/node-control-api.service': '',
     'deploy/systemd/node-control-pm2-exporter@.service': '', 'deploy/systemd/node-control-pm2-exporter@.timer': '',
+    'deploy/systemd/node-control-pm2-broker@.service': '',
     'scripts/deploy/server-release.js': '', 'scripts/deploy/lib/manifest.js': '', 'backend/dist/main.js': '', 'frontend/dist/index.html': '',
   };
   for (const [file, content] of Object.entries(files)) {
@@ -128,6 +129,7 @@ test('agent artifact contains only the compiled agent, its package.json, unit an
     'agent/dist/main.js',
     'agent/package.json',
     'deploy/systemd/node-control-agent.service',
+    'deploy/systemd/node-control-pm2-broker@.service',
     'deploy/systemd/node-control-pm2-exporter@.service',
     'deploy/systemd/node-control-pm2-exporter@.timer',
     'scripts/deploy/lib/manifest.js',

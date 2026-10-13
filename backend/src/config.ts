@@ -43,6 +43,8 @@ export interface AppConfig {
   readonly db: DbConfig;
   readonly readinessTimeoutMs: number;
   readonly shutdownTimeoutMs: number;
+  /** PM2 process control (ADR-017). false (default) → no command can be created or dispatched. */
+  readonly pm2Control: { readonly enabled: boolean };
 }
 
 export const CONFIG_DEFAULTS = Object.freeze({
@@ -199,8 +201,12 @@ export function loadConfig(env: EnvSource): AppConfig {
     }
   }
 
+  const controlRaw = value('PM2_CONTROL_ENABLED', 'false');
+  if (controlRaw !== 'true' && controlRaw !== 'false') issues.push('PM2_CONTROL_ENABLED must be true or false');
+
   const config: AppConfig = {
     nodeEnv,
+    pm2Control: { enabled: controlRaw === 'true' },
     api,
     auth: { allowedOrigins, cookieSecure, sessionTtlSeconds: ttl * 60 },
     logLevel: oneOf('LOG_LEVEL', LOG_LEVELS, 'info'),
@@ -230,5 +236,6 @@ export function describeConfig(config: AppConfig): Record<string, string | numbe
     trustedProxies: config.api.trustedProxies.length,
     authOrigins: config.auth.allowedOrigins.length, cookieSecure: config.auth.cookieSecure,
     sessionTtlMinutes: config.auth.sessionTtlSeconds / 60,
+    pm2ControlEnabled: config.pm2Control.enabled,
   };
 }

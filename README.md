@@ -262,6 +262,24 @@ npm run test:agent:pm2   # opt-in: справжній одноразовий PM2
 
 Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HOME` (абсолютний), `NC_PM2_SNAPSHOT_FILE` (поза `PM2_HOME`), `NC_PM2_SOURCE` (типово `pm2`), `NC_PM2_TIMEOUT_SECONDS` (1–60), `NC_PM2_MAX_PROCESSES` (≤500). Agent: `NC_AGENT_INVENTORY_FILE` (вмикає inventory), `NC_AGENT_INVENTORY_INTERVAL_SECONDS` (30–600, типово 60), `NC_AGENT_INVENTORY_MAX_AGE_SECONDS` (30–3600, типово 120).
 
+### Керування PM2-процесами (Task 009, ADR-017) — вимкнено за замовчуванням
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `GET /api/servers/:id/control` | `monitoring:read` | `200 {serverId, enabled, serverStatus, broker:{state, daemon, allowlist, reportedAt, fresh}\|null, targets:[{targetKey, name, pmId, actions, matchStatus}], targetFreshSeconds}` | 400, 401, 403, 404, 503 |
+| `POST /api/servers/:id/control-commands` `{"targetKey","action":"start"\|"stop"\|"restart","idempotencyKey":"<uuid>"}` | `processes:control` (operator/admin) + Origin + CSRF | `201 CommandView` (нова) / `200 CommandView` (повтор з тим самим ключем) | 400, 401, 403, 404, 409 (вимкнено, сервер офлайн, ціль недоступна, дія не дозволена, команда вже виконується, конфлікт ключа), 503 |
+| `GET /api/servers/:id/control-commands?limit=1..50` | `monitoring:read` | `200 {items:[CommandView]}` | 400, 401, 403, 404, 503 |
+| `GET /api/control-commands/:id` | `monitoring:read` | `200 CommandView` | 400, 401, 403, 404, 503 |
+| `POST /api/agent/control/poll` `{version:1, broker, daemon, allowlist, targets}` | **machine** | `200 {controlEnabled, commands:[≤1 {id, attempt, targetKey, action, deadlineAt}], intervalSeconds}` | 400, 401, 403, 413, 429, 503 |
+| `POST /api/agent/control/result` `{version:1, commandId, attempt, outcome, reason, before, after}` | **machine** | `200 {status:"recorded"\|"duplicate"}` | 400, 401, 403, 404, 409, 413, 429, 503 |
+
+`CommandView = {id, serverId, targetKey, action, status: queued|dispatched|succeeded|failed|rejected|expired|unknown, reason, requestedBy, requestedAt, deadlineAt, dispatchedAt, completedAt, attempts, before:{status}|null, after:{status}|null}`. `succeeded` — лише після підтвердженого broker результату; `unknown` — дія могла виконатися. Вмикання: `PM2_CONTROL_ENABLED=true` (API), `NC_AGENT_CONTROL_SOCKET` (Agent), broker + root-owned allowlist на ноді — див. DEPLOYMENT.
+
+```bash
+npm run test:agent:pm2   # opt-in: exporter + broker проти справжнього одноразового PM2
+npm run test:e2e:pm2     # opt-in: UI → API → Agent → broker → одноразовий PM2 (окремий прогін)
+```
+
 ### Production (сервер)
 
 Central API — systemd `node-control-api.service` під `nodecontrol` на `127.0.0.1:3100`; UI — статика з того самого релізу. Публічна адреса — **https://control.example.com** (host Nginx + Let's Encrypt, `/api/` → API). `AUTH_ALLOWED_ORIGINS=https://control.example.com`, cookie `Secure`. `API_TRUSTED_PROXIES=127.0.0.1`. Перший адміністратор створений (Task 006); нові — поки лише CLI. Agent першої ноди — `node-control-agent.service` (DEPLOYMENT). Процедура деплою й rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); фактичний стан і release blockers — [PROJECT_STATUS](docs/PROJECT_STATUS.md).
@@ -327,7 +345,7 @@ Production-деплой — лише артефактом із запушено�
 
 ## Наступні етапи
 
-1. Явно дозволені PM2-операції (RBAC, audit, перелік дозволених процесів) поверх read-only inventory (Task 008). Окремий backlog: керування користувачами, зміна пароля.
+1. Production-увімкнення керування PM2 для погоджених цілей (allowlist від оператора), далі — логи/redeploy окремими задачами. Окремий backlog: керування користувачами, зміна пароля.
 2. Перед публічним запуском — release blockers (PROJECT_STATUS): обмеження 5432, NC-SEC-001, рішення щодо публічного HTTPS-сайту та `AUTH_ALLOWED_ORIGINS`, bootstrap адміністратора.
 3. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики.
 

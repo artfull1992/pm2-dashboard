@@ -4,7 +4,7 @@
 
 ## Реалізовано
 
-ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/` — React/Vite UI (Task 006); `agent/` — Node.js Agent із вихідним HTTPS heartbeat (Task 007). Є версійні міграції (`users`, `sessions`, `audit_log`). Є реєстр серверів і heartbeat Agent (Task 007) та read-only PM2 inventory через локальний exporter (Task 008, ADR-016); керування процесами, логи застосунків і WebSocket відсутні.
+ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/` — React/Vite UI (Task 006); `agent/` — Node.js Agent із вихідним HTTPS heartbeat (Task 007). Є версійні міграції (`users`, `sessions`, `audit_log`). Є реєстр серверів і heartbeat Agent (Task 007) та read-only PM2 inventory через локальний exporter (Task 008, ADR-016) і керування явно дозволеними PM2-процесами через локальний broker (Task 009, ADR-017; у production вимкнено за замовчуванням); логи застосунків, deploy і WebSocket відсутні.
 
 | Шлях | Фактична відповідальність |
 |---|---|
@@ -108,3 +108,26 @@ flowchart LR
 ```
 
 Лише читання: керуючих маршрутів і команд немає. Exporter не має мережі й секретів API, Agent не має доступу до PM2, API не має доступу до серверів.
+
+## Керування дозволеними PM2-процесами (Task 009, ADR-017)
+
+```mermaid
+flowchart LR
+  UI[Сервер → «Керування PM2» / operator, admin] -- POST команда targetKey+action, CSRF --> API[Central API]
+  API --> DB[(control_commands + audit_log)]
+  Agent[Agent / nodecontrol-agent] -- HTTPS poll / result --> API
+  Agent -- unix-сокет 0660, група nc-pm2-control --> Broker[Broker / власник PM2 / AF_UNIX only]
+  Broker -- root-owned allowlist + fingerprint --> Broker
+  Broker -- start/stop/restartProcessId одного pm_id --> PM2[PM2 daemon]
+  Broker --> Journal[(журнал дедуплікації 0700)]
+```
+
+| Шлях | Відповідальність |
+|---|---|
+| `agent/src/control/` | протокол Agent⇄broker, allowlist, ідентичність (fingerprint), журнал, виконавець, сервер сокета, клієнт і цикл Agent |
+| `agent/src/pm2-broker.ts` | entrypoint broker (`serve`, `fingerprint`) |
+| `backend/src/servers/control*.ts` | контракт, SQL lifecycle (claim/lease/expiry/unknown, idempotency, audit), маршрути |
+| `frontend/src/components/ProcessControl.tsx` | цілі, підтвердження, статус команди, історія |
+| `deploy/systemd/node-control-pm2-broker@.service` | broker від власника PM2, без мережі |
+
+Довільного remote execution немає: від API до broker доходять лише `targetKey` і дія з enum; broker виконує лише три PM2-методи для цілей з root-owned allowlist.

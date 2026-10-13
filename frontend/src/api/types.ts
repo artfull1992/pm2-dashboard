@@ -276,3 +276,74 @@ export function parseServerApplications(value: unknown): ServerApplications {
     },
   };
 }
+
+// PM2 process control (ADR-017). Commands carry only a target key and an action from a fixed enum.
+export const CONTROL_ACTIONS = ['start', 'stop', 'restart'] as const;
+export type ControlAction = (typeof CONTROL_ACTIONS)[number];
+export const MATCH_STATUSES = ['ok', 'not_found', 'ambiguous', 'cluster_unsupported', 'fingerprint_mismatch', 'daemon_unavailable'] as const;
+export type MatchStatus = (typeof MATCH_STATUSES)[number];
+export const COMMAND_STATUSES = ['queued', 'dispatched', 'succeeded', 'failed', 'rejected', 'expired', 'unknown'] as const;
+export type CommandStatus = (typeof COMMAND_STATUSES)[number];
+export const FINAL_COMMAND_STATUSES: readonly CommandStatus[] = ['succeeded', 'failed', 'rejected', 'expired', 'unknown'];
+
+export interface ControlTarget { targetKey: string; name: string; pmId: number | null; actions: ControlAction[]; matchStatus: MatchStatus }
+export interface ControlView {
+  serverId: string;
+  enabled: boolean;
+  serverStatus: ServerStatus;
+  broker: { state: 'ok' | 'unavailable'; daemon: string | null; allowlist: string | null; reportedAt: string; fresh: boolean } | null;
+  targets: ControlTarget[];
+  targetFreshSeconds: number;
+}
+export interface CommandView {
+  id: string; serverId: string; targetKey: string; action: ControlAction; status: CommandStatus; reason: string | null;
+  requestedBy: string; requestedAt: string; deadlineAt: string; dispatchedAt: string | null; completedAt: string | null;
+  attempts: number; before: { status: string } | null; after: { status: string } | null;
+}
+
+const TARGET_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const REASON_RE = /^[a-z_]{1,40}$/;
+const oneOf = <T extends string>(list: readonly T[], v: unknown): v is T => (list as readonly unknown[]).includes(v);
+const isActions = (v: unknown): v is ControlAction[] => Array.isArray(v) && v.length >= 1 && v.length <= 3 && v.every((a) => oneOf(CONTROL_ACTIONS, a));
+const isState = (v: unknown): v is { status: string } | null => v === null || (isObject(v) && isString(v.status, 32) && Object.keys(v).length === 1);
+
+function parseTarget(v: unknown): ControlTarget {
+  expect(isObject(v));
+  const { targetKey, name, pmId, actions, matchStatus } = v;
+  expect(isString(targetKey, 64) && TARGET_KEY_RE.test(targetKey) && isString(name, 128) && name.length > 0 && isActions(actions) && oneOf(MATCH_STATUSES, matchStatus));
+  expect(pmId === null || (typeof pmId === 'number' && Number.isInteger(pmId) && isCount(pmId, 1_000_000)));
+  return { targetKey, name, pmId, actions, matchStatus };
+}
+
+export function parseControlView(value: unknown): ControlView {
+  expect(isObject(value) && Array.isArray(value.targets) && value.targets.length <= 50);
+  const { serverId, enabled, serverStatus, broker, targetFreshSeconds } = value;
+  expect(isString(serverId, 36) && UUID_RE.test(serverId) && typeof enabled === 'boolean' && isServerStatus(serverStatus) && isCount(targetFreshSeconds, 3600));
+  let b: ControlView['broker'] = null;
+  if (broker !== null) {
+    expect(isObject(broker) && (broker.state === 'ok' || broker.state === 'unavailable') && isDate(broker.reportedAt) && typeof broker.fresh === 'boolean');
+    expect((broker.daemon === null || isString(broker.daemon, 16)) && (broker.allowlist === null || isString(broker.allowlist, 16)));
+    b = { state: broker.state, daemon: broker.daemon, allowlist: broker.allowlist, reportedAt: broker.reportedAt, fresh: broker.fresh };
+  }
+  return { serverId, enabled, serverStatus, broker: b, targets: value.targets.map(parseTarget), targetFreshSeconds };
+}
+
+export function parseCommandView(value: unknown): CommandView {
+  expect(isObject(value));
+  const v = value;
+  expect(isString(v.id, 36) && UUID_RE.test(v.id) && isString(v.serverId, 36) && UUID_RE.test(v.serverId) && isString(v.requestedBy, 36));
+  expect(isString(v.targetKey, 64) && TARGET_KEY_RE.test(v.targetKey) && oneOf(CONTROL_ACTIONS, v.action) && oneOf(COMMAND_STATUSES, v.status));
+  expect(v.reason === null || (isString(v.reason, 40) && REASON_RE.test(v.reason)));
+  expect(isDate(v.requestedAt) && isDate(v.deadlineAt) && isNullableDate(v.dispatchedAt) && isNullableDate(v.completedAt) && isCount(v.attempts, 3));
+  expect(isState(v.before) && isState(v.after));
+  return {
+    id: v.id, serverId: v.serverId, targetKey: v.targetKey, action: v.action, status: v.status, reason: v.reason, requestedBy: v.requestedBy,
+    requestedAt: v.requestedAt, deadlineAt: v.deadlineAt, dispatchedAt: v.dispatchedAt, completedAt: v.completedAt, attempts: v.attempts,
+    before: v.before, after: v.after,
+  };
+}
+
+export function parseCommandList(value: unknown): CommandView[] {
+  expect(isObject(value) && Array.isArray(value.items) && value.items.length <= 50);
+  return value.items.map(parseCommandView);
+}

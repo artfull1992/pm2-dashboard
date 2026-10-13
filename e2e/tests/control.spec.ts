@@ -1,0 +1,153 @@
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { expect, type Page, test } from '@playwright/test';
+import { startAgent } from '../support/agent.js';
+import { inRunSchema } from '../support/db.js';
+import { credentials, type E2eRole } from '../support/env.js';
+
+// Task 009 E2E (opt-in: NC_E2E_REAL_PM2=1): real backend + UI + compiled Agent + compiled broker + a DISPOSABLE PM2
+// daemon in a temporary PM2_HOME (pm2 via npx, pinned). Never touches a user's PM2 or production processes.
+// Run it on its own (npm run test:e2e:pm2): together with the other specs the admin would exceed the per-account
+// login limit (5 per 15 min), which is deliberately not relaxed for tests.
+
+const enabled = process.env.NC_E2E_REAL_PM2 === '1';
+const ROOT = join(import.meta.dirname, '..', '..');
+const PM2 = 'pm2@7.0.4';
+
+async function login(page: Page, role: E2eRole) {
+  const { email, password } = credentials(role);
+  await page.goto('/');
+  await page.getByLabel('Email').fill(email);
+  await page.getByLabel('Пароль').fill(password);
+  await page.getByRole('button', { name: 'Увійти' }).click();
+  await expect(page.getByRole('heading', { name: 'Огляд' })).toBeVisible();
+}
+
+test.skip(!enabled, 'opt-in: NC_E2E_REAL_PM2=1 (needs npx pm2@7.0.4)');
+
+test('operator stops and starts an allowlisted process through Agent + broker; viewer cannot; broker down → disabled', async ({ page, browser }) => {
+  test.setTimeout(300_000);
+  const base = mkdtempSync(join(tmpdir(), 'nc-e2e-ctl-'));
+  const home = join(base, 'h');
+  const run = join(base, 'run');
+  const state = join(base, 'state');
+  mkdirSync(home, { mode: 0o700 });
+  mkdirSync(run, { mode: 0o750 });
+  mkdirSync(state, { mode: 0o700 });
+  chmodSync(run, 0o750);
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('npm_'))), PM2_HOME: home };
+  const pm2 = (...args: string[]) => {
+    const r = spawnSync('npx', ['-y', PM2, ...args], { env, encoding: 'utf8', timeout: 120_000 });
+    if (r.status !== 0) throw new Error(`pm2 ${args[0] ?? ''} failed`);
+    return r.stdout;
+  };
+  const statusOf = (name: string) => {
+    const list = JSON.parse(pm2('jlist')) as { name: string; pm2_env: { status: string } }[];
+    return list.find((p) => p.name === name)?.pm2_env.status;
+  };
+  const brokerEnv = {
+    PATH: process.env.PATH ?? '', NC_PM2_HOME: home, NC_BROKER_SOCKET: join(run, 'broker.sock'),
+    NC_BROKER_ALLOWLIST: join(base, 'allowlist.json'), NC_BROKER_JOURNAL_DIR: state, NC_BROKER_ALLOW_SELF_OWNED_ALLOWLIST: 'true',
+  };
+  let broker: ChildProcess | null = null;
+  let agent: ReturnType<typeof startAgent> | null = null;
+  try {
+    const script = join(base, 'app.cjs');
+    writeFileSync(script, 'setInterval(() => {}, 1000);\n');
+    pm2('start', script, '--name', 'e2e-allowed');
+    pm2('start', script, '--name', 'e2e-other');
+
+    // Fingerprint via the broker CLI (no paths in its output), then the allowlist.
+    const fp = spawnSync(process.execPath, [join(ROOT, 'agent', 'dist', 'pm2-broker.js'), 'fingerprint'], { env: brokerEnv, encoding: 'utf8' });
+    const entry = fp.stdout.split('\n').filter(Boolean).map((l) => JSON.parse(l) as { name: string; fingerprint: string }).find((p) => p.name === 'e2e-allowed');
+    expect(fp.stdout).not.toContain(base);
+    writeFileSync(brokerEnv.NC_BROKER_ALLOWLIST, JSON.stringify({ version: 1, targets: [{ id: 'e2e-allowed', name: 'e2e-allowed', actions: ['start', 'stop', 'restart'], fingerprint: entry?.fingerprint }] }), { mode: 0o644 });
+    broker = spawn(process.execPath, [join(ROOT, 'agent', 'dist', 'pm2-broker.js'), 'serve'], { env: brokerEnv, stdio: 'ignore' });
+    await expect.poll(() => spawnSync('test', ['-S', brokerEnv.NC_BROKER_SOCKET]).status, { timeout: 10_000 }).toBe(0);
+
+    // Provision a server and start the Agent with control enabled.
+    await login(page, 'admin');
+    await page.getByRole('link', { name: 'Сервери' }).click();
+    await page.getByLabel('Назва нового сервера').fill('e2e-control');
+    await page.getByRole('button', { name: 'Додати сервер' }).click();
+    await page.getByRole('link', { name: 'e2e-control' }).click();
+    await page.getByRole('button', { name: 'Видати ключ' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Ключ агента видано' });
+    const token = await dialog.getByRole('textbox').inputValue();
+    await dialog.getByRole('button', { name: /закрити/ }).click();
+    const serverUrl = page.url();
+    const serverId = new URL(serverUrl).pathname.split('/').at(-1) ?? '';
+    agent = startAgent(token, { NC_AGENT_CONTROL_SOCKET: brokerEnv.NC_BROKER_SOCKET });
+
+    // Operator: the allowlisted target becomes controllable; the other process is not listed at all.
+    const opContext = await browser.newContext();
+    const op = await opContext.newPage();
+    await login(op, 'operator');
+    await op.goto(serverUrl);
+    const control = op.getByRole('region', { name: 'Керування PM2' });
+    await expect(async () => {
+      await op.reload();
+      await expect(control.getByText('готовий до керування')).toBeVisible({ timeout: 3_000 });
+      await expect(control.getByRole('button', { name: 'Зупинити' })).toBeEnabled({ timeout: 3_000 });
+    }).toPass({ timeout: 60_000 });
+    await expect(control.getByText('e2e-other')).toHaveCount(0);
+
+    await control.getByRole('button', { name: 'Зупинити' }).click();
+    const confirm = op.getByRole('dialog', { name: 'Зупинити процес?' });
+    await expect(confirm).toContainText('«e2e-allowed» (e2e-allowed) на сервері «e2e-control»');
+    await confirm.getByRole('button', { name: 'Зупинити' }).click();
+    await expect(control.getByRole('status').filter({ hasText: /Зупинити «e2e-allowed»: Виконано й підтверджено/ })).toBeVisible({ timeout: 60_000 });
+    expect(statusOf('e2e-allowed')).toBe('stopped');
+    expect(statusOf('e2e-other')).toBe('online');
+
+    await expect(control.getByRole('button', { name: 'Запустити', exact: true })).toBeEnabled({ timeout: 30_000 });
+    await control.getByRole('button', { name: 'Запустити', exact: true }).click();
+    await op.getByRole('dialog', { name: 'Запустити процес?' }).getByRole('button', { name: 'Запустити', exact: true }).click();
+    await expect(control.getByRole('status').filter({ hasText: /Запустити «e2e-allowed»: Виконано й підтверджено/ })).toBeVisible({ timeout: 60_000 });
+    expect(statusOf('e2e-allowed')).toBe('online');
+
+    const audit = await inRunSchema(async (q) => (await q(
+      `SELECT event FROM audit_log WHERE event LIKE 'process.%' AND details->>'serverId' = $1 ORDER BY id`, [serverId])).rows.map((r) => r.event));
+    expect(audit).toEqual(['process.command_requested', 'process.command_dispatched', 'process.command_succeeded',
+      'process.command_requested', 'process.command_dispatched', 'process.command_succeeded']);
+    await opContext.close();
+
+    // Viewer: sees the target, has no buttons; the API refuses even with a valid CSRF token.
+    const viewerContext = await browser.newContext();
+    const viewer = await viewerContext.newPage();
+    await login(viewer, 'viewer');
+    await viewer.goto(serverUrl);
+    const viewerControl = viewer.getByRole('region', { name: 'Керування PM2' });
+    await expect(viewerControl.getByText('готовий до керування')).toBeVisible({ timeout: 15_000 });
+    await expect(viewerControl.getByRole('button', { name: /^(Запустити|Зупинити|Перезапустити)$/ })).toHaveCount(0);
+    const status = await viewer.evaluate(async (id) => {
+      const me = await (await fetch('/api/auth/me', { credentials: 'same-origin' })).json() as { csrfToken: string };
+      const res = await fetch(`/api/servers/${id}/control-commands`, {
+        method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': me.csrfToken, 'content-type': 'application/json' },
+        body: JSON.stringify({ targetKey: 'e2e-allowed', action: 'stop', idempotencyKey: crypto.randomUUID() }),
+      });
+      return res.status;
+    }, serverId);
+    expect(status).toBe(403);
+    expect(statusOf('e2e-allowed')).toBe('online');
+    await viewerContext.close();
+
+    // Broker down → the UI says so and the buttons are disabled.
+    broker.kill('SIGTERM');
+    await new Promise((r) => { broker?.once('exit', r); });
+    broker = null;
+    await page.goto(serverUrl);
+    await expect(async () => {
+      await page.reload();
+      await expect(page.getByRole('region', { name: 'Керування PM2' }).getByText(/Broker недоступний/)).toBeVisible({ timeout: 3_000 });
+    }).toPass({ timeout: 60_000 });
+    for (const b of await page.getByRole('region', { name: 'Керування PM2' }).getByRole('button', { name: /Зупинити|Перезапустити/ }).all()) await expect(b).toBeDisabled();
+  } finally {
+    if (agent) { const code = await agent.stop(); expect(code).toBe(0); }
+    if (broker) { broker.kill('SIGTERM'); await new Promise((r) => { broker?.once('exit', r); }); }
+    try { pm2('kill'); } catch { /* already gone */ }
+    rmSync(base, { recursive: true, force: true });
+  }
+});

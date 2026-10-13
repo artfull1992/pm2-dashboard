@@ -85,6 +85,8 @@ export default async function globalSetup(): Promise<void> {
       LOG_LEVEL: 'warn',
       AUTH_COOKIE_SECURE: 'false',
       AUTH_ALLOWED_ORIGINS: UI_ORIGIN,
+      // Control is enabled ONLY in this isolated E2E backend (production default: false).
+      PM2_CONTROL_ENABLED: 'true',
       AUTH_SESSION_TTL_MINUTES: '30',
       DB_HOST: config.host, DB_PORT: String(config.port), DB_NAME: config.database, DB_USER: config.user, DB_PASS: config.password,
     },

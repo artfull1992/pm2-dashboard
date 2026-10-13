@@ -3,6 +3,8 @@ import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServ
 import type { Limiter } from './auth/password.js';
 import { registerAuth } from './auth/plugin.js';
 import { type AuthStore, createPgAuthStore } from './auth/store.js';
+import { createPgControlStore, type ControlStore } from './servers/control-store.js';
+import { registerControlRoutes } from './servers/control-routes.js';
 import { createPgInventoryStore, type InventoryStore } from './servers/inventory-store.js';
 import { registerInventoryRoutes } from './servers/inventory-routes.js';
 import { registerServerRoutes } from './servers/routes.js';
@@ -40,6 +42,12 @@ export interface BuildAppOptions {
     createInventoryStore?: (database: Database) => InventoryStore;
     /** Test seam: bounds concurrent inventory transactions. */
     inventoryLimiter?: Limiter;
+    /** PM2_CONTROL_ENABLED (ADR-017); default false — no command can be created or dispatched. */
+    controlEnabled?: boolean;
+    /** Test seam for the PM2 control store. */
+    createControlStore?: (database: Database) => ControlStore;
+    /** Test seam: bounds concurrent control transactions. */
+    controlLimiter?: Limiter;
     extra?: Omit<Parameters<typeof registerAuth>[1], 'config' | 'store'>;
   };
 }
@@ -125,6 +133,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     registerServerRoutes(app, { store: serverStore, ...(options.auth.heartbeatLimiter ? { heartbeatLimiter: options.auth.heartbeatLimiter } : {}) });
     const inventoryStore = (options.auth.createInventoryStore ?? createPgInventoryStore)(database);
     registerInventoryRoutes(app, { store: inventoryStore, ...(options.auth.inventoryLimiter ? { inventoryLimiter: options.auth.inventoryLimiter } : {}) });
+    const controlStore = (options.auth.createControlStore ?? createPgControlStore)(database);
+    registerControlRoutes(app, {
+      store: controlStore, enabled: options.auth.controlEnabled === true,
+      ...(options.auth.controlLimiter ? { limiter: options.auth.controlLimiter } : {}),
+    });
   }
 
   app.setNotFoundHandler({}, async (_request, reply) => {

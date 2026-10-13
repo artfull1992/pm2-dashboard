@@ -33,3 +33,16 @@ test('exporter timer triggers the same instance', () => {
   assert.ok(lines.includes('Unit=node-control-pm2-exporter@%i.service'));
   assert.ok(lines.includes('OnUnitActiveSec=30s'));
 });
+
+test('broker service: instance user, dedicated group, socket/state dirs, no condition, no network, bounded', () => {
+  const lines = directives(unit('node-control-pm2-broker@.service'));
+  assert.equal(lines.some((l) => l.startsWith('Condition')), false);
+  for (const required of [
+    'User=%i', 'Group=nc-pm2-control', 'RuntimeDirectory=goit-node-control-pm2-broker', 'RuntimeDirectoryMode=0750',
+    'StateDirectory=goit-node-control-pm2-broker', 'StateDirectoryMode=0700', 'RestartPreventExitStatus=2',
+    'RestrictAddressFamilies=AF_UNIX', 'IPAddressDeny=any', 'NoNewPrivileges=yes', 'CapabilityBoundingSet=',
+    'ProtectSystem=strict', 'ProtectHome=read-only', 'MemoryMax=128M', 'TasksMax=32',
+    'ExecStart=/usr/bin/node /opt/goit-node-control-agent/current/agent/dist/pm2-broker.js serve',
+  ]) assert.ok(lines.includes(required), required);
+  assert.equal(lines.some((l) => /^(ReadWritePaths|AmbientCapabilities=\S|SupplementaryGroups)/.test(l)), false);
+});

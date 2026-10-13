@@ -91,7 +91,7 @@ export async function collectInventory(config: ExporterConfig, deps: CollectDeps
   try {
     raw = await fetchMonitorData(socketPath, config.timeoutMs);
   } catch (error) {
-    return unavailable(error instanceof RpcError ? error.reason : 'protocol_error');
+    return unavailable(error instanceof RpcError && error.reason !== 'pm2_error' ? error.reason : 'protocol_error');
   }
   try {
     const processes = sanitizeProcessList(raw, now(), config.maxProcesses);

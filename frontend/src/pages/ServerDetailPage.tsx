@@ -6,6 +6,7 @@ import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { Dialog } from '../components/Dialog';
 import { ApplicationsTable, formatUptime, InventorySummary } from '../components/Inventory';
+import { ProcessControl } from '../components/ProcessControl';
 import { ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { usePolledResource } from '../components/usePolledResource';
 import { formatDate, mutationErrorMessage, StatusBadge } from './ServersPage';
@@ -37,9 +38,11 @@ type Confirm = null | 'issue' | 'revoke';
  * PM2 inventory of this server (read-only). Its own polled resource keyed by the server id: after navigation to
  * another server nothing of the previous server's applications is shown (Task 007.1 rule).
  */
-function ServerApplications({ serverId }: { serverId: string }) {
+function ServerApplications({ serverId, refresh }: { serverId: string; refresh: number }) {
   const load = useCallback((signal: AbortSignal) => applicationsApi.forServer(serverId, signal), [serverId]);
   const { state, reload } = usePolledResource(load, serverId);
+  // A finished control command asks for a fresh inventory view (the exporter/Agent cadence still applies).
+  useEffect(() => { if (refresh > 0) reload(); }, [refresh, reload]);
   const data = state.status === 'ready' ? state.data : state.status === 'error' ? state.data : null;
   const current = data && data.serverId === serverId ? data : null;
   return (
@@ -174,6 +177,8 @@ export function ServerDetailPage() {
   // Identity of the session the controls act for; a new session (or logout) remounts them with empty state.
   // The CSRF token is stable for the lifetime of one server session and is never rendered.
   const sessionKey = auth.status === 'authenticated' ? auth.session.csrfToken : 'anonymous';
+  const [refresh, setRefresh] = useState(0);
+  const bumpRefresh = useCallback(() => { setRefresh((n) => n + 1); }, []);
 
   if (!UUID_RE.test(id) || state.status === 'not_found') {
     return (
@@ -210,7 +215,8 @@ export function ServerDetailPage() {
               <Snapshot server={server} />
             </article>
           </div>
-          <ServerApplications key={server.id} serverId={server.id} />
+          <ServerApplications key={server.id} serverId={server.id} refresh={refresh} />
+          <ProcessControl key={`${server.id}:${sessionKey}`} serverId={server.id} serverName={server.name} onFinished={bumpRefresh} />
           {can('servers:manage') ? <CredentialControls key={`${server.id}:${sessionKey}`} server={server} onChanged={reload} /> : null}
         </>
       ) : null}

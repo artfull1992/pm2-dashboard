@@ -12,7 +12,7 @@ import {
 const FAILING_DIR = join(import.meta.dirname, '..', 'fixtures', 'migrations-failing');
 const USERS_MIGRATION = '1791900000000_create-users';
 const AUTH_MIGRATION = '1791900000001_auth-foundation';
-const ALL = [USERS_MIGRATION, AUTH_MIGRATION, '1791900000002_server-registry', '1791900000003_pm2-inventory'];
+const ALL = [USERS_MIGRATION, AUTH_MIGRATION, '1791900000002_server-registry', '1791900000003_pm2-inventory', '1791900000004_process-control'];
 
 let config: DbConfig;
 let admin: pg.Client;

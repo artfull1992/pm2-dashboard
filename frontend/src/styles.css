@@ -152,3 +152,7 @@ h1, h2, p { margin: 0; }
 .filters { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 16px; }
 .filters .field { flex: 0 1 260px; }
 .pager { display: flex; gap: 8px; margin-top: 12px; }
+
+/* PM2 control (Task 009) */
+.control-targets, .control-history { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
+.control-targets li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

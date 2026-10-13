@@ -71,7 +71,7 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
 
     await page.goto(serverUrl);
     await expect(page.getByText(/Актуально: зібрано/)).toBeVisible();
-    await expect(page.getByText('Онлайн')).toBeVisible();
+    await expect(page.getByText('Онлайн', { exact: true })).toBeVisible();
 
     // Viewer reads the same inventory (monitoring:read).
     const viewerContext = await browser.newContext();
