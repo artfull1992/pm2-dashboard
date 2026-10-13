@@ -192,6 +192,13 @@ describe('machine authentication (heartbeat)', () => {
     const res = await heartbeat(a.token, { ...validSnapshot(), serverId: b.serverId, receivedAt: '1999-01-01T00:00:00Z' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ status: 'accepted', intervalSeconds: 30 });
+    // Agent response contract (agent/src/heartbeat.ts parseAcceptedBody): exactly these keys, ISO-8601 UTC with ms,
+    // integer interval within the agent's 5..300 bounds.
+    const reply = res.json<{ status: string; receivedAt: string; intervalSeconds: number }>();
+    expect(Object.keys(reply).sort()).toEqual(['intervalSeconds', 'receivedAt', 'status']);
+    expect(reply.receivedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(new Date(reply.receivedAt).toISOString()).toBe(reply.receivedAt);
+    expect(Number.isInteger(reply.intervalSeconds) && reply.intervalSeconds >= 5 && reply.intervalSeconds <= 300).toBe(true);
     expect(res.headers['cache-control']).toBe('no-store');
     expect([...servers.heartbeats.keys()]).toEqual([a.serverId]);
     expect(Object.keys(servers.heartbeats.get(a.serverId)?.snapshot ?? {}).sort()).toEqual(['agentVersion', 'arch', 'cpuCount', 'hostname', 'loadAverage', 'memory', 'platform', 'uptimeSeconds']);

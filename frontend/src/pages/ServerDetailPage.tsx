@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { ApiError, serversApi } from '../api/client';
 import type { IssuedCredential, ServerDetail } from '../api/types';
@@ -39,8 +39,14 @@ function Snapshot({ server }: { server: ServerDetail }) {
 
 type Confirm = null | 'issue' | 'revoke';
 
+// Mounted with key = server id + session (see ServerDetailPage): switching server or session remounts it, so a
+// confirmation, error or issued token of the previous server/session can never be shown or acted upon.
 function CredentialControls({ server, onChanged }: { server: ServerDetail; onChanged: () => void }) {
   const { state, sessionExpired } = useAuth();
+  const inflight = useRef<AbortController | null>(null);
+  // Unmount (navigation, session change) cancels the pending mutation and drops its result. Cancelling the request
+  // does not undo it — the server may already have applied it; nothing is retried automatically.
+  useEffect(() => () => { inflight.current?.abort(); }, []);
   const [confirm, setConfirm] = useState<Confirm>(null);
   // The one-time secret lives only here and is dropped when the dialog closes; it is never logged or stored.
   const [issued, setIssued] = useState<IssuedCredential | null>(null);
@@ -53,18 +59,35 @@ function CredentialControls({ server, onChanged }: { server: ServerDetail; onCha
   const { csrfToken } = state.session;
 
   const run = async (action: 'issue' | 'revoke') => {
+    const serverId = server.id;
+    inflight.current?.abort();
+    const controller = new AbortController();
+    inflight.current = controller;
     setPending(true);
     setError(null);
     try {
-      if (action === 'issue') setIssued(await serversApi.issueCredential(server.id, csrfToken));
-      else await serversApi.revokeCredential(server.id, csrfToken);
+      if (action === 'issue') {
+        const result = await serversApi.issueCredential(serverId, csrfToken, controller.signal);
+        if (controller.signal.aborted) return;
+        // A response for another server than the one this control belongs to is never shown.
+        if (result.serverId !== serverId) { setError(mutationErrorMessage(new ApiError('unexpected'))); return; }
+        setIssued(result);
+      } else {
+        const result = await serversApi.revokeCredential(serverId, csrfToken, controller.signal);
+        if (controller.signal.aborted) return;
+        if (result.serverId !== serverId) { setError(mutationErrorMessage(new ApiError('unexpected'))); return; }
+      }
       onChanged();
     } catch (e) {
+      if (controller.signal.aborted) return;
       if (e instanceof ApiError && e.kind === 'unauthorized') { sessionExpired(); return; }
       setError(mutationErrorMessage(e));
     } finally {
-      setPending(false);
-      setConfirm(null);
+      if (inflight.current === controller) inflight.current = null;
+      if (!controller.signal.aborted) {
+        setPending(false);
+        setConfirm(null);
+      }
     }
   };
 
@@ -125,9 +148,12 @@ function CredentialControls({ server, onChanged }: { server: ServerDetail; onCha
 
 export function ServerDetailPage() {
   const { id = '' } = useParams();
-  const { can } = useAuth();
+  const { can, state: auth } = useAuth();
   const load = useCallback((signal: AbortSignal) => serversApi.get(id, signal), [id]);
-  const { state, reload } = usePolledResource(load);
+  const { state, reload } = usePolledResource(load, id);
+  // Identity of the session the controls act for; a new session (or logout) remounts them with empty state.
+  // The CSRF token is stable for the lifetime of one server session and is never rendered.
+  const sessionKey = auth.status === 'authenticated' ? auth.session.csrfToken : 'anonymous';
 
   if (!UUID_RE.test(id) || state.status === 'not_found') {
     return (
@@ -139,7 +165,9 @@ export function ServerDetailPage() {
   }
   if (state.status === 'forbidden') return <Forbidden />;
   if (state.status === 'loading') return <LoadingState />;
-  const server = state.status === 'ready' ? state.data : state.data;
+  const loaded = state.status === 'ready' ? state.data : state.data;
+  // Defence in depth: the hook never returns another key's data, and the API echoes the requested id.
+  const server = loaded && loaded.id === id ? loaded : null;
 
   return (
     <section className="page" aria-labelledby="sd-title">
@@ -162,7 +190,7 @@ export function ServerDetailPage() {
               <Snapshot server={server} />
             </article>
           </div>
-          {can('servers:manage') ? <CredentialControls server={server} onChanged={reload} /> : null}
+          {can('servers:manage') ? <CredentialControls key={`${server.id}:${sessionKey}`} server={server} onChanged={reload} /> : null}
         </>
       ) : null}
     </section>

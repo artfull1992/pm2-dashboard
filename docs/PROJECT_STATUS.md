@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-12 (Task 007). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-13 (Task 007.1). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -142,6 +142,39 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Task 007.1 — виправлення після review Codex (2026-10-13)
+
+Стан до початку: `main` = `5605221`, дерево чисте. На сервері API/UI `97d1c06`, Agent `e2ac0c9`. Оператор уже створив сервер і видав ключ (1 сервер, 1 активний credential), але `agent.env` ще не записано: Agent disabled/inactive, heartbeat-ів 0. Цей стан зберігається.
+
+**P1 — дії з ключем могли піти на попередній сервер.** `usePolledResource` тримав дані останнього успішного завантаження незалежно від id. Після переходу `/servers/A` → `/servers/B` без reload і 503 для B сторінка B показувала сервер A з його `CredentialControls`, і «Видати ключ» надсилав `POST /api/servers/A/agent-credentials`.
+
+Виправлення (ADR-015, «Ідентичність ресурсу в UI»):
+- `usePolledResource(load, resourceKey)` зберігає стан разом із ключем. Для іншого ключа в тому самому render повертається `loading`. Помилка нового ресурсу не підставляє дані попереднього; last known data зберігаються лише при refresh того самого ключа.
+- `ServerDetailPage` показує дані лише якщо `data.id === id` із URL.
+- `CredentialControls` монтується з `key = id + сесія`, тому підтвердження, помилка й виданий токен не переживають зміну сервера, logout чи нову сесію.
+- Мутації мають `AbortSignal` і скасовуються при unmount. Результат після скасування ігнорується: токен не показується, reload не запускається. Відповідь із чужим `serverId` — помилка, токен не показується.
+- Скасування не вважається відкатом: сервер міг уже виконати дію; автоматичних повторів немає.
+
+**P2 — Agent повертав `accepted` при помилці читання body.** `response.text().catch(() => '')` при HTTP 200 давав `{kind:'accepted', intervalSeconds:null}` навіть після обриву потоку. Timeout не охоплював читання body; відповідь не перевірялась.
+
+Виправлення (ADR-015, «Контракт відповіді heartbeat»):
+- Один дедлайн і сигнал скасування охоплюють fetch і читання body. Body обмежено 4096 байтами за фактичним потоком; завеликий `Content-Length` відхиляється без читання; декодування — строгий UTF-8.
+- `accepted` лише для `200` + `{status:'accepted', receivedAt: ISO-8601 UTC (round-trip toISOString), intervalSeconds: ціле 5–300}`.
+- Новий outcome `invalid_response` (порожній, завеликий, не-JSON, `null` або порушений контракт) дає звичайний експоненційний backoff, лічильник збоїв не скидається. Обрив потоку → `network`, дедлайн → `timeout`, скасування → `aborted`.
+- Для не-200 body не читається, класифікація лише за статусом.
+- Контракт backend не змінювався (30 с, ISO): backend-тест тепер явно фіксує ключі, формат `receivedAt` і діапазон інтервалу. Схема БД, endpoints і міграції не змінювались.
+
+| Перевірка (Node v22.23.3) | Результат |
+|---|---|
+| Regression P1 (`frontend/test/server-identity.test.tsx`, MemoryRouter + `useNavigate`, той самий route з новим параметром) | 12/12 з виправленням. На старому коді падають 6: B повільний; B 503; pending issue A → B; підтвердження A; token dialog A; чужий `serverId` |
+| Regression P2 (`agent/test/agent.test.ts`, «heartbeat response body») | 36/36 з виправленням (асинхронні `ReadableStream`, реальний HTTP-сервер з обривом і зависанням body). На старому коді падає 18, зокрема відтворення Codex (stream error → accepted), body timeout, cancel і oversized |
+| `npm run check:local` | exit 0: node:test 85/85, typecheck, lint, backend 291/291, smoke 10/10, agent 71/71, збірка agent, frontend 74/74, збірка UI |
+| `test:backend:db` (ізольована тестова БД через тунель) | 38/38. Перший запуск: ECONNREFUSED, бо впав SSH-тунель; після перепідключення успішно |
+| `test:e2e` (тестова БД) | 9/9; 0 схем `nc_test_*` після прогону |
+| `check:secrets`, `git diff --check` | OK |
+
+Окремого E2E-сценарію для переходу A → B не додано: його покриває real-router тест frontend. Наявний E2E servers.spec (видача/відкликання ключа, Agent online/unauthorized) успішний.
 
 ## Task 007 — реєстр серверів, Agent heartbeat, UI серверів (2026-10-12)
 

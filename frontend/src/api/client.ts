@@ -147,8 +147,8 @@ export const serversApi = {
   create: (name: string, csrfToken: string): Promise<ServerSummary> =>
     apiRequest('/api/servers', { method: 'POST', body: { name }, csrfToken, parse: parseServerSummary }),
   /** The response carries a one-time secret: callers must not log or persist it. */
-  issueCredential: (id: string, csrfToken: string): Promise<IssuedCredential> =>
-    apiRequest(`${serverPath(id)}/agent-credentials`, { method: 'POST', csrfToken, parse: parseIssuedCredential }),
-  revokeCredential: (id: string, csrfToken: string): Promise<{ serverId: string; revoked: boolean }> =>
-    apiRequest(`${serverPath(id)}/agent-credentials/revoke`, { method: 'POST', csrfToken, parse: parseRevokeResult }),
+  issueCredential: (id: string, csrfToken: string, signal?: AbortSignal): Promise<IssuedCredential> =>
+    apiRequest(`${serverPath(id)}/agent-credentials`, { method: 'POST', csrfToken, parse: parseIssuedCredential, ...(signal ? { signal } : {}) }),
+  revokeCredential: (id: string, csrfToken: string, signal?: AbortSignal): Promise<{ serverId: string; revoked: boolean }> =>
+    apiRequest(`${serverPath(id)}/agent-credentials/revoke`, { method: 'POST', csrfToken, parse: parseRevokeResult, ...(signal ? { signal } : {}) }),
 };

@@ -7,14 +7,17 @@ import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { abortableSleep, runAgent } from '../src/agent.js';
 import { AgentConfigError, loadAgentConfig, readSecureEnvFile } from '../src/config.js';
-import { type HeartbeatOutcome, nextDelaySeconds, parseRetryAfter, sendHeartbeat } from '../src/heartbeat.js';
+import { type FetchLike, type HeartbeatOutcome, MAX_RESPONSE_BYTES, nextDelaySeconds, parseAcceptedBody, parseRetryAfter, sendHeartbeat } from '../src/heartbeat.js';
 import { collectSnapshot, type OsSource } from '../src/snapshot.js';
 
 const TOKEN = 'ncag_' + 'S'.repeat(43);
 const dir = mkdtempSync(join(tmpdir(), 'nc-agent-'));
 afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
 const servers: Server[] = [];
-afterEach(async () => { await Promise.all(servers.splice(0).map((s) => new Promise((r) => s.close(r)))); });
+afterEach(async () => { await Promise.all(servers.splice(0).map((s) => new Promise((r) => { s.close(r); s.closeAllConnections(); }))); });
+
+const ACCEPTED = { status: 'accepted', receivedAt: '2026-10-12T10:00:00.000Z', intervalSeconds: 30 };
+const acceptedBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({ ...ACCEPTED, ...overrides });
 
 const env = (overrides: Record<string, string> = {}) => ({ NC_AGENT_API_URL: 'https://nodecontrol.example.test', NC_AGENT_TOKEN: TOKEN, ...overrides });
 const config = (overrides: Record<string, string> = {}) => loadAgentConfig(env(overrides));
@@ -99,7 +102,7 @@ describe('heartbeat request', () => {
     let seen: { url: string; init: RequestInit } | undefined;
     const outcome = await sendHeartbeat(config(), collectSnapshot(), new AbortController().signal, (url, init) => {
       seen = { url, init };
-      return Promise.resolve(new Response(JSON.stringify({ status: 'accepted', intervalSeconds: 45 }), { status: 200 }));
+      return Promise.resolve(new Response(acceptedBody({ intervalSeconds: 45 }), { status: 200 }));
     });
     expect(outcome).toEqual({ kind: 'accepted', intervalSeconds: 45 });
     expect(seen?.url).toBe('https://nodecontrol.example.test/api/agent/heartbeat');
@@ -163,7 +166,7 @@ describe('scheduling', () => {
 
   it('accepted → interval (server suggestion bounded to 5..300) and resets failures', () => {
     const state = { failures: 4 };
-    expect(nextDelaySeconds({ kind: 'accepted', intervalSeconds: null }, state, cfg)).toBe(30);
+    expect(nextDelaySeconds({ kind: 'accepted', intervalSeconds: 30 }, state, cfg)).toBe(30);
     expect(state.failures).toBe(0);
     expect(nextDelaySeconds({ kind: 'accepted', intervalSeconds: 1 }, state, cfg)).toBe(5);
     expect(nextDelaySeconds({ kind: 'accepted', intervalSeconds: 9999 }, state, cfg)).toBe(300);
@@ -204,7 +207,7 @@ describe('agent loop', () => {
         await new Promise((r) => setTimeout(r, 5));
         inFlight -= 1;
         if (calls >= 5) controller.abort();
-        return new Response(JSON.stringify({ intervalSeconds: 5 }), { status: calls % 2 ? 200 : 503 });
+        return new Response(acceptedBody({ intervalSeconds: 5 }), { status: calls % 2 ? 200 : 503 });
       },
       sleep: (_ms, signal) => abortableSleep(1, signal),
       logger: { info: (e) => logged.push(JSON.stringify(e)), warn: (e) => logged.push(JSON.stringify(e)) },
@@ -233,5 +236,165 @@ describe('agent loop', () => {
     });
     expect(await attempts).toBe(1);
     expect(calls).toBe(1);
+  });
+});
+
+// Regression for review finding P2 (Task 007.1): "accepted" only after a fully read, contract-valid 200 body.
+describe('heartbeat response body', () => {
+  const enc = new TextEncoder();
+  const respond = (response: Response): FetchLike => () => Promise.resolve(response);
+  const send = (fetchImpl: FetchLike, cfg = config(), signal = new AbortController().signal) => sendHeartbeat(cfg, collectSnapshot(), signal, fetchImpl);
+  /** A real asynchronous stream: the first chunk arrives after the headers, then it never ends (until cancelled). */
+  function stalledBody(onCancel: () => void = () => undefined) {
+    let step = 0;
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((r) => setTimeout(r, 5));
+        if (step++ === 0) controller.enqueue(enc.encode('{"status":"acc'));
+        else await new Promise(() => undefined);
+      },
+      cancel() { onCancel(); },
+    });
+  }
+
+  it('a valid 200 reply is accepted with the server interval', async () => {
+    expect(await send(respond(new Response(acceptedBody(), { status: 200 })))).toEqual({ kind: 'accepted', intervalSeconds: 30 });
+  });
+
+  it('a stream error after the 200 headers is a failure, not accepted (Codex reproduction)', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) { await new Promise((r) => setTimeout(r, 5)); controller.error(new Error('stream broken')); },
+    });
+    expect(await send(respond(new Response(body, { status: 200 })))).toEqual({ kind: 'network' });
+  });
+
+  it('a stalled body is cut by the request timeout (the deadline covers the body read)', async () => {
+    let cancelled = false;
+    const started = Date.now();
+    const outcome = await send(respond(new Response(stalledBody(() => { cancelled = true; }), { status: 200 })), config({ NC_AGENT_TIMEOUT_SECONDS: '1' }));
+    expect(outcome).toEqual({ kind: 'timeout' });
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(cancelled).toBe(true);
+  });
+
+  it('caller cancellation while the body is being read → aborted', async () => {
+    const controller = new AbortController();
+    let cancelled = false;
+    const pending = send(respond(new Response(stalledBody(() => { cancelled = true; }), { status: 200 })), config(), controller.signal);
+    setTimeout(() => { controller.abort(); }, 30);
+    expect(await pending).toEqual({ kind: 'aborted' });
+    expect(cancelled).toBe(true);
+  });
+
+  it('real HTTP: connection dropped mid-body → network; body stalled → timeout', async () => {
+    const dropPort = await listen(createHttpServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '200' });
+      res.write('{"status":"accepted"');
+      setTimeout(() => { res.socket?.destroy(); }, 20);
+    }));
+    const loopback = (port: number, extra: Record<string, string> = {}) => config({ NC_AGENT_API_URL: `http://127.0.0.1:${String(port)}`, NC_AGENT_ALLOW_INSECURE_LOOPBACK: 'true', ...extra });
+    expect(await sendHeartbeat(loopback(dropPort), collectSnapshot(), new AbortController().signal)).toEqual({ kind: 'network' });
+    const stallPort = await listen(createHttpServer((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.write('{"status":'); }));
+    expect(await sendHeartbeat(loopback(stallPort, { NC_AGENT_TIMEOUT_SECONDS: '1' }), collectSnapshot(), new AbortController().signal)).toEqual({ kind: 'timeout' });
+  });
+
+  it.each([
+    ['empty', ''], ['malformed JSON', '{"status":"accepted",'], ['JSON null', 'null'], ['array', '[]'], ['string', '"accepted"'],
+    ['wrong status', acceptedBody({ status: 'ok' })], ['missing receivedAt', JSON.stringify({ status: 'accepted', intervalSeconds: 30 })],
+    ['missing intervalSeconds', JSON.stringify({ status: 'accepted', receivedAt: ACCEPTED.receivedAt })],
+  ])('%s body → invalid_response', async (_name, body) => {
+    expect(await send(respond(new Response(body, { status: 200 })))).toEqual({ kind: 'invalid_response' });
+  });
+
+  it('a 200 without a body → invalid_response', async () => {
+    expect(await send(respond(new Response(null, { status: 200 })))).toEqual({ kind: 'invalid_response' });
+  });
+
+  it('invalid UTF-8 → invalid_response', async () => {
+    expect(await send(respond(new Response(new Uint8Array([0x7b, 0xff, 0xfe, 0x7d]), { status: 200 })))).toEqual({ kind: 'invalid_response' });
+  });
+
+  it.each([
+    ['not a date', 'yesterday'], ['impossible date', '2026-02-31T00:00:00.000Z'], ['no timezone', '2026-10-12T10:00:00.000'],
+    ['offset instead of Z', '2026-10-12T10:00:00.000+02:00'], ['number', 1_760_000_000_000],
+  ])('receivedAt: %s → rejected', (_name, receivedAt) => {
+    expect(parseAcceptedBody(acceptedBody({ receivedAt }))).toBeNull();
+  });
+
+  it.each([[4], [301], [30.5], [-30], ['30'], [null], [Number.MAX_SAFE_INTEGER + 2]])('intervalSeconds %s → rejected', (intervalSeconds) => {
+    expect(parseAcceptedBody(acceptedBody({ intervalSeconds }))).toBeNull();
+  });
+
+  it('interval bounds 5 and 300 are accepted (same range as NC_AGENT_INTERVAL_SECONDS; backend sends 30)', () => {
+    expect(parseAcceptedBody(acceptedBody({ intervalSeconds: 5 }))).toEqual({ intervalSeconds: 5 });
+    expect(parseAcceptedBody(acceptedBody({ intervalSeconds: 300 }))).toEqual({ intervalSeconds: 300 });
+  });
+
+  it('oversized body without Content-Length: reading stops at the limit and the stream is cancelled', async () => {
+    let pulled = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) { await new Promise((r) => setTimeout(r, 1)); pulled += 1; controller.enqueue(new Uint8Array(1024).fill(0x20)); },
+      cancel() { cancelled = true; },
+    });
+    expect(await send(respond(new Response(body, { status: 200 })))).toEqual({ kind: 'invalid_response' });
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThanOrEqual(MAX_RESPONSE_BYTES / 1024 + 2);
+  });
+
+  it('oversized Content-Length is refused before reading; a lying small Content-Length does not lift the limit', async () => {
+    let pulled = false;
+    const lazy = new ReadableStream<Uint8Array>({ pull() { pulled = true; } }, { highWaterMark: 0 });
+    expect(await send(respond(new Response(lazy, { status: 200, headers: { 'content-length': String(MAX_RESPONSE_BYTES + 1) } })))).toEqual({ kind: 'invalid_response' });
+    expect(pulled).toBe(false);
+    const big = `${acceptedBody()}${' '.repeat(MAX_RESPONSE_BYTES)}`;
+    expect(await send(respond(new Response(big, { status: 200, headers: { 'content-length': '10' } })))).toEqual({ kind: 'invalid_response' });
+  });
+
+  it.each([
+    [401, { kind: 'unauthorized' }], [403, { kind: 'unauthorized' }],
+    [429, { kind: 'rate_limited', retryAfterSeconds: 60 }], [503, { kind: 'unavailable' }],
+  ])('HTTP %i with a non-JSON or broken body keeps its classification', async (status, expected) => {
+    const headers = { 'retry-after': '60' };
+    expect(await send(respond(new Response('<html>proxy error</html>', { status, headers })))).toEqual(expected);
+    const broken = new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new Error('broken')); } });
+    expect(await send(respond(new Response(broken, { status, headers })))).toEqual(expected);
+  });
+
+  it('invalid_response is a failure for scheduling: backoff grows and is not reset', () => {
+    const cfg = config();
+    const state = { failures: 2 };
+    const delay = nextDelaySeconds({ kind: 'invalid_response' }, state, cfg, () => 0);
+    expect(state.failures).toBe(3);
+    expect(delay).toBe(120); // ceiling 30·2³ = 240, jitter 0.5
+  });
+
+  it('loop: invalid replies keep counting failures and logs carry neither the token nor the response body', async () => {
+    const SECRET = 'SYNTHETIC_RESPONSE_SECRET_7f3a';
+    const replies = [
+      () => new Response(acceptedBody(), { status: 200 }),
+      () => new Response(JSON.stringify({ status: 'accepted', receivedAt: SECRET, intervalSeconds: 30 }), { status: 200 }),
+      () => new Response(`{"broken":"${SECRET}`, { status: 200 }),
+      () => new Response(SECRET, { status: 503 }),
+    ];
+    const controller = new AbortController();
+    const logged: Record<string, unknown>[] = [];
+    let calls = 0;
+    await runAgent(config(), controller.signal, {
+      fetchImpl: () => {
+        const reply = replies[calls++];
+        if (calls >= replies.length) controller.abort();
+        return Promise.resolve(reply ? reply() : new Response(null, { status: 503 }));
+      },
+      sleep: (_ms, signal) => abortableSleep(1, signal),
+      random: () => 0,
+      logger: { info: (e) => logged.push(e), warn: (e) => logged.push(e) },
+    });
+    expect(logged.map((e) => [e.outcome, e.consecutiveFailures])).toEqual([
+      ['accepted', 0], ['invalid_response', 1], ['invalid_response', 2], ['unavailable', 3],
+    ]);
+    const text = JSON.stringify(logged);
+    expect(text).not.toContain(TOKEN);
+    expect(text).not.toContain(SECRET);
   });
 });

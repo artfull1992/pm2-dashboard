@@ -239,7 +239,7 @@ ENV_FILE=<config> npm run db:migrate:up        # явне застосуванн
 | `POST /api/servers` `{"name"}` | `servers:manage` + Origin + CSRF | `201 ServerSummary` (`never_connected`) | 400, 401, 403, 409 (назва зайнята), 503 |
 | `POST /api/servers/:id/agent-credentials` | `servers:manage` + Origin + CSRF | `201 {serverId, token, issuedAt, rotated}` — **токен лише тут, один раз** | 401, 403, 404, 409 (неактивний), 503 |
 | `POST /api/servers/:id/agent-credentials/revoke` | `servers:manage` + Origin + CSRF | `200 {serverId, revoked}` | 401, 403, 404, 503 |
-| `POST /api/agent/heartbeat` (snapshot) | **machine**: `Authorization: Bearer ncag_…` | `200 {status:"accepted", receivedAt, intervalSeconds}` | 400 (snapshot), 401, 403 (браузерний контекст), 413, 429, 503 |
+| `POST /api/agent/heartbeat` (snapshot) | **machine**: `Authorization: Bearer ncag_…` | `200 {status:"accepted", receivedAt (ISO-8601 UTC), intervalSeconds (ціле 5–300)}`; Agent вважає успіхом лише повністю прочитану валідну відповідь (ADR-015) | 400 (snapshot), 401, 403 (браузерний контекст), 413, 429, 503 |
 
 `ServerSummary = {id, name, isActive, createdAt, status: online|offline|never_connected, lastSeenAt, hasActiveCredential}`. `online` — останній прийнятий heartbeat за **серверним** годинником новіший за 90 с. Snapshot: `agentVersion, hostname, platform, arch, uptimeSeconds, cpuCount, loadAverage[3]` (довжина черги, не % CPU), `memory {totalBytes, freeBytes}` — більше нічого.
 

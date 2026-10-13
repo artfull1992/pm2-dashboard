@@ -70,7 +70,7 @@ function CreateServerForm({ onCreated }: { onCreated: () => void }) {
 export function ServersPage() {
   const { can } = useAuth();
   const load = useCallback((signal: AbortSignal) => serversApi.list(signal), []);
-  const { state, reload } = usePolledResource(load);
+  const { state, reload } = usePolledResource(load, 'servers');
 
   if (state.status === 'forbidden') return <Forbidden />;
   const data = state.status === 'ready' ? state.data : state.status === 'error' ? state.data : null;

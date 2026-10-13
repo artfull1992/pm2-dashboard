@@ -5,24 +5,93 @@ import type { Snapshot } from './snapshot.js';
 // disabled here; redirects are an error (credentials never follow a redirect); only the configured origin is used.
 
 export type HeartbeatOutcome =
-  | { kind: 'accepted'; intervalSeconds: number | null }
+  | { kind: 'accepted'; intervalSeconds: number } // only after a fully read, contract-valid 200 response
   | { kind: 'unauthorized' } // 401/403: credential missing/revoked or server inactive
   | { kind: 'rate_limited'; retryAfterSeconds: number | null }
   | { kind: 'rejected' } // 400/413: payload not accepted
-  | { kind: 'unavailable' } // 5xx
-  | { kind: 'network' } // DNS/TCP/TLS/redirect errors
-  | { kind: 'timeout' }
+  | { kind: 'unavailable' } // 5xx and other unexpected statuses
+  | { kind: 'invalid_response' } // 200 with an empty/oversized/non-JSON/contract-violating body
+  | { kind: 'network' } // DNS/TCP/TLS/redirect errors, or the connection failed while reading the body
+  | { kind: 'timeout' } // request + body read exceeded NC_AGENT_TIMEOUT_SECONDS
   | { kind: 'aborted' };
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
+
+/** Upper bound for a response body the agent reads (the success reply is ~100 bytes). */
+export const MAX_RESPONSE_BYTES = 4096;
+/** Server-suggested interval must be within the same bounds as NC_AGENT_INTERVAL_SECONDS. */
+export const INTERVAL_BOUNDS = Object.freeze({ min: 5, max: 300 });
+const ISO_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export function parseRetryAfter(header: string | null): number | null {
   if (header === null || !/^\d{1,6}$/.test(header.trim())) return null;
   return Number(header.trim());
 }
 
+class BodyTooLarge extends Error {}
+
+/**
+ * Reads the whole body, at most `limit` bytes, until `signal` aborts (caller cancel or timeout). The size is
+ * counted on the stream itself — Content-Length is only used to fail early. Throws on abort, stream error and
+ * excess size (BodyTooLarge).
+ */
+async function readBoundedBytes(response: Response, limit: number, signal: AbortSignal): Promise<Uint8Array> {
+  const declared = response.headers.get('content-length');
+  if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit) throw new BodyTooLarge();
+  if (!response.body) return new Uint8Array(0);
+  const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => { reject(signal.reason instanceof Error ? signal.reason : new Error('aborted')); };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  aborted.catch(() => undefined);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let done = false;
+  try {
+    for (;;) {
+      const next = await Promise.race([reader.read(), aborted]);
+      if (next.done) { done = true; break; }
+      size += next.value.byteLength;
+      if (size > limit) throw new BodyTooLarge();
+      chunks.push(next.value);
+    }
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+    if (!done) reader.cancel().catch(() => undefined);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}
+
+/** Backend contract of a 200 reply: { status: 'accepted', receivedAt: ISO-8601 UTC, intervalSeconds: integer 5..300 }. */
+export function parseAcceptedBody(text: string): { intervalSeconds: number } | null {
+  let body: unknown;
+  try { body = JSON.parse(text); } catch { return null; }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+  const { status, receivedAt, intervalSeconds } = body as Record<string, unknown>;
+  if (status !== 'accepted') return null;
+  if (typeof receivedAt !== 'string' || !ISO_UTC_RE.test(receivedAt)) return null;
+  const time = Date.parse(receivedAt);
+  if (!Number.isFinite(time) || new Date(time).toISOString() !== receivedAt) return null; // e.g. 2026-02-31
+  if (typeof intervalSeconds !== 'number' || !Number.isSafeInteger(intervalSeconds)) return null;
+  if (intervalSeconds < INTERVAL_BOUNDS.min || intervalSeconds > INTERVAL_BOUNDS.max) return null;
+  return { intervalSeconds };
+}
+
 export async function sendHeartbeat(config: AgentConfig, snapshot: Snapshot, signal: AbortSignal, fetchImpl: FetchLike = fetch): Promise<HeartbeatOutcome> {
+  // One deadline for the whole exchange: connect, headers and body.
   const timeout = AbortSignal.timeout(config.timeoutSeconds * 1000);
+  const combined = AbortSignal.any([signal, timeout]);
+  const failure = (): HeartbeatOutcome => {
+    if (signal.aborted) return { kind: 'aborted' };
+    if (timeout.aborted) return { kind: 'timeout' };
+    return { kind: 'network' };
+  };
   let response: Response;
   try {
     response = await fetchImpl(new URL('/api/agent/heartbeat', config.apiUrl).href, {
@@ -30,27 +99,35 @@ export async function sendHeartbeat(config: AgentConfig, snapshot: Snapshot, sig
       redirect: 'error',
       headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify(snapshot),
-      signal: AbortSignal.any([signal, timeout]),
+      signal: combined,
     });
   } catch {
-    if (signal.aborted) return { kind: 'aborted' };
-    if (timeout.aborted) return { kind: 'timeout' };
-    return { kind: 'network' };
+    return failure();
   }
-  // The body is small and bounded by the server; drain it so the connection can be reused.
-  const text = await response.text().catch(() => '');
-  if (response.status === 200) {
-    let interval: number | null = null;
-    try {
-      const body = JSON.parse(text) as { intervalSeconds?: unknown };
-      if (typeof body.intervalSeconds === 'number' && Number.isInteger(body.intervalSeconds)) interval = body.intervalSeconds;
-    } catch { /* tolerate: keep the configured interval */ }
-    return { kind: 'accepted', intervalSeconds: interval };
+
+  if (response.status !== 200) {
+    // Error statuses need no body: discard it without reading (the content is never logged anyway).
+    response.body?.cancel().catch(() => undefined);
+    if (response.status === 401 || response.status === 403) return { kind: 'unauthorized' };
+    if (response.status === 429) return { kind: 'rate_limited', retryAfterSeconds: parseRetryAfter(response.headers.get('retry-after')) };
+    if (response.status === 400 || response.status === 413) return { kind: 'rejected' };
+    return { kind: 'unavailable' };
   }
-  if (response.status === 401 || response.status === 403) return { kind: 'unauthorized' };
-  if (response.status === 429) return { kind: 'rate_limited', retryAfterSeconds: parseRetryAfter(response.headers.get('retry-after')) };
-  if (response.status === 400 || response.status === 413) return { kind: 'rejected' };
-  return { kind: 'unavailable' };
+
+  let bytes: Uint8Array;
+  try {
+    bytes = await readBoundedBytes(response, MAX_RESPONSE_BYTES, combined);
+  } catch (error) {
+    return error instanceof BodyTooLarge ? { kind: 'invalid_response' } : failure();
+  }
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return { kind: 'invalid_response' };
+  }
+  const accepted = parseAcceptedBody(text);
+  return accepted ? { kind: 'accepted', intervalSeconds: accepted.intervalSeconds } : { kind: 'invalid_response' };
 }
 
 export interface BackoffState {
@@ -63,9 +140,8 @@ export function nextDelaySeconds(outcome: HeartbeatOutcome, state: BackoffState,
   switch (outcome.kind) {
     case 'accepted': {
       state.failures = 0;
-      // Server may suggest an interval; stay within our own bounds.
-      const suggested = outcome.intervalSeconds ?? config.intervalSeconds;
-      return Math.min(Math.max(suggested, 5), 300);
+      // The server's interval is validated by parseAcceptedBody; clamp again as defence in depth.
+      return Math.min(Math.max(outcome.intervalSeconds, INTERVAL_BOUNDS.min), INTERVAL_BOUNDS.max);
     }
     case 'unauthorized':
       // A revoked/missing credential will not fix itself quickly: wait long, never hammer the server.
