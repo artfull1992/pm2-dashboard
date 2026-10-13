@@ -145,6 +145,8 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 ## Task 009 — керування явно дозволеними PM2-процесами (2026-10-13)
 
+**Active code revision:** центральний API/UI і реліз Agent — `b4ada6d07bcdc834959f889de37620688c756a15` (`feat(pm2): add allowlisted process control with audited commands`; previous API `ffb32b0`, Agent `7cdc50e`); `app-server` Agent — `b4ada6d` (0.3.0, previous `7cdc50e`). Предки: `7cdc50e`, `0ba0824`, `005fa62`, `bfe784e`. Цей звіт — пізніший docs-commit. **Production control вимкнений.**
+
 Стан на початок: `main` = `6ef1343`, дерево чисте. Центральний сервер: API/UI `ffb32b0`, реліз Agent `7cdc50e`. `app-server`: Agent 0.2.0 (`7cdc50e`), exporter `@ubuntu`, inventory `ok`.
 
 **Реалізовано (ADR-017).** Операції `start`/`stop`/`restart` лише для процесів із root-owned allowlist на ноді; створення/видалення/reload/deploy, логи, shell, «all», cluster — ні.
@@ -182,6 +184,23 @@ Rollback підготовлено до production `up`: код — `server-relea
 | E2E (`npm run test:e2e`) | 10/10 (+1 opt-in пропущено); `servers.spec`/`inventory.spec` — точний збіг «Онлайн» (новий текст «Сервер не онлайн» інакше давав хибний збіг) |
 | E2E зі справжнім PM2 (`npm run test:e2e:pm2`, окремий прогін) | 1/1: оператор у браузері зупиняє й запускає дозволений процес через API → Agent → broker → одноразовий PM2; стан PM2 підтверджено, інший процес online; audit 2×(requested, dispatched, succeeded); viewer без кнопок, API → 403; broker зупинено → «Broker недоступний», кнопки вимкнені |
 | Залишки | 0 схем `nc_test_*`; сторонніх PM2 daemon і `~/.pm2` немає; тимчасові каталоги видалено |
+
+| Деплой | Результат |
+|---|---|
+| Артефакти `b4ada6d` | API/UI: 44 файли, SHA-256 `aebac85b…5f20111`, prod deps `fastify`, `node-pg-migrate`, `pg`; Agent (вкл. broker і unit-шаблон): `eae3e6d5…6329ba4b`; `sha256sum -c` OK на обох серверах |
+| Baseline центральний | API `ffb32b0`, реліз Agent `7cdc50e` (unit disabled); служби active, failed 0; `api.env` без `PM2_CONTROL_ENABLED` (перевірено за назвами ключів) |
+| Backup | `/root/node-control-backups/node_control_db-20261013T130647Z-pre-b4ada6d….dump` (`600 root`), `pg_restore --list` читається |
+| Міграція | як `nodecontrol`: pending 1 → applied=5, pending=0; нові таблиці `control_commands`, `server_control_status`, `server_control_targets` |
+| API/UI | unit-файл без змін; `current` → `b4ada6d`; restart лише `node-control-api`; `nodecontrol`, listener лише `127.0.0.1:3100`; лог старту `pm2ControlEnabled:false`, `trustedProxies:1`, `authOrigins:1`; `api.env` не змінювався |
+| Реліз Agent (центральний) | `current` → `b4ada6d`, unit disabled/inactive (без змін) |
+| `app-server` | baseline: Agent `7cdc50e` active, exporter timer active, God Daemon 3807, 5 PM2-процесів; backup `agent.env.bak-20261013T130714Z` (600 `nodecontrol-agent`); `prepare --no-install` + `activate` → `b4ada6d`; unit-файли Agent/exporter без змін; restart лише Agent → 0.3.0, `"control":{"enabled":false}`, heartbeat і inventory `accepted`. `agent.env` без змін (ключі `NC_AGENT_API_URL`, `NC_AGENT_TOKEN`, `NC_AGENT_INVENTORY_FILE`); broker, група `nc-pm2-control` і `/run/goit-node-control-pm2-broker` — відсутні |
+| Після деплою (центральний) | live/ready 200; HTTPS `/`, `/servers/<id>`, `/applications` → 200; анонімно `GET …/control`, `GET …/control-commands` → 401, `POST …/control-commands` з Origin → 401, без Origin → 403; `POST /api/agent/control/poll` без токена / з невідомим токеном → 401, `…/result` без токена → 401; journal: 0 error/fatal, 0 секретів, 0 відповідей 4xx агентам; `nginx -t` OK; Nginx/PostgreSQL/Docker active, failed 0; migrations pending=0 |
+| Доказ fail closed | API `pm2ControlEnabled:false`; у БД 0 команд, 0 станів/цілей керування, 0 подій `process.*`; Agent не опитує керування (0 `control poll` у журналі); broker не встановлений |
+| Без рестартів / портів | God Daemon 3807 і всі 5 дочірніх PID із часом старту — ідентичні baseline; список listener-ів ідентичний; exporter продовжує (3 запуски за 2 хв); у БД: Agent 0.3.0, heartbeat 1 с, inventory `ok`, 5 процесів, збір 43 с тому |
+
+Rollback (не застосовувався): API — `server-release.js rollback` (→ `ffb32b0`) + restart; нові таблиці лишаються (additive), команд немає. Agent на `app-server` — `server-release.js rollback --base /opt/goit-node-control-agent` (→ `7cdc50e`) + restart Agent; `agent.env` не змінювався (backup є). Exporter/PM2 не зачіпаються.
+
+**Для production enable потрібні від оператора:** перелік процесів (ім'я в PM2), `targetKey` і дозволені дії для кожного; підтвердження, що це fork-процеси з унікальними іменами; рішення увімкнути `PM2_CONTROL_ENABLED=true`. Далі — процедура в DEPLOYMENT («Керування PM2»).
 
 ## Task 008.2 — перевірка підключення PM2 inventory та виправлення рекомендованої ревізії (2026-10-13)
 
