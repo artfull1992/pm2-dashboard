@@ -145,6 +145,8 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 ## Task 007.1 — виправлення після review Codex (2026-10-13)
 
+**Active code revision на сервері: API/UI і Agent — `0ba08240d7c5b5a51472553fba422d20fa45fcdb`** (`fix: isolate server credential UI state and validate heartbeat responses`). Previous: API/UI `97d1c06`, Agent `e2ac0c9`. `bfe784e` і `005fa62` — предки. Цей звіт — пізніший docs-commit, на сервер не деплоївся.
+
 Стан до початку: `main` = `5605221`, дерево чисте. На сервері API/UI `97d1c06`, Agent `e2ac0c9`. Оператор уже створив сервер і видав ключ (1 сервер, 1 активний credential), але `agent.env` ще не записано: Agent disabled/inactive, heartbeat-ів 0. Цей стан зберігається.
 
 **P1 — дії з ключем могли піти на попередній сервер.** `usePolledResource` тримав дані останнього успішного завантаження незалежно від id. Після переходу `/servers/A` → `/servers/B` без reload і 503 для B сторінка B показувала сервер A з його `CredentialControls`, і «Видати ключ» надсилав `POST /api/servers/A/agent-credentials`.
@@ -173,6 +175,18 @@ Rollback підготовлено до production `up`: код — `server-relea
 | `test:backend:db` (ізольована тестова БД через тунель) | 38/38. Перший запуск: ECONNREFUSED, бо впав SSH-тунель; після перепідключення успішно |
 | `test:e2e` (тестова БД) | 9/9; 0 схем `nc_test_*` після прогону |
 | `check:secrets`, `git diff --check` | OK |
+
+| Деплой | Результат |
+|---|---|
+| Артефакти `0ba0824` | API/UI: 36 файлів, SHA-256 `68fa4f9a…62d877bc`; Agent: 11 файлів, `e1d57263…6a43389`; `sha256sum -c` OK; prod deps як раніше (89 пакетів; scope-каталоги dev-залежностей порожні, як і в `97d1c06`) |
+| Стан до | API `97d1c06` (prev `005fa62`); Agent `e2ac0c9` (prev `97d1c06`), unit disabled/inactive, `agent.env` відсутній |
+| Міграції | не потрібні: applied=3, pending=0; backup БД не робився (схема й дані не змінюються) |
+| API/UI | unit-файл без змін; `current` → `0ba0824`; restart лише `node-control-api`; процес `nodecontrol`; listener лише `127.0.0.1:3100`; `api.env` не змінювався (лог старту `trustedProxies:1`, `authOrigins:1`, `cookieSecure:true`) |
+| Agent | unit-файл без змін; `current` → `0ba0824`; був inactive → не запускався; стан після: disabled/inactive, `agent.env` відсутній, без конфігу exit 2, listener-ів 0 |
+| Після деплою | live/ready 200; HTTPS `/`, `/servers`, `/servers/<id>` → 200; bundle UI збігається з `current/frontend/dist`; анонімні `/api/auth/me`, `/api/servers` і heartbeat без токена → 401; journal API: 0 error/fatal, 0 збігів секретів; `nginx -t` OK; Nginx/PostgreSQL/Docker active, failed units 0; у БД без змін (1 сервер, 1 активний credential, 0 heartbeat) |
+| Egress-smoke Agent | одноразово як `nodecontrol-agent` з фіктивним токеном через env → `unauthorized`; записів у БД 0. Штатний `accepted` не перевірявся: оператор ще не записав `agent.env` |
+
+Rollback (не застосовувався): API — `server-release.js rollback` (→ `97d1c06`) + restart `node-control-api`; Agent — `server-release.js rollback --base /opt/goit-node-control-agent` (→ `e2ac0c9`), unit лишається disabled. Схема, конфіг і credentials не змінювались, тому відновлювати їх не потрібно.
 
 Окремого E2E-сценарію для переходу A → B не додано: його покриває real-router тест frontend. Наявний E2E servers.spec (видача/відкликання ключа, Agent online/unauthorized) успішний.
 
@@ -341,7 +355,7 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 007 (реєстр серверів, Agent heartbeat) задеплоєно: API `97d1c06`, Agent `e2ac0c9` (installed, disabled до видачі ключа оператором); очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 007.1 задеплоєно: API/UI і Agent `0ba0824`. Agent installed, disabled: оператор видав ключ у UI, але `agent.env` ще не записано. Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
 Next Task: PM2 read-only inventory через Agent (явно дозволені Linux-користувачі/PM2_HOME), далі дозволені керуючі операції з авторизацією та audit. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
