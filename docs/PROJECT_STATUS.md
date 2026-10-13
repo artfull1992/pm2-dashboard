@@ -166,6 +166,21 @@ Rollback підготовлено до production `up`: код — `server-relea
 | E2E | 10/10; 0 схем `nc_test_*` після прогону |
 | `git diff --check`, `check:secrets` | OK |
 
+**Підключення PM2 inventory на `app-server` (2026-10-13, ~11:33–11:38 UTC).** Доступ і параметри надав оператор: SSH `ubuntu@203.0.113.20`, sudo є. PM2 owner і `PM2_HOME` визначено read-only з аргументів процесу God Daemon, `pm2`-команди не запускались.
+
+| Крок | Результат |
+|---|---|
+| Read-only аудит | Ubuntu 24.04, systemd 255, `/usr/bin/node` v22.15.0 (не змінювалась). PM2 6.0.5 God Daemon PID 3807 від `ubuntu`, `PM2_HOME=/home/ubuntu/.pm2` (`ubuntu:ubuntu 775`, `rpc.sock` 775). Agent: release `81e1933` (зібраний оператором із `/home/ubuntu/node-control-source`), enabled/active, `nodecontrol-agent` лише у власній групі, `agent.env` з ключами `NC_AGENT_API_URL`, `NC_AGENT_TOKEN`. Baseline: 5 PM2-процесів (PID і час старту — 6 жовтня; аргументи не друкувались), listener-и записані |
+| Agent → `7cdc50e` | артефакт sha256 `32d8b3b4…cff3367a`, `sha256sum -c` OK; backup `agent.env.bak-20261013T113342Z` (600 `nodecontrol-agent`); `prepare --no-install` + `activate`, реліз `root:root 755`; unit-файл без змін; restart лише Agent → 0.2.0, heartbeat `accepted` |
+| Exporter | група `nc-pm2-inventory` (лише `nodecontrol-agent`); `/var/lib/goit-node-control-pm2` `ubuntu:nc-pm2-inventory 2750`; `/etc/goit-node-control-pm2-exporter/ubuntu.env` `root 644` (без секретів); unit-шаблони з релізу (без `ConditionUser`), `systemd-analyze verify` OK. Пробний запуск: «Finished», `state ok`, 5 процесів, 35 мс. `connect()` до `rpc.sock` працює під `ProtectHome=read-only`, hardening не послаблювався. Файл `ubuntu:nc-pm2-inventory 640`, 885 байт, лише allowlist-ключі |
+| Активація | `node-control-pm2-exporter@ubuntu.timer` enabled/active; в `agent.env` додано лише `NC_AGENT_INVENTORY_FILE` (600 `nodecontrol-agent` збережено, токен не змінювався); restart Agent → `inventory: enabled`, перший звіт `accepted, state ok, processCount 5` |
+| Acceptance (через ~2 хв) | exporter: 6 запусків за 3 хв, 0 помилок, snapshot `ok` віком 26 с; Agent: inventory і heartbeat `accepted`, 0 warn/error, 0 `insecure`/`permission`; центральна БД: Agent 0.2.0, heartbeat 13 с, inventory `ok`, 5 процесів (усі `online`, CPU/RAM відомі), збір 44 с тому → «Актуально» |
+| Без рестартів / портів | God Daemon PID 3807 і всі 5 дочірніх PID із часом старту 6 жовтня — без змін; список listener-ів ідентичний baseline; у Agent/exporter listener-ів немає |
+
+Перевірку в UI («Застосунки», сторінка сервера) виконує оператор під своєю сесією; адмінські credentials у цій сесії не використовувались.
+
+Rollback (не застосовувався): `sudo systemctl disable --now node-control-pm2-exporter@ubuntu.timer`; `agent.env` ← `agent.env.bak-20261013T113342Z`; `server-release.js rollback --base /opt/goit-node-control-agent` (→ `81e1933`); `systemctl restart node-control-agent` — heartbeat продовжиться. PM2 і проєкти не зачіпаються; дані в БД лишаються.
+
 **Інцидент на локальній машині розробника (не сервер).** Під час діагностики exit 127 я виконав `npx pm2@7.0.4 --version` без `PM2_HOME`. Це запустило PM2 daemon у `~/.pm2` на Mac розробника — саме та поведінка auto-start, від якої захищає exporter. Каталог створено в момент діагностики, він не містив процесів (`module_conf.json = {}`, порожні `pids`/`logs`). Daemon зупинено через `pm2 kill`, `~/.pm2` видалено; сторонніх PM2 daemon немає. Висновок для процедур: **не запускати жодних `pm2`-команд поза тимчасовим `PM2_HOME`**, навіть `--version`.
 
 ## Task 008 — read-only PM2 inventory і застосунки (2026-10-13)
@@ -422,7 +437,7 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 008 (read-only PM2 inventory) — код і центральний деплой; активація exporter на сервері `app-server` очікує параметрів оператора (PM2 owner, `PM2_HOME`, доступ). Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 008.1 — фікс unit (`7cdc50e`) і PM2 inventory на `app-server` активовано (Agent 0.2.0, exporter `@ubuntu`, 5 процесів «Актуально»). Центральний API лишається на `ffb32b0` (код API/UI не змінювався). Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
 Next Task: явно дозволені PM2-операції (RBAC, audit, перелік дозволених процесів) поверх inventory. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
