@@ -145,6 +145,8 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 ## Task 008 — read-only PM2 inventory і застосунки (2026-10-13)
 
+**Active code revision на центральному сервері: API/UI і реліз Agent — `ffb32b0ef7269c3c37ecefa20d181fc333632d08`** (`feat(pm2): add read-only process inventory and applications UI`); previous — `0ba0824`. `0ba0824`, `005fa62`, `bfe784e` — предки. Цей звіт — пізніший docs-commit, на сервер не деплоївся. **Exporter ніде не встановлений і процеси PM2 ще не збираються.** На `app-server` працює Agent 0.1.0 без inventory.
+
 Стан на початок: `main` = `81e1933`, дерево чисте. Виправлення Task 007.1 у коді й тестах підтверджено: прив'язка стану до id, `CredentialControls` з key, `readBoundedBytes`/`parseAcceptedBody`. На сервері API/UI і Agent — `0ba0824`. Підключено окремий сервер `app-server` (hostname `app-server`, Agent 0.1.0, heartbeat надходить). SSH-доступу до нього в цій сесії немає. Локальний Agent центрального сервера — disabled.
 
 **Реалізовано (ADR-016):**
@@ -167,6 +169,21 @@ Rollback підготовлено до production `up`: код — `server-relea
 | Real-DB (`test:backend:db`, тестова БД, per-run schema) | 49/49 (+11 inventory): constraints, заміна набору, повторне використання `pm_id`, порожній ≠ unavailable, stale, зміна source без orphans, старіший snapshot ігнорується, свіжість за серверним годинником, конкурентні звіти (найновіший перемагає), revoked/inactive → unauthorized, keyset через 3 сторінки |
 | Frontend (`applications.test.tsx`, 13) | дані/stale/offline/unavailable/порожньо/помилка/403/401; XSS-ім'я лише текстом; немає кнопок керування; фільтр не показує рядки попереднього фільтра; A→B на сторінці сервера (повільно/503) без даних A; відповідь для чужого сервера відхиляється |
 | E2E (Playwright, тестова БД) | 10/10: новий сценарій — справжні backend+UI+скомпільований Agent із синтетичним snapshot → «Актуально», фільтр, viewer, `unavailable` зберігає 3 процеси з позначкою |
+
+| Деплой (центральний сервер) | Результат |
+|---|---|
+| Baseline | API/UI `0ba0824` (prev `97d1c06`), реліз Agent `0ba0824`, локальний Agent disabled/inactive, `agent.env` відсутній; служби active, failed 0; heartbeat `app-server` (0.1.0) — 20 с тому |
+| Артефакти `ffb32b0` | API/UI: 40 файлів, SHA-256 `8ad8e388…98dfac`, prod deps `fastify`, `node-pg-migrate`, `pg`; Agent: 20 файлів (вкл. exporter і unit-шаблони), `f2816219…205c5f`; `sha256sum -c` OK |
+| Backup | `/root/node-control-backups/node_control_db-20261013T104828Z-pre-ffb32b0….dump` (`600 root`), `pg_restore --list` читається |
+| Міграція | як `nodecontrol`: pending 1 → applied=4, pending=0; нові таблиці порожні; servers=1, активний credential 1, audit 5 — без змін |
+| API/UI | unit-файл без змін; `current` → `ffb32b0`; restart лише `node-control-api`; `nodecontrol`, listener лише `127.0.0.1:3100`; `api.env` не змінювався (`trustedProxies:1`, `authOrigins:1`, `cookieSecure:true`) |
+| Реліз Agent | `/opt/goit-node-control-agent/current` → `ffb32b0`; unit-файл без змін; локальний unit лишився disabled/inactive. Шаблони exporter проходять `systemd-analyze verify` (у тимчасовому каталозі, на `/etc/systemd/system` не встановлювались) |
+| Після деплою | live/ready 200; HTTPS `/`, `/applications`, `/servers/<id>` → 200, bundle = `current`; анонімні `/api/auth/me`, `/api/applications`, `/api/servers/:id/applications` → 401; `POST /api/agent/inventory` без токена/з невідомим токеном → 401, з Origin → 403; **старий Agent 0.1.0 продовжує heartbeat** (останній — 27 с, 0 відповідей 4xx після strict schemas); journal: 0 error/fatal, 0 збігів секретів; `nginx -t` OK; Nginx/PostgreSQL/Docker active, failed 0; migrations pending=0 |
+
+**Віддалена активація (`app-server`) — не виконана.** Немає SSH-доступу й не відомі PM2 owner та `PM2_HOME`. Потрібно: оновити Agent до `ffb32b0` (реліз + restart, `agent.env` і токен не змінюються) і встановити exporter за DEPLOYMENT («PM2 inventory exporter»). До цього UI показує для сервера «Агент ще не передавав inventory PM2».
+
+Rollback (не застосовувався): API — `server-release.js rollback` (→ `0ba0824`) + restart `node-control-api`; таблиці inventory лишаються (additive), відновлення БД не потрібне. Реліз Agent — `server-release.js rollback --base /opt/goit-node-control-agent` (→ `0ba0824`), unit лишається disabled. Exporter ніде не активовано, тож і вимикати нічого.
+
 
 ## Task 007.1 — виправлення після review Codex (2026-10-13)
 
