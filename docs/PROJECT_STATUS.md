@@ -209,6 +209,20 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 Screenshots до/після — лише синтетичні дані (scratchpad, не в репозиторії). Реальних Slack-повідомлень не надсилалось.
 
+**Деплой (2026-10-15).** Code revision **`3153abcf52996ddfc563a3dbf30c873ebbaa3d00`** (`refactor(settings): simplify alert rules layout and align controls`).
+
+| Крок | Результат |
+|---|---|
+| Артефакт | `sha256sum -c` OK, manifest revision збігається; юніт ідентичний установленому (`cmp`), `daemon-reload` не потрібен |
+| Міграції | немає (`migrate.js status`: усі applied, pending відсутні); backup БД не знадобився |
+| Реліз | `current` → `3153abc`, `previous` → `9e7f71b` (ціль rollback); restart лише `node-control-api` |
+| Після | active, `User=nodecontrol`, `IPAddressDeny` порожній, listener лише `127.0.0.1:3100`; live/ready 200 локально й HTTPS; анонімні `/api/settings/alerts` і `/api/auth/me` → 401; HTTPS віддає новий bundle з `current/frontend/dist`; 0 error у журналі після restart; `nginx -t` OK |
+| Agent/broker | не змінювались (`2fe4d95`) |
+
+Production-налаштування сповіщень, webhook, стан доставки й користувачі не змінювались: реліз лише frontend, без міграцій, жодних мутуючих запитів під час перевірок, Slack-тест не натискався. Пряме read-only звіряння таблиць `alert_settings`/`alert_slack_integration` не виконано — читання production БД заблоковане політикою дозволів сесії.
+
+**Rollback:** `server-release.js rollback` → `9e7f71b`, restart `node-control-api` (міграцій і змін юніта немає).
+
 ## Task 013.2 — Slack-тест завершувався тайм-аутом: egress API-юніта (2026-10-15)
 
 **Симптом.** Після налаштування webhook в UI тестове повідомлення не надходило в Slack. Audit показав обидва тести (22:09 і 22:10 UTC) як `integration.slack_test_result` з `unknown/timeout` — рівно 5 с, без відповіді.
