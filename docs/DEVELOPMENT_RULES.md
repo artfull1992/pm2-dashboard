@@ -86,4 +86,6 @@ Commit має описувати фактичну зміну. Push — у пот
 - Текст логів не логувати, не писати в БД/audit, не класти в storage/URL; у тестах — синтетичні маркери й перевірка їх відсутності в журналах і audit.
 - Broker читає лише шляхи з PM2 metadata у дозволених каталогах (`NC_BROKER_LOG_DIRS`); жодних шляхів/offset/glob від клієнта.
 - Long-poll у Fastify: відключення клієнта слухати на `reply.raw` ('close'), не на `request.raw` (там 'close' спрацьовує після читання тіла). Регресійний тест — через справжній HTTP (`app.listen`), не `inject`.
+- Timeout відповіді ≠ завершення операції: ресурсний слот (конкурентність, лічильник) звільняти лише у `finally` самої операції, рівно один раз; на осиротілий Promise — `.catch(() => undefined)`. Regression-тест — завислий mock, повторні timeout, пізні resolve/reject.
+- Кожен waiter/таймер у пам'яті API має ліміт (на запит, на актора, глобальний), відмову до створення ресурсу й ідемпотентне завершення для result/deadline/timeout/disconnect/shutdown; перевіряти через `stats()` і `process.getActiveResourcesInfo()`.
 - На macOS тимчасові каталоги — symlink (`/var` → `/private/var`): для тестів читання логів використовувати `realpathSync`.

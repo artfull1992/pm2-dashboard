@@ -117,13 +117,16 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
         },
       },
     },
-  }, async (request) => {
+  }, async (request, reply) => {
     const auth = request.auth;
     if (!auth) throw new PublicHttpError(401, 'Authentication required');
     const { id } = request.params as { id: string };
     // Only the requesting user sees the result; anything else (other user, expired+cleaned, API restart) → 404.
-    const view = await hub.get(id, auth.userId);
+    // A client that goes away frees its waiter at once (RESPONSE 'close', see the agent long-poll below).
+    const view = await hub.get(id, auth.userId, { onClose: (cb) => { if (reply.raw.destroyed) cb(); else reply.raw.once('close', cb); } });
     if (!view) throw new PublicHttpError(404, 'Log request not found');
+    if (view === 'limit_request' || view === 'limit_actor') throw new PublicHttpError(429, 'Too many waiting log reads', { 'retry-after': '1' });
+    if (view === 'limit_global') throw new PublicHttpError(503, 'Service temporarily unavailable', { 'retry-after': '2' });
     return view;
   });
 

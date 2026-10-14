@@ -259,3 +259,167 @@ describe('agent long-poll over real HTTP', () => {
     expect((await app.inject({ method: 'GET', url: `/api/servers/${n.serverId}/log-targets`, headers: { cookie: admin.cookie } })).json()).toMatchObject({ state: 'supported' });
   });
 });
+
+// Task 010.1: result waiters (GET /api/log-requests/:id) are bounded per request, per actor and globally, and every
+// exit path (result, deadline, wait timeout, client disconnect, shutdown) frees the waiter, its timer and its counters
+// exactly once.
+describe('result waiters (bounded)', () => {
+  const t = report().targets;
+  const rep = { version: 1 as const, broker: 'ok' as const, daemon: 'ok' as const, allowlist: 'ok' as const, targets: t as never };
+  const ok = (now: number) => ({ outcome: 'ok' as const, reason: null, readAt: new Date(now).toISOString(), stdout: null, stderr: null });
+  const timeouts = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  function open(h: LogHub, serverId: string, actorUserId: string): string {
+    void h.agentPoll(serverId, rep, () => undefined);
+    const r = h.create({ serverId, targetKey: 'api', actorUserId, lines: 10 });
+    if (typeof r === 'string') throw new Error(r);
+    return r.request.requestId;
+  }
+  const consistent = (h: LogHub) => { const s = h.stats(); expect(s.waiters).toBe(s.waitersInRequests); return s; };
+
+  it('1000 concurrent GETs of one request: only maxWaitersPerRequest wait, the rest are refused before any timer; the result wakes the allowed ones', async () => {
+    const h = new LogHub();
+    const serverId = randomUUID();
+    const id = open(h, serverId, 'u1');
+    const before = timeouts();
+    const all = Array.from({ length: 1000 }, () => h.get(id, 'u1'));
+    await tick();
+    expect(consistent(h)).toMatchObject({ waiters: LOG_LIMITS.maxWaitersPerRequest, waitingActors: 1 });
+    expect(timeouts() - before).toBe(LOG_LIMITS.maxWaitersPerRequest);
+    expect(h.agentResult(serverId, id, ok(Date.now()))).toBe('recorded');
+    const out = await Promise.all(all);
+    expect(out.filter((v) => v === 'limit_request')).toHaveLength(1000 - LOG_LIMITS.maxWaitersPerRequest);
+    expect(out.filter((v) => typeof v === 'object' && v?.status === 'done')).toHaveLength(LOG_LIMITS.maxWaitersPerRequest);
+    expect(consistent(h)).toMatchObject({ waiters: 0, waitingActors: 0 });
+    expect(timeouts()).toBeLessThanOrEqual(before);
+    h.close();
+  });
+
+  it('per-actor and global limits; other actors and other requests are unaffected; foreign/unknown ids reveal nothing', async () => {
+    const h = new LogHub();
+    const serverId = randomUUID();
+    const a = open(h, serverId, 'u1');
+    const b = open(h, serverId, 'u1');
+    const waits = [h.get(a, 'u1', { waitMs: 5_000 }), h.get(a, 'u1', { waitMs: 5_000 })];
+    expect(await h.get(a, 'u1', { waitMs: 5_000 })).toBe('limit_request');
+    waits.push(h.get(b, 'u1', { waitMs: 5_000 }));
+    expect(await h.get(b, 'u1', { waitMs: 5_000 })).toBe('limit_actor');
+    // Foreign or unknown → null even when the request's waiter slots are full (no information leak, no slot taken).
+    expect(await h.get(a, 'u2', { waitMs: 5_000 })).toBeNull();
+    expect(await h.get(randomUUID(), 'u1', { waitMs: 5_000 })).toBeNull();
+    expect(consistent(h)).toMatchObject({ waiters: LOG_LIMITS.maxWaitersPerActor, waitingActors: 1 });
+    // Global: fill up with other actors, then the next actor gets limit_global.
+    let actor = 0;
+    while (h.stats().waiters < LOG_LIMITS.maxWaiters) {
+      const u = `g${String(actor++)}`;
+      const id = open(h, serverId, u);
+      for (let i = 0; i < LOG_LIMITS.maxWaitersPerRequest && h.stats().waiters < LOG_LIMITS.maxWaiters; i++) waits.push(h.get(id, u, { waitMs: 5_000 }));
+    }
+    const late = open(h, serverId, 'late');
+    expect(await h.get(late, 'late', { waitMs: 5_000 })).toBe('limit_global');
+    expect(consistent(h).waiters).toBe(LOG_LIMITS.maxWaiters);
+    // Shutdown releases every waiter and counter; nothing left behind.
+    h.close();
+    await Promise.all(waits);
+    expect(consistent(h)).toMatchObject({ waiters: 0, waitingActors: 0 });
+  });
+
+  it('disconnect frees the slot at once without cancelling the request; timeout, deadline and repeated cleanup leave counters intact', async () => {
+    let now = Date.now();
+    const h = new LogHub(() => now);
+    const serverId = randomUUID();
+    const id = open(h, serverId, 'u1');
+    const before = timeouts();
+    let gone: (() => void) | undefined;
+    const aborted = h.get(id, 'u1', { onClose: (cb) => { gone = cb; } });
+    const other = h.get(id, 'u1');
+    await tick();
+    expect(h.stats().waiters).toBe(2);
+    gone?.();
+    gone?.(); // a second close event is harmless
+    expect(await aborted).toMatchObject({ status: 'pending' });
+    expect(consistent(h)).toMatchObject({ waiters: 1 });
+    // The other reader still waits; the shared request is still pending, and a new GET takes the freed slot.
+    const next = h.get(id, 'u1', { waitMs: 20 });
+    expect(await next).toMatchObject({ status: 'pending' }); // wait timeout frees it
+    expect(consistent(h)).toMatchObject({ waiters: 1 });
+    // Deadline: cleanup wakes and frees the remaining waiter; repeated cleanup/close do not corrupt counters.
+    now += LOG_LIMITS.requestDeadlineMs + 1;
+    h.cleanup();
+    expect(await other).toMatchObject({ status: 'expired' });
+    h.cleanup();
+    h.close();
+    expect(consistent(h)).toMatchObject({ waiters: 0, waitingActors: 0 });
+    expect(timeouts()).toBeLessThanOrEqual(before);
+    // Limits still exact after all exits: exactly maxWaitersPerRequest admitted again.
+    const fresh = new LogHub();
+    const id2 = open(fresh, serverId, 'u1');
+    const again = [fresh.get(id2, 'u1', { waitMs: 50 }), fresh.get(id2, 'u1', { waitMs: 50 }), fresh.get(id2, 'u1', { waitMs: 50 })];
+    expect((await Promise.all(again)).filter((v) => v === 'limit_request')).toHaveLength(1);
+    fresh.close();
+  });
+
+  it('many completed cycles accumulate no waiters or timers', async () => {
+    const h = new LogHub();
+    const serverId = randomUUID();
+    const before = timeouts();
+    for (let i = 0; i < 50; i++) {
+      const id = open(h, serverId, `c${String(i)}`);
+      const w = h.get(id, `c${String(i)}`);
+      await tick();
+      h.agentResult(serverId, id, ok(Date.now()));
+      expect(await w).toMatchObject({ status: 'done' });
+    }
+    expect(consistent(h)).toMatchObject({ waiters: 0, waitingActors: 0 });
+    h.close();
+    expect(timeouts()).toBeLessThanOrEqual(before);
+  });
+
+  it('HTTP: excess waiting GETs → 429/Retry-After; viewer 403, anonymous 401, other user 404', async () => {
+    const admin = await session('admin');
+    const n = await node(admin);
+    const op = await session('operator');
+    const viewer = await session('viewer');
+    const { held } = await connected(n);
+    const requestId = (await create(op, n.serverId)).json<{ requestId: string }>().requestId;
+    await held;
+    const waits = [getReq(op, requestId), getReq(op, requestId)];
+    await new Promise((r) => setTimeout(r, 30));
+    const refused = await getReq(op, requestId);
+    expect(refused.statusCode).toBe(429);
+    expect(refused.headers['retry-after']).toBe('1');
+    expect((await getReq(admin, requestId)).statusCode).toBe(404);
+    expect((await getReq(viewer, requestId)).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: `/api/log-requests/${requestId}` })).statusCode).toBe(401);
+    expect((await agentResult(n.token, okResult(requestId))).statusCode).toBe(200);
+    for (const w of await Promise.all(waits)) expect(w.json()).toMatchObject({ status: 'done', result: { outcome: 'ok' } });
+    expect(hub.stats().waiters).toBe(0);
+    noSecrets();
+  });
+
+  it('HTTP: a real client abort frees the waiter immediately (not after the 8 s wait); the next GET works', async () => {
+    const admin = await session('admin');
+    const n = await node(admin);
+    const op = await session('operator');
+    const { held } = await connected(n);
+    const requestId = (await create(op, n.serverId)).json<{ requestId: string }>().requestId;
+    await held;
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    const controller = new AbortController();
+    const pending = fetch(`${address}/api/log-requests/${requestId}`, { headers: { cookie: op.cookie }, signal: controller.signal }).catch((e: unknown) => (e instanceof Error ? e.name : 'error'));
+    for (let i = 0; i < 100 && hub.stats().waiters === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(hub.stats().waiters).toBe(1); // held: the request body being consumed did not end the wait
+    await new Promise((r) => setTimeout(r, 200));
+    expect(hub.stats().waiters).toBe(1);
+    controller.abort();
+    expect(await pending).toBe('AbortError');
+    for (let i = 0; i < 100 && hub.stats().waiters > 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(hub.stats()).toMatchObject({ waiters: 0, waitingActors: 0 });
+    expect((await agentResult(n.token, okResult(requestId))).statusCode).toBe(200);
+    const res = await fetch(`${address}/api/log-requests/${requestId}`, { headers: { cookie: op.cookie } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'done' });
+    expect(logs.text()).not.toMatch(/"level":(50|60)/);
+    noSecrets();
+  });
+});

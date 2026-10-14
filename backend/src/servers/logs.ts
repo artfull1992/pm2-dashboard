@@ -17,6 +17,12 @@ export const LOG_LIMITS = Object.freeze({
   ratePerActorPerMinute: 30,
   maxPerPoll: 4,
   auditThrottleMs: 10 * 60_000,
+  // Result waiters (GET /api/log-requests/:id holding up to userWaitMs). The UI keeps at most one GET per open viewer
+  // and never overlaps them; 2 per request covers a reconnect while the old connection is still closing, 3 per actor
+  // a second tab, 100 overall bounds timers/sockets far above the expected number of concurrent operators.
+  maxWaitersPerRequest: 2,
+  maxWaitersPerActor: 3,
+  maxWaiters: 100,
   pollBodyBytes: 32 * 1024,
   resultBodyBytes: 40 * 1024,
 });
@@ -85,6 +91,8 @@ export function resultProblem(r: LogResult): string | null {
 export type ViewStatus = 'pending' | 'done' | 'expired';
 export interface RequestView { requestId: string; serverId: string; targetKey: string; status: ViewStatus; deadlineAt: string; result: LogResult | null }
 export interface Delivered { requestId: string; targetKey: string; lines: number; deadlineAt: string }
+/** null: unknown or not the requester's (no detail); limit_*: refused before any waiter/timer was created. */
+export type GetOutcome = RequestView | null | 'limit_request' | 'limit_actor' | 'limit_global';
 export type CreateOutcome =
   | { request: RequestView; audit: boolean }
   | 'not_connected' | 'unsupported' | 'broker_unavailable' | 'target_not_allowed' | 'rate_limited' | 'busy';
@@ -104,6 +112,8 @@ export class LogHub {
   private readonly agents = new Map<string, AgentState>();
   private readonly rate = new Map<string, number[]>();
   private readonly audited = new Map<string, number>();
+  private readonly actorWaiters = new Map<string, number>();
+  private waiters = 0;
   private readonly timer: NodeJS.Timeout;
 
   constructor(private readonly now: () => number = Date.now) {
@@ -114,11 +124,15 @@ export class LogHub {
   close(): void {
     clearInterval(this.timer);
     for (const a of this.agents.values()) this.release(a, []);
-    for (const e of this.requests.values()) for (const w of e.waiters) w();
+    for (const e of this.requests.values()) for (const w of [...e.waiters]) w();
   }
 
   /** Bounded sizes for tests/observability (no content). */
-  stats() { return { requests: this.requests.size, agents: this.agents.size }; }
+  stats() {
+    let waitersInRequests = 0;
+    for (const e of this.requests.values()) waitersInRequests += e.waiters.size;
+    return { requests: this.requests.size, agents: this.agents.size, waiters: this.waiters, waitingActors: this.actorWaiters.size, waitersInRequests };
+  }
 
   status(serverId: string): { state: 'supported' | 'not_connected' | 'unsupported' | 'broker_unavailable'; reportedAt: string | null; targets: LogTarget[] } {
     const a = this.agents.get(serverId);
@@ -181,23 +195,44 @@ export class LogHub {
     e.state = 'done';
     e.result = result;
     e.finishedAt = this.now();
-    for (const w of e.waiters) w();
-    e.waiters.clear();
+    for (const w of [...e.waiters]) w();
     return 'recorded';
   }
 
-  /** The requester's own request only; waits (bounded) for completion. Unknown/foreign → null. */
-  async get(requestId: string, actorUserId: string, waitMs: number = LOG_LIMITS.userWaitMs): Promise<RequestView | null> {
+  /**
+   * The requester's own request only; waits (bounded) for completion. Unknown/foreign → null, checked before any limit.
+   * Waiters are bounded per request, per actor and overall; each one ends exactly once — on the result, the deadline,
+   * its own wait timeout, `onClose` (client went away; the shared request itself is not cancelled) or shutdown.
+   */
+  async get(requestId: string, actorUserId: string, options: { waitMs?: number; onClose?: (cb: () => void) => void } = {}): Promise<GetOutcome> {
     this.cleanup();
     const e = this.requests.get(requestId);
     if (!e || e.actorUserId !== actorUserId) return null;
     if (e.state === 'pending' || e.state === 'delivered') {
-      const until = Math.min(e.deadline - this.now(), waitMs);
+      const until = Math.min(e.deadline - this.now(), options.waitMs ?? LOG_LIMITS.userWaitMs);
       if (until > 0) {
+        const byActor = this.actorWaiters.get(actorUserId) ?? 0;
+        if (e.waiters.size >= LOG_LIMITS.maxWaitersPerRequest) return 'limit_request';
+        if (byActor >= LOG_LIMITS.maxWaitersPerActor) return 'limit_actor';
+        if (this.waiters >= LOG_LIMITS.maxWaiters) return 'limit_global';
+        this.waiters += 1;
+        this.actorWaiters.set(actorUserId, byActor + 1);
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => { e.waiters.delete(done); resolve(); }, until);
-          const done = () => { clearTimeout(timer); resolve(); };
-          e.waiters.add(done);
+          let ended = false;
+          const end = () => {
+            if (ended) return;
+            ended = true;
+            clearTimeout(timer);
+            e.waiters.delete(end);
+            this.waiters -= 1;
+            const left = (this.actorWaiters.get(actorUserId) ?? 1) - 1;
+            if (left > 0) this.actorWaiters.set(actorUserId, left);
+            else this.actorWaiters.delete(actorUserId);
+            resolve();
+          };
+          const timer = setTimeout(end, until);
+          e.waiters.add(end);
+          options.onClose?.(end);
         });
       }
       this.cleanup();
@@ -237,8 +272,7 @@ export class LogHub {
       if ((e.state === 'pending' || e.state === 'delivered') && now > e.deadline) {
         e.state = 'expired';
         e.finishedAt = now;
-        for (const w of e.waiters) w();
-        e.waiters.clear();
+        for (const w of [...e.waiters]) w();
       }
       if (e.finishedAt !== null && now - e.finishedAt > LOG_LIMITS.resultTtlMs) this.requests.delete(id);
     }

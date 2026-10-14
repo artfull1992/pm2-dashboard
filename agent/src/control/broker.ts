@@ -110,13 +110,24 @@ export interface BrokerLogger {
 
 export const MAX_PENDING_EXECUTIONS = 4;
 
+export interface BrokerOptions {
+  /** Reply deadline of one log read (default LOG_LIMITS.readTimeoutMs; tests shorten it). */
+  logReadTimeoutMs?: number;
+}
+
 /** Socket server. One request per connection; executions are serialised (one PM2 action at a time). */
-export function createBroker(deps: ExecutorDeps, logger: BrokerLogger): { server: Server; idle: () => Promise<void> } {
+export function createBroker(deps: ExecutorDeps, logger: BrokerLogger, options: BrokerOptions = {}): {
+  server: Server; idle: () => Promise<void>; logStats: () => { inFlight: number; overdue: number };
+} {
   let chain: Promise<unknown> = Promise.resolve();
   let pending = 0;
 
+  // Log reads (ADR-018) are read-only and independent of the action chain: bounded concurrency + reply timeout.
+  // The file/PM2 calls of a read cannot be cancelled, so a slot is held until the read itself settles — a reply
+  // timeout answers the client but does not free the slot (otherwise hung reads would pile up past the limit).
+  const readTimeoutMs = options.logReadTimeoutMs ?? LOG_LIMITS.readTimeoutMs;
   let logReads = 0;
-  // Log reads (ADR-018) are read-only and independent of the action chain: bounded concurrency + timeout.
+  let overdue = 0;
   const handleLogs = async (req: LogTargetsRequest | LogsRequest): Promise<LogTargetsResponse | LogsResponse> => {
     const logDeps = { loadAllowlist: deps.loadAllowlist, list: deps.list, logDirs: deps.logDirs ?? [] };
     if (req.op === 'logTargets') return listLogTargets(logDeps);
@@ -124,15 +135,30 @@ export function createBroker(deps: ExecutorDeps, logger: BrokerLogger): { server
       ({ v: 1, op: 'logs', requestId: req.requestId, outcome: 'failed', reason, readAt: new Date().toISOString(), stdout: null, stderr: null });
     if (logReads >= LOG_LIMITS.maxConcurrentReads) return busy('broker_busy');
     logReads += 1;
+    const started = Date.now();
+    let late = false;
+    // Released exactly once, when the read settles (resolve or reject), never on the reply timeout.
+    const read = readLogs(req, logDeps).finally(() => {
+      logReads -= 1;
+      if (!late) return;
+      overdue -= 1;
+      logger.info({ msg: 'log read settled late', requestId: req.requestId, durationMs: Date.now() - started, inFlight: logReads });
+    });
+    read.catch(() => undefined); // after a timeout nobody awaits it: a late rejection must not become unhandled
     let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<LogsResponse>((resolve) => {
+      timer = setTimeout(() => {
+        late = true;
+        overdue += 1;
+        // Metadata only: a hung read stays visible until it settles.
+        logger.warn({ msg: 'log read overdue', requestId: req.requestId, inFlight: logReads, overdue });
+        resolve(busy('timeout'));
+      }, readTimeoutMs);
+    });
     try {
-      return await Promise.race([
-        readLogs(req, logDeps),
-        new Promise<LogsResponse>((resolve) => { timer = setTimeout(() => { resolve(busy('timeout')); }, LOG_LIMITS.readTimeoutMs); }),
-      ]);
+      return await Promise.race([read, timeout]);
     } finally {
       clearTimeout(timer);
-      logReads -= 1;
     }
   };
 
@@ -194,7 +220,7 @@ export function createBroker(deps: ExecutorDeps, logger: BrokerLogger): { server
     });
   });
   server.maxConnections = 8;
-  return { server, idle: () => chain.then(() => undefined, () => undefined) };
+  return { server, idle: () => chain.then(() => undefined, () => undefined), logStats: () => ({ inFlight: logReads, overdue }) };
 }
 
 /** Binds the socket: the directory must belong to us and be closed to others; a stale socket of ours is replaced. */

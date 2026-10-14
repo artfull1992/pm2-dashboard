@@ -345,3 +345,87 @@ describe('agent busy-loop guard', () => {
     expect(sleeps.every((ms) => ms >= 900 && ms <= 1_000)).toBe(true);
   });
 });
+
+// Task 010.1: a reply timeout must not free the slot of a read that is still running (the file/PM2 calls are not
+// cancellable), so the real number of unfinished reads never exceeds LOG_LIMITS.maxConcurrentReads.
+describe('broker log-read concurrency', () => {
+  const timeouts = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+  async function until(check: () => boolean) {
+    for (let i = 0; i < 400 && !check(); i++) await new Promise((r) => setTimeout(r, 5));
+    expect(check()).toBe(true);
+  }
+
+  it('timed-out reads keep their slots; repeated timeouts never raise real concurrency; late resolve/reject free a slot exactly once', async () => {
+    const dir = fresh();
+    writeFileSync(join(dir, 'o.log'), 'hello\n');
+    const p = proc(3, 'api', join(dir, 'o.log'), join(dir, 'e.log'));
+    const hung: { resolve: (v: unknown[]) => void; reject: (e: Error) => void; settled: boolean }[] = [];
+    let hang = true;
+    const list = () => (hang
+      ? new Promise<unknown[]>((resolve, reject) => {
+        const h = { settled: false, resolve: (v: unknown[]) => { h.settled = true; resolve(v); }, reject: (e: Error) => { h.settled = true; reject(e); } };
+        hung.push(h);
+      })
+      : Promise.resolve([p]));
+    const unfinished = () => hung.filter((h) => !h.settled).length;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => { unhandled.push(e); };
+    process.on('unhandledRejection', onUnhandled);
+    const events: Record<string, unknown>[] = [];
+    const sockDir = fresh();
+    const sock = join(sockDir, 'b.sock');
+    mkdirSync(join(sockDir, 'j'), { mode: 0o700 });
+    const timersBefore = timeouts();
+    const broker = createBroker(
+      { loadAllowlist: () => Promise.resolve([entry(p)]), list, act: () => Promise.resolve(), journal: new Journal(join(sockDir, 'j')), logDirs: [dir] },
+      { info: (e) => events.push(e), warn: (e) => events.push(e) },
+      { logReadTimeoutMs: 50 },
+    );
+    servers.push(broker.server);
+    await listenBroker(broker.server, sock);
+    const read = () => { const req = logsReq('api'); return brokerCall(sock, req, 8_000, (v) => parseLogsResponse(v, req)) as Promise<LogsResponse>; };
+    try {
+      // Two reads hang in PM2 list(); both clients get a bounded "timeout" answer.
+      expect((await Promise.all([read(), read()])).map((r) => r.reason)).toEqual(['timeout', 'timeout']);
+      // The slots stay taken: further reads are refused and start no new underlying operation.
+      for (let i = 0; i < 10; i++) expect((await read()).reason).toBe('broker_busy');
+      expect(hung).toHaveLength(2);
+      expect(broker.logStats()).toEqual({ inFlight: 2, overdue: 2 });
+      // Many timeout cycles: each settled read frees exactly one slot; never more than 2 unfinished reads.
+      for (let i = 0; i < 5; i++) {
+        hung.find((h) => !h.settled)?.resolve([p]);
+        await until(() => broker.logStats().inFlight === 1);
+        expect((await read()).reason).toBe('timeout');
+        expect((await read()).reason).toBe('broker_busy');
+        expect(unfinished()).toBe(2);
+        expect(broker.logStats().inFlight).toBe(2);
+      }
+      expect(hung).toHaveLength(7);
+      // Late resolve and late reject: each frees its slot once; no second answer, no unhandled rejection.
+      const [a, b] = hung.filter((h) => !h.settled);
+      a?.resolve([p]);
+      await until(() => broker.logStats().inFlight === 1);
+      b?.reject(new Error('late failure'));
+      await until(() => broker.logStats().inFlight === 0);
+      expect(broker.logStats()).toEqual({ inFlight: 0, overdue: 0 });
+      // After completion a new read is admitted and succeeds normally.
+      hang = false;
+      expect(await read()).toMatchObject({ outcome: 'ok', stdout: { text: 'hello' } });
+      // The limit is intact after all of this (no double release): 3 at once → 2 run, 1 busy.
+      hang = true;
+      expect((await Promise.all([read(), read(), read()])).map((r) => r.reason).sort()).toEqual(['broker_busy', 'timeout', 'timeout']);
+      expect(unfinished()).toBe(2);
+      for (const h of hung) if (!h.settled) h.resolve([p]);
+      await until(() => broker.logStats().inFlight === 0);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+      expect(timeouts()).toBeLessThanOrEqual(timersBefore);
+      // Hangs are visible as metadata only.
+      expect(events.filter((e) => e.msg === 'log read overdue').length).toBeGreaterThanOrEqual(9);
+      expect(events.filter((e) => e.msg === 'log read settled late').length).toBeGreaterThanOrEqual(9);
+      expect(JSON.stringify(events)).not.toMatch(/hello|late failure/);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  }, 60_000);
+});

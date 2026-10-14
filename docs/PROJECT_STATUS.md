@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-14 (Task 010). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-14 (Task 010.1). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -142,6 +142,42 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Task 010.1 — ресурсні ліміти перегляду логів (2026-10-14)
+
+Стан на початок: `main` = `de7d395`; у робочому дереві — незакомічений запис review Codex (Task 010) і узгоджений roadmap; збережено й закомічено разом із виправленням. Read-only перевірка ноди: allowlist 5 targets, 5 з `logs: true`, змінено 2026-10-14 12:48:29 UTC — це ввімкнення на запит користувача, задокументоване в `de7d395` (початковий звіт деплою `af89119` описував стан до нього). Allowlist і дозволи в цій задачі не змінювались.
+
+**P2-1 — broker звільняв слот до завершення читання.** Причина: `handleLogs` робив `Promise.race(readLogs, timeout)` і зменшував лічильник у `finally`. Timeout відповідав клієнту, але файлові/PM2-виклики `readLogs` тривали (вони не скасовуються), тож після кожного timeout могло стартувати ще одне читання понад ліміт. Виправлення (`agent/src/control/broker.ts`):
+- слот звільняється у `finally` самого `readLogs` — рівно один раз, при resolve або reject;
+- timeout лише відповідає клієнту `timeout` (≤ 5 с, без змін);
+- осиротілий Promise має `.catch`: пізній reject не стає unhandled і не дає другої відповіді;
+- поки обидва слоти зайняті — `broker_busy`, черги немає; керування процесами (окремий ланцюжок) не зачеплене;
+- зависання видно як metadata: `log read overdue` (requestId, inFlight, overdue) і `log read settled late` (durationMs); `createBroker` повертає `logStats()` {inFlight, overdue}.
+
+**P2-2 — необмежені очікувачі результату в API.** Причина: `LogHub.get` додавав waiter і таймер на кожен GET без ліміту, а маршрут не прибирав waiter при відключенні клієнта. Виправлення (`backend/src/servers/logs.ts`, `logs-routes.ts`):
+- `LOG_LIMITS.maxWaitersPerRequest = 2` (UI тримає ≤ 1 GET на відкритий переглядач без перекриття; 2 — запас на reconnect), `maxWaitersPerActor = 3` (друга вкладка), `maxWaiters = 100` (глобально; таймери/сокети з запасом над очікуваною кількістю операторів);
+- ліміти перевіряються після перевірки власника (чужий/невідомий запит → 404 без деталей) і до створення waiter/таймера: 429 + `Retry-After: 1` (запит/актор), 503 + `Retry-After: 2` (глобально);
+- кожен waiter завершується ідемпотентно (result, дедлайн, власний timeout, disconnect, shutdown) і звільняє таймер і лічильники рівно один раз;
+- disconnect — `reply.raw` 'close' (не `request.raw`); спільний запит не скасовується, інші очікувачі не зачеплені;
+- `stats()` — лише кількості (waiters, waitingActors, waitersInRequests).
+
+**Regression-тести — спершу проти старого коду, потім виправленого:**
+
+| Тест | Старий код (`401667e`) | Виправлений |
+|---|---|---|
+| Agent `broker log-read concurrency`: 2 завислі читання → timeout → 10 повторів; 5 циклів timeout; пізні resolve/reject; нове читання допускається; ліміт цілий; 0 unhandled; таймери не ростуть; журнал без тексту | падає: третє читання запустилося (`timeout` замість `broker_busy`) | 1/1 |
+| Backend `result waiters (bounded)`, 6 тестів: 1000 GET одного запиту; per-actor/global, чужий/невідомий; disconnect/timeout/дедлайн/повторний cleanup; 50 циклів без накопичення; HTTP 429 + Retry-After, viewer 403, anonymous 401, чужий 404; справжній HTTP abort звільняє waiter до 8 с, наступний GET працює | 6/6 падають (зокрема зайвий GET → 200 замість 429; немає відмови `limit_request`) | 6/6 |
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 89/89, backend 358/358, smoke 10/10, agent 164/164 (+3 opt-in), frontend 115/115, typecheck, lint, збірки, `check:secrets` OK |
+| UI (`playwright -c e2e/ui.config.ts`) | 2/2 (1440/390 px) |
+| Real-DB (`test:backend:db`) | 60/60 |
+| E2E (`test:e2e`) | 10/10 (+1 opt-in) |
+| Real-PM2 E2E (`test:e2e:pm2`, синтетичні логи, одноразовий `PM2_HOME`, тестова БД) | 1/1 |
+| Залишки | 0 схем `nc_test_*`; PM2 daemon і `~/.pm2` відсутні |
+
+Обмеження: операції `logTargets` і `list` (керування) не мають окремого ліміту на завислий PM2 `list()`; Agent викликає їх послідовно, по одній на цикл. Це поза scope задачі. Фронтенд не змінювався: 429 і 503 уже показуються без автоповтору.
 
 ## Task 010 — обмежений авторизований перегляд логів сервісів (2026-10-14)
 
@@ -636,9 +672,9 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 010 — перегляд логів реалізовано; production-читання ввімкнене для 5 процесів `app-server` (`logs: true`). Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 010.1 — ресурсні ліміти перегляду логів виправлено за review Codex; production-читання ввімкнене для 5 процесів `app-server` (`logs: true`). Очікує повторного review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
-Next Task: за backlog review Codex — Jenkins redeploy, alerts/Slack, Dashboard/метрики, зміна пароля й керування користувачами. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
+Next Task: виправити Task 010 за review, потім узгоджений користувачем порядок: користувачі/паролі → Dashboard → Slack/alerts → історія метрик → фінальна production-підготовка. Jenkins redeploy перенесений користувачем у далекий backlog після іншої автоматизації; у поточний план запуску не входить. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.
 
@@ -654,3 +690,15 @@ Read-only SSH: hostname `control-server`, current і RELEASE.json revision `3ff4
 Залишок реалізації за кодом: перегляд/потік логів із обмеженням обсягу й доступу; Jenkins redeploy зі статусом, RBAC та аудитом; alerts/Slack із cooldown, deduplication і recovery; реальний Dashboard, історія метрик і retention; зміна власного пароля й admin-керування користувачами. Перед фінальним production-запуском — відкладені 5432/NC-SEC-001, публічні захисні заголовки та фінальна інтеграційна перевірка. Видалення PM2-процесів і підтримка кількох PM2 owners не включаються автоматично у найближчу задачу.
 
 Документаційний борг: ARCHITECTURE досі містить твердження про необрані транспорт, ролі та міграційний інструмент, хоча вони реалізовані; нижні Next Task/Planned і частина відомих проблем цього документа мають історичні формулювання. Актуальний backlog визначати за кодом і цим review. Запис підготовлено локально; commit/push залишено Claude відповідно до останнього розподілу роботи користувача.
+
+
+## Незалежний review Codex — Task 010 (2026-10-14)
+
+Переглянуто `401667e` і docs-звіт `af89119`; початкове дерево чисте. Review не підтверджує завершення задачі: знайдено два P2 у ресурсних обмеженнях.
+
+1. **P2 — broker звільняє слот до завершення читання.** `agent/src/control/broker.ts`, handleLogs: Promise.race повертає timeout, але readLogs продовжується; finally зменшує logReads. Відтворено із завислим mock list(): після timeout двох операцій третя починається, хоча всі три ще незавершені (maxConcurrentReads=2). Утримувати слот до фактичного завершення або підтвердженого скасування underlying operation; додати regression-тест повторних timeout і перевірку cleanup.
+2. **P2 — кількість очікувачів результату не обмежена.** `backend/src/servers/logs.ts`, LogHub.get: кожен GET додає waiter і timer до одного Entry без per-request/per-actor/global ліміту; маршрут GET не очищає waiter одразу після disconnect. Відтворено 1000 одночасних get() одного запиту одного actor: 1000 waiters прийнято. maxRequests=200 і maxPendingPerActor=2 це не обмежують. Додати ліміти очікувань та cleanup при disconnect, regression для повторних GET, timeout і завершення результату.
+
+Тимчасові локальні reproduction-тести 2/2 підтвердили поведінку й видалені; функціональний код не змінено. На Node.js 22 `check:local` exit 0: 89 node:test, 352 backend, 10 smoke, 163 agent +3 opt-in пропущені, 115 frontend; lint/typecheck/secrets і збірки успішні. UI Playwright із synthetic API: 2/2 desktop/mobile. Real-DB і real-PM2 E2E незалежно не повторювалися.
+
+Read-only SSH підтвердив current `401667e653ed80f395a17a2ffa1c12657b9c9079` на центральному та керованому серверах; API/Nginx active, ready 200; Agent/broker/exporter timer active. **Allowlist ноди зараз: 5 targets, 5 з logs=true.** Початковий звіт деплою повідомляв 0, тому його стан не є поточним; хто й коли ввімкнув читання, цей review не встановлював. Production-текст не читався; конфігурації, служби і PM2-процеси reviewer не змінював. Рекомендація: обмежити використання production-читання до виправлення ресурсних лімітів. Запис review підготовлено локально, без commit/push/deploy.
