@@ -14,7 +14,6 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `scripts/lib/` | Конфігурація, env, генерація пароля, SCRAM, SQL builders, HBA parser, setup plan, scanner |
 | `tests/unit/` | 46 тестів допоміжної логіки без БД (node:test) |
 | `tests/integration/` | Env, реальна БД, каталоги, права, SCRAM; привілейовані серверні перевірки |
-| `docs/server-audit.md` | Історичний звіт Task 001 про сервер, не поточна незалежна перевірка |
 | `backend/src/config.ts` | Читання `.env` (`ENV_FILE`) + process env (пріоритет), валідація, ліміти pool/timeout |
 | `backend/src/database.ts` | `pg.Pool` (max 5, кінцеві таймаути), `check()` = `SELECT 1`, ідемпотентний `close()`, маскування помилок |
 | `backend/src/app.ts` | Fastify factory: логер із redaction, request ID, `/health/live`, `/health/ready`, 404/500 handlers; не слухає порт |
