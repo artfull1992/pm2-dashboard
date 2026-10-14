@@ -2,7 +2,7 @@ import {
   type ApplicationPage, type AuditPage, type CommandView, ContractError, type ControlAction, type ControlView, type IssuedCredential,
   parseApplicationPage, parseAuditPage, parseCommandList, parseCommandView, parseControlView, parseIssuedCredential,
   type LogRequestView, type LogTargetsView, parseLogRequestCreated, parseLogRequestView, parseLogTargets,
-  parseDashboard, type DashboardView, parseRevokeResult, parseServerApplications, parseUserPage, parseUserView, type Role, type UserPage, type UserView, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
+  parseDashboard, type DashboardView, parseAlertsStatus, parseIncidentPage, type AlertsStatus, type IncidentPage, parseRevokeResult, parseServerApplications, parseUserPage, parseUserView, type Role, type UserPage, type UserView, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
   type ProcessStatus, type ServerApplications, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
 } from './types';
 
@@ -136,6 +136,20 @@ export const authApi = {
   /** 204 on success; every session (this one included) is gone afterwards. Never retried automatically. */
   changePassword: (currentPassword: string, newPassword: string, csrfToken: string, signal?: AbortSignal) =>
     apiRequest('/api/auth/change-password', { method: 'POST', body: { currentPassword, newPassword }, csrfToken, ...(signal ? { signal } : {}) }),
+};
+
+// --- Alerts (Task 013, ADR-021) ----------------------------------------------------------------------------------
+export const ALERTS_PAGE_SIZE = 25;
+export const alertsApi = {
+  status: (signal?: AbortSignal): Promise<AlertsStatus> => apiRequest('/api/alerts/status', { parse: parseAlertsStatus, ...(signal ? { signal } : {}) }),
+  list: (state: 'active' | 'resolved', before: string | null, signal?: AbortSignal): Promise<IncidentPage> => {
+    const query = new URLSearchParams({ state, limit: String(ALERTS_PAGE_SIZE) });
+    if (before !== null) {
+      if (!UUID_RE.test(before)) throw new ApiError('invalid_request');
+      query.set('before', before);
+    }
+    return apiRequest(`/api/alerts?${query.toString()}`, { parse: parseIncidentPage, ...(signal ? { signal } : {}) });
+  },
 };
 
 // --- Dashboard (Task 012, ADR-020) -------------------------------------------------------------------------------

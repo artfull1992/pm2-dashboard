@@ -423,3 +423,33 @@ describe('result waiters (bounded)', () => {
     noSecrets();
   });
 });
+
+// Task 013: graceful shutdown must not wait for a held Agent long-poll (up to 25 s) or a result waiter (up to 8 s).
+// The hub is released in preClose — before Fastify waits for in-flight requests — so close() finishes promptly.
+describe('graceful shutdown with long-polls in flight (real HTTP)', () => {
+  it('API close with a held Agent long-poll and a waiting result GET completes cleanly within the shutdown timeout', async () => {
+    const { createLifecycle } = await import('../src/lifecycle.js');
+    const admin = await session('admin');
+    const n = await node(admin);
+    const op = await session('operator');
+    const { held } = await connected(n);
+    const requestId = (await create(op, n.serverId)).json<{ requestId: string }>().requestId;
+    await held;
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    const poll = fetch(`${address}/api/agent/logs/poll`, {
+      method: 'POST', headers: { authorization: `Bearer ${n.token}`, 'content-type': 'application/json' }, body: JSON.stringify(report()),
+    }).then((r) => r.status, (e: unknown) => (e instanceof Error ? e.name : 'error'));
+    const wait = fetch(`${address}/api/log-requests/${requestId}`, { headers: { cookie: op.cookie } })
+      .then((r) => r.status, (e: unknown) => (e instanceof Error ? e.name : 'error'));
+    for (let i = 0; i < 100 && (hub.stats().waiters === 0); i++) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 100)); // both requests are now held by the API
+    expect(hub.stats().waiters).toBe(1);
+    const lifecycle = createLifecycle(app, { host: '127.0.0.1', port: 0, shutdownTimeoutMs: 3_000 });
+    const started = Date.now();
+    expect(await lifecycle.shutdown('SIGTERM')).toBe(true); // clean, not "Shutdown failed or timed out"
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(await poll).toBe(200);
+    expect(await wait).toBe(200);
+    expect(logs.text()).not.toContain('Shutdown failed');
+  }, 20_000);
+});

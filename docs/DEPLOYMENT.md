@@ -325,6 +325,24 @@ install -m 644 -o root -g root "$A.new" "$A" && rm "$A.new"
 
 Rollback: `server-release.js rollback` на попередній реліз + restart API. Колонка лишається (старий реліз її не читає й створює сесії без перевірки версії). Паролі, змінені новим релізом, не повертаються; відкликані сесії не відновлюються.
 
+### Сповіщення (Task 013, ADR-021)
+
+Міграція `1791900000006_alerts` (additive: 3 таблиці). Деплой — штатний API-деплой з backup і `up` до активації. **За замовчуванням вимкнено** (`ALERTS_ENABLED=false`, `ALERTS_DELIVERY_ENABLED=false`): нічого не оцінюється й не надсилається.
+
+Увімкнення (оператор, після погодження Slack-каналу й адресатів; root на центральному сервері):
+```bash
+E=/etc/goit-node-control/api.env
+cp -p "$E" "$E.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+# 1) Лише оцінювання (інциденти в UI, без Slack): дописати ALERTS_ENABLED=true (та за потреби ALERTS_PUBLIC_URL=https://control.example.com)
+# 2) Доставка: дописати ALERTS_DELIVERY_ENABLED=true і ALERTS_SLACK_WEBHOOK_URL=<webhook> — редактором, НЕ через argv/echo в історію shell
+chmod 600 "$E"; chown nodecontrol:nodecontrol "$E"
+systemctl restart node-control-api
+journalctl -u node-control-api --since "-1 min" -o cat | grep -o '"alertsEnabled":[a-z]*,"alertsDeliveryEnabled":[a-z]*'
+```
+Перевірка: UI «Сповіщення» (admin бачить «Slack webhook: Налаштовано», черга). Перше повідомлення прийде лише з реальним інцидентом; тестове повідомлення в канал — тільки з погодження адресата.
+
+Вимкнення / rollback: `ALERTS_DELIVERY_ENABLED=false` (і/або `ALERTS_ENABLED=false`) + restart — доставку зупинено; черга й інциденти лишаються (при повторному ввімкненні queued-записи будуть доставлені — за потреби спершу позначити їх `dropped` окремим погодженим SQL). Rollback коду: спершу вимкнути доставку, потім `server-release.js rollback` + restart API; таблиці лишаються, дані не видаляються.
+
 ### Міграції: backup, recovery, rollback
 
 - Перед кожним production `up` — `pg_dump -Fc` лише `node_control_db` у `/root/node-control-backups/` (каталог `700`, файл `600`), перевірка `pg_restore --list`. Не дамп усього кластера.

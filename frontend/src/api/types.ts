@@ -1,7 +1,7 @@
 // Runtime validation of API responses (ADR-012). The backend contract is in README / ADR-011; anything that
 // does not match exactly is treated as an unexpected response instead of being trusted by the UI.
 
-export const KNOWN_PERMISSIONS = ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read'] as const;
+export const KNOWN_PERMISSIONS = ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage'] as const;
 export type Permission = (typeof KNOWN_PERMISSIONS)[number];
 export const KNOWN_ROLES = ['admin', 'operator', 'viewer'] as const;
 export type Role = (typeof KNOWN_ROLES)[number];
@@ -517,4 +517,89 @@ export function parseDashboard(value: unknown): DashboardView {
     };
   }
   return { generatedAt: value.generatedAt, windows, servers, inventory, processes, attentionServers, attentionProcesses, serverList, recentActions };
+}
+
+// --- Alerts (Task 013, ADR-021) ----------------------------------------------------------------------------------
+
+export const ALERT_RULES = ['server_offline', 'inventory_stale', 'process_down', 'process_cpu', 'server_memory', 'process_restarts'] as const;
+export type AlertRule = (typeof ALERT_RULES)[number];
+export const OUTBOX_STATES = ['none', 'queued', 'sending', 'sent', 'failed', 'unknown', 'dropped'] as const;
+export interface Incident {
+  id: string; rule: AlertRule; severity: 'critical' | 'warning'; status: 'firing' | 'resolved'; resolution: 'recovered' | 'process_gone' | 'excluded' | null;
+  serverId: string; serverName: string; serverStatus: ServerStatus | 'inactive'; processName: string | null; pmId: number | null;
+  detail: { value?: number | null; threshold?: number | null; status?: string; state?: string; lastSeenAt?: string | null; delta?: number; spanSeconds?: number; windowSeconds?: number };
+  openedAt: string; lastObservedAt: string; resolvedAt: string | null;
+  notification: { notify: boolean; state: (typeof OUTBOX_STATES)[number]; attempts: number; lastError: string | null } | null;
+}
+export interface IncidentPage { items: Incident[]; nextBefore: string | null }
+export interface AlertsStatus {
+  engine: { enabled: boolean; running: boolean; lastEvaluationAt: string | null; lastEvaluationOk: boolean | null };
+  delivery: { enabled: boolean };
+  activeCount: number;
+  admin: {
+    webhookConfigured: boolean; publicUrlConfigured: boolean; intervalSeconds: number; cooldownMinutes: number; reminderMinutes: number; maxAttempts: number; queueMax: number;
+    thresholds: Record<'cpuOpenPercent' | 'cpuClosePercent' | 'memoryOpenPercent' | 'memoryClosePercent' | 'confirmSamples' | 'recoverSamples' | 'statusConfirmSamples' | 'restartsThreshold' | 'restartsWindowMinutes', number>;
+    queue: Record<'queued' | 'sending' | 'sent' | 'failed' | 'unknown' | 'dropped', number>;
+    lastSentAt: string | null; lastDeliveryError: string | null; lastEvaluationError: string | null;
+  } | null;
+}
+
+const INCIDENT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const nullableNum = (v: unknown): v is number | null => v === null || (typeof v === 'number' && Number.isFinite(v));
+const nullableBool = (v: unknown): v is boolean | null => v === null || typeof v === 'boolean';
+
+function parseIncident(v: unknown): Incident {
+  expect(isObject(v) && isString(v.id, 36) && INCIDENT_UUID.test(v.id) && oneOf(ALERT_RULES, v.rule) && (v.severity === 'critical' || v.severity === 'warning'));
+  expect((v.status === 'firing' || v.status === 'resolved') && (v.resolution === null || v.resolution === 'recovered' || v.resolution === 'process_gone' || v.resolution === 'excluded'));
+  expect(isString(v.serverId, 36) && INCIDENT_UUID.test(v.serverId) && isString(v.serverName, 100) && (isServerStatus(v.serverStatus) || v.serverStatus === 'inactive'));
+  expect(isNullableString(v.processName) && (v.pmId === null || (typeof v.pmId === 'number' && Number.isInteger(v.pmId))));
+  expect(isDate(v.openedAt) && isDate(v.lastObservedAt) && isNullableDate(v.resolvedAt) && isObject(v.detail));
+  const d = v.detail;
+  const detail: Incident['detail'] = {};
+  for (const k of ['value', 'threshold'] as const) if (d[k] !== undefined) { const x = d[k]; expect(nullableNum(x)); detail[k] = x; }
+  for (const k of ['delta', 'spanSeconds', 'windowSeconds'] as const) if (d[k] !== undefined) { const x = d[k]; expect(typeof x === 'number' && Number.isFinite(x)); detail[k] = x; }
+  for (const k of ['status', 'state'] as const) if (d[k] !== undefined) { const x = d[k]; expect(isString(x, 40)); detail[k] = x; }
+  if (d.lastSeenAt !== undefined) { expect(isNullableDate(d.lastSeenAt)); detail.lastSeenAt = d.lastSeenAt; }
+  let notification: Incident['notification'] = null;
+  if (v.notification !== null) {
+    const n = v.notification;
+    expect(isObject(n) && typeof n.notify === 'boolean' && oneOf(OUTBOX_STATES, n.state) && isCount(n.attempts, 100) && isNullableString(n.lastError));
+    notification = { notify: n.notify, state: n.state, attempts: n.attempts, lastError: n.lastError };
+  }
+  return {
+    id: v.id, rule: v.rule, severity: v.severity, status: v.status, resolution: v.resolution, serverId: v.serverId, serverName: v.serverName, serverStatus: v.serverStatus,
+    processName: v.processName, pmId: v.pmId, detail, openedAt: v.openedAt, lastObservedAt: v.lastObservedAt, resolvedAt: v.resolvedAt, notification,
+  };
+}
+
+export function parseIncidentPage(value: unknown): IncidentPage {
+  expect(isObject(value) && Array.isArray(value.items) && value.items.length <= 100 && (value.nextBefore === null || (isString(value.nextBefore, 36) && INCIDENT_UUID.test(value.nextBefore))));
+  return { items: value.items.map(parseIncident), nextBefore: value.nextBefore };
+}
+
+export function parseAlertsStatus(value: unknown): AlertsStatus {
+  expect(isObject(value) && isObject(value.engine) && isObject(value.delivery) && isCount(value.activeCount, 1_000_000));
+  const e = value.engine;
+  expect(typeof e.enabled === 'boolean' && typeof e.running === 'boolean' && isNullableDate(e.lastEvaluationAt) && nullableBool(e.lastEvaluationOk) && typeof value.delivery.enabled === 'boolean');
+  let admin: AlertsStatus['admin'] = null;
+  if (value.admin !== null) {
+    const a = value.admin;
+    expect(isObject(a) && typeof a.webhookConfigured === 'boolean' && typeof a.publicUrlConfigured === 'boolean' && !('webhookUrl' in a));
+    const numbers = (o: unknown, keys: readonly string[]) => {
+      expect(isObject(o));
+      const out: Record<string, number> = {};
+      for (const k of keys) { const x = o[k]; expect(isCount(x, 10_000_000)); out[k] = x; }
+      return out;
+    };
+    const top = numbers(a, ['intervalSeconds', 'cooldownMinutes', 'reminderMinutes', 'maxAttempts', 'queueMax']);
+    expect(isNullableDate(a.lastSentAt) && isNullableString(a.lastDeliveryError) && isNullableString(a.lastEvaluationError));
+    admin = {
+      webhookConfigured: a.webhookConfigured, publicUrlConfigured: a.publicUrlConfigured,
+      intervalSeconds: top.intervalSeconds ?? 0, cooldownMinutes: top.cooldownMinutes ?? 0, reminderMinutes: top.reminderMinutes ?? 0, maxAttempts: top.maxAttempts ?? 0, queueMax: top.queueMax ?? 0,
+      thresholds: numbers(a.thresholds, ['cpuOpenPercent', 'cpuClosePercent', 'memoryOpenPercent', 'memoryClosePercent', 'confirmSamples', 'recoverSamples', 'statusConfirmSamples', 'restartsThreshold', 'restartsWindowMinutes']),
+      queue: numbers(a.queue, ['queued', 'sending', 'sent', 'failed', 'unknown', 'dropped']),
+      lastSentAt: a.lastSentAt, lastDeliveryError: a.lastDeliveryError, lastEvaluationError: a.lastEvaluationError,
+    };
+  }
+  return { engine: { enabled: e.enabled, running: e.running, lastEvaluationAt: e.lastEvaluationAt, lastEvaluationOk: e.lastEvaluationOk }, delivery: { enabled: value.delivery.enabled }, activeCount: value.activeCount, admin };
 }

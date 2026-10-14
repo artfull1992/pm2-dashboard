@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import { AlertsEngine } from './alerts/engine.js';
+import { registerAlertRoutes } from './alerts/routes.js';
+import { type AlertsStore, createPgAlertsStore } from './alerts/store.js';
 import type { Limiter } from './auth/password.js';
 import type { RateLimiter } from './auth/rate-limit.js';
 import { registerAuth } from './auth/plugin.js';
@@ -16,9 +19,16 @@ import { createPgInventoryStore, type InventoryStore } from './servers/inventory
 import { registerInventoryRoutes } from './servers/inventory-routes.js';
 import { registerServerRoutes } from './servers/routes.js';
 import { createPgServerStore, type ServerStore } from './servers/store.js';
-import type { AuthConfig, LogLevel } from './config.js';
+import { ALERTS_DISABLED, type AlertsConfig, type AuthConfig, type LogLevel } from './config.js';
 import { type Database, DatabaseCheckError, withTimeout } from './database.js';
 import { describeError, toErrorResponse } from './errors.js';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    /** The alerts worker when enabled (ADR-021); null otherwise. */
+    alertsEngine: AlertsEngine | null;
+  }
+}
 
 export interface LogDestination {
   write(chunk: string): void;
@@ -57,6 +67,11 @@ export interface BuildAppOptions {
     controlLimiter?: Limiter;
     /** Test seam: in-memory log hub (ADR-018). */
     logHub?: LogHub;
+    /** Alerts engine/delivery configuration (ADR-021); default: everything disabled. */
+    alerts?: AlertsConfig;
+    /** Test seams for alerts: store and the HTTP transport used for Slack (never the real Slack in tests). */
+    createAlertsStore?: (database: Database) => AlertsStore;
+    alertsFetch?: typeof fetch;
     /** Test seam for the dashboard aggregate (ADR-020). */
     createDashboardStore?: (database: Database) => DashboardStore;
     /** Test seam for user administration (ADR-019). */
@@ -120,6 +135,16 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     reply.header('x-request-id', request.id);
   });
 
+  // Graceful shutdown: once close() starts, every response (incl. long-polls released in preClose) closes its
+  // connection. Otherwise a keep-alive socket that became idle AFTER close() began keeps the server open until the
+  // keep-alive timeout (~72 s) — far beyond the shutdown timeout.
+  let closing = false;
+  app.addHook('preClose', (done) => { closing = true; done(); });
+  app.addHook('onSend', async (_request, reply, payload) => {
+    if (closing) reply.header('connection', 'close');
+    return payload;
+  });
+
   app.get('/health/live', { schema: { response: { 200: statusSchema('ok') } } }, async (_request, reply) => {
     reply.header('cache-control', 'no-store');
     return { status: 'ok' };
@@ -160,6 +185,20 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       ...(options.auth.controlLimiter ? { limiter: options.auth.controlLimiter } : {}),
     });
     registerDashboardRoutes(app, { store: (options.auth.createDashboardStore ?? createPgDashboardStore)(database) });
+
+    // Alerts (ADR-021): the worker runs inside this process only when enabled; it starts once the app is ready and
+    // stops in preClose (before in-flight requests are awaited and before the database is closed).
+    const alertsConfig = options.auth.alerts ?? ALERTS_DISABLED;
+    const alertsStore = (options.auth.createAlertsStore ?? createPgAlertsStore)(database);
+    const engine = alertsConfig.enabled
+      ? new AlertsEngine(alertsStore, alertsConfig, app.log.child({ component: 'alerts' }), options.auth.alertsFetch ? { fetchImpl: options.auth.alertsFetch } : {})
+      : null;
+    if (engine) {
+      app.addHook('onReady', (done) => { engine.start(); done(); });
+      app.addHook('preClose', async () => { await engine.stop(); });
+    }
+    app.decorate('alertsEngine', engine);
+    registerAlertRoutes(app, { store: alertsStore, config: alertsConfig, stats: () => engine?.stats() ?? null });
     registerLogRoutes(app, {
       hub: options.auth.logHub ?? new LogHub(),
       serverExists: async (id) => (await serverStore.get(id)) !== null,

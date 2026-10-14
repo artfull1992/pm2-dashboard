@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './auth/AuthContext';
 import { RequireAuth, RequirePermission } from './auth/guards';
 import { Layout } from './components/Layout';
 import { AccountPage } from './pages/AccountPage';
+import { AlertsPage } from './pages/AlertsPage';
 import { AuditPage } from './pages/AuditPage';
 import { LoginPage } from './pages/LoginPage';
 import { ServerDetailPage } from './pages/ServerDetailPage';
@@ -32,6 +33,7 @@ export function AppRoutes() {
         <Route path="servers" element={<RequirePermission permission="monitoring:read"><ServersPage /></RequirePermission>} />
         <Route path="servers/:id" element={<RequirePermission permission="monitoring:read"><ServerDetailPage /></RequirePermission>} />
         <Route path="applications" element={<RequirePermission permission="monitoring:read"><ApplicationsPage /></RequirePermission>} />
+        <Route path="alerts" element={<RequirePermission permission="monitoring:read"><AlertsPage /></RequirePermission>} />
         <Route path="audit" element={<RequirePermission permission="audit:read"><AuditPage /></RequirePermission>} />
         <Route path="users" element={<RequirePermission permission="users:manage"><UsersPage /></RequirePermission>} />
         <Route path="account" element={<AccountPage />} />

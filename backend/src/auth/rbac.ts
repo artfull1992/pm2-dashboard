@@ -12,6 +12,7 @@ export const PERMISSIONS = [
   'servers:manage', // server registry and Agent credentials (Task 007)
   'audit:read',
   'logs:read', // bounded stdout/stderr tail of explicitly allowed services (Task 010, ADR-018)
+  'alerts:manage', // alert delivery state, queue and non-secret configuration (Task 013, ADR-021)
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -19,7 +20,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = O
   viewer: ['monitoring:read'],
   // Logs can contain sensitive data: viewer does not get logs:read; processes:control does not imply it.
   operator: ['monitoring:read', 'processes:control', 'logs:read'],
-  admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read'],
+  admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage'],
 });
 
 export function isRole(value: unknown): value is Role {

@@ -147,6 +147,15 @@ npm run backend:start     # node backend/dist/main.js
 | `POST /api/auth/logout` (без тіла) | сесія + Origin + `x-csrf-token` | `204`, cookie очищено | 401, 403 (Origin/CSRF), 503 |
 | `GET /api/audit?limit=1..100&beforeId=<id>` | `audit:read` (admin) | `200 {items:[{id,occurredAt,event,outcome,actorUserId,requestId,details}], nextBeforeId}` — `id DESC`, keyset | 400, 401, 403 `Insufficient permissions`, 503 |
 
+### Сповіщення (Task 013, ADR-021) — вимкнено за замовчуванням
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `GET /api/alerts?state=active\|resolved&limit=1..100&before=<uuid>` | `monitoring:read` | `200 {items:[{id, rule, severity, status, resolution, serverId, serverName, serverStatus, processName, pmId, detail, openedAt, lastObservedAt, resolvedAt, notification}], nextBefore}`; `notification` лише для `alerts:manage`, інакше `null` | 400, 401, 403, 503 |
+| `GET /api/alerts/status` | `monitoring:read` | `200 {engine:{enabled, running, lastEvaluationAt, lastEvaluationOk}, delivery:{enabled}, activeCount, admin}`; `admin` (черга, пороги, `webhookConfigured`) лише для `alerts:manage` | 401, 403, 503 |
+
+Налаштування — лише `ALERTS_*` у `api.env` (див. `.env.example`). Webhook ніколи не повертається.
+
 ### Dashboard (Task 012, ADR-020)
 
 | Запит | Доступ | Успіх | Помилки |

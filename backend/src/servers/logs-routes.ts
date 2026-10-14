@@ -34,6 +34,10 @@ export interface LogRoutesOptions {
 
 export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOptions): void {
   const { hub, serverExists } = options;
+  // preClose runs BEFORE Fastify waits for in-flight requests: held Agent long-polls and result waiters are answered
+  // here, so the server can finish closing. In onClose (after that wait) a 25 s long-poll would stall the shutdown
+  // past its timeout. onClose repeats it idempotently for paths that skip preClose.
+  app.addHook('preClose', (done) => { hub.close(); done(); });
   app.addHook('onClose', (_instance, done) => { hub.close(); done(); });
 
   const audit = async (log: { error(o: object, m: string): void }, entry: AuditEvent, context: AuditContext) => {

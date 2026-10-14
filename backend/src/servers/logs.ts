@@ -114,6 +114,8 @@ export class LogHub {
   private readonly audited = new Map<string, number>();
   private readonly actorWaiters = new Map<string, number>();
   private waiters = 0;
+  /** After close() nothing is held any more: a late long-poll or result wait is answered at once (shutdown). */
+  private closed = false;
   private readonly timer: NodeJS.Timeout;
 
   constructor(private readonly now: () => number = Date.now) {
@@ -122,6 +124,7 @@ export class LogHub {
   }
 
   close(): void {
+    this.closed = true;
     clearInterval(this.timer);
     for (const a of this.agents.values()) this.release(a, []);
     for (const e of this.requests.values()) for (const w of [...e.waiters]) w();
@@ -177,6 +180,7 @@ export class LogHub {
     const state: AgentState = { seenAt: this.now(), report, waiter: null };
     this.agents.set(serverId, state);
     const ready = this.takeFor(serverId);
+    if (this.closed) return Promise.resolve(ready);
     // Always hold when there is nothing to do (also when the broker is not ok): the Agent re-polls at once after
     // every answer, so an immediate empty answer would turn into a busy loop.
     if (ready.length > 0) return Promise.resolve(ready);
@@ -210,7 +214,7 @@ export class LogHub {
     if (!e || e.actorUserId !== actorUserId) return null;
     if (e.state === 'pending' || e.state === 'delivered') {
       const until = Math.min(e.deadline - this.now(), options.waitMs ?? LOG_LIMITS.userWaitMs);
-      if (until > 0) {
+      if (until > 0 && !this.closed) {
         const byActor = this.actorWaiters.get(actorUserId) ?? 0;
         if (e.waiters.size >= LOG_LIMITS.maxWaitersPerRequest) return 'limit_request';
         if (byActor >= LOG_LIMITS.maxWaitersPerActor) return 'limit_actor';

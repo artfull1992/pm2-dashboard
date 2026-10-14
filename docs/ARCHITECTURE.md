@@ -77,7 +77,7 @@ flowchart LR
 
 Прийняті рішення (не плани): транспорт Agent — лише вихідний HTTPS із bounded polling/long-poll (ADR-015…018), без WebSocket; модель ролей admin/operator/viewer з permissions (ADR-011, `logs:read` — ADR-018); схема БД і міграції — версійні SQL через node-pg-migrate (ADR-009); PM2 — лише через exporter (read-only) і broker (allowlist) від власника PM2.
 
-Реалізовано: auth/RBAC/audit, реєстр серверів, heartbeat, PM2 inventory, керування дозволеними процесами, перегляд обмеженого хвоста логів, адміністрування користувачів і зміна власного пароля (ADR-019: `users.credential_version`, відкликання всіх сесій, серіалізація адмінських мутацій), Dashboard поточного стану (ADR-020: `GET /api/dashboard`, один узгоджений read-only знімок, точні агрегати й обмежені списки). **Не реалізовано:** Jenkins redeploy, alerts/Slack, історія метрик та retention, admin-reset пароля, MFA, кілька PM2 owners, видалення процесів, менеджер секретів-інтеграція.
+Реалізовано: auth/RBAC/audit, реєстр серверів, heartbeat, PM2 inventory, керування дозволеними процесами, перегляд обмеженого хвоста логів, адміністрування користувачів і зміна власного пароля (ADR-019: `users.credential_version`, відкликання всіх сесій, серіалізація адмінських мутацій), Dashboard поточного стану (ADR-020: `GET /api/dashboard`, один узгоджений read-only знімок, точні агрегати й обмежені списки), alerts engine і Slack (ADR-021: worker в API-процесі, durable інциденти й outbox, вимкнено за замовчуванням). **Не реалізовано:** Jenkins redeploy, історія метрик та retention, acknowledgement/silencing alerts, admin-reset пароля, MFA, кілька PM2 owners, видалення процесів, менеджер секретів-інтеграція.
 
 ### Перегляд логів (Task 010, ADR-018)
 

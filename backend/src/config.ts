@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { parseEnv } from 'node:util';
+import type { AlertThresholds } from './alerts/rules.js';
+import { isSlackWebhookUrl } from './alerts/slack.js';
 
 export type EnvSource = Readonly<Record<string, string | undefined>>;
 
@@ -45,6 +47,26 @@ export interface AppConfig {
   readonly shutdownTimeoutMs: number;
   /** PM2 process control (ADR-017). false (default) → no command can be created or dispatched. */
   readonly pm2Control: { readonly enabled: boolean };
+  /** Alerts engine and Slack delivery (ADR-021). Both off by default. */
+  readonly alerts: AlertsConfig;
+}
+
+export interface AlertsConfig {
+  readonly enabled: boolean;
+  /** true only together with `enabled` and a valid webhook URL. */
+  readonly deliveryEnabled: boolean;
+  /** SECRET. Never logged, returned or stored; null when not configured. */
+  readonly webhookUrl: string | null;
+  /** Trusted https origin for links in messages (e.g. https://nodecontrol.example); null → no link. */
+  readonly publicUrl: string | null;
+  readonly intervalSeconds: number;
+  readonly cooldownSeconds: number;
+  /** 0 = no reminders. */
+  readonly reminderSeconds: number;
+  readonly httpTimeoutMs: number;
+  readonly maxAttempts: number;
+  readonly queueMax: number;
+  readonly thresholds: AlertThresholds;
 }
 
 export const CONFIG_DEFAULTS = Object.freeze({
@@ -201,12 +223,15 @@ export function loadConfig(env: EnvSource): AppConfig {
     }
   }
 
+  const alerts = loadAlertsConfig(value, issues);
+
   const controlRaw = value('PM2_CONTROL_ENABLED', 'false');
   if (controlRaw !== 'true' && controlRaw !== 'false') issues.push('PM2_CONTROL_ENABLED must be true or false');
 
   const config: AppConfig = {
     nodeEnv,
     pm2Control: { enabled: controlRaw === 'true' },
+    alerts,
     api,
     auth: { allowedOrigins, cookieSecure, sessionTtlSeconds: ttl * 60 },
     logLevel: oneOf('LOG_LEVEL', LOG_LEVELS, 'info'),
@@ -237,5 +262,68 @@ export function describeConfig(config: AppConfig): Record<string, string | numbe
     authOrigins: config.auth.allowedOrigins.length, cookieSecure: config.auth.cookieSecure,
     sessionTtlMinutes: config.auth.sessionTtlSeconds / 60,
     pm2ControlEnabled: config.pm2Control.enabled,
+    // Booleans only: the webhook URL is a secret and is never described.
+    alertsEnabled: config.alerts.enabled, alertsDeliveryEnabled: config.alerts.deliveryEnabled,
   };
 }
+
+/** ALERTS_* (ADR-021). Issues name keys and ranges only — never values (the webhook URL is a secret). */
+export function loadAlertsConfig(value: (key: string, fallback?: string) => string, issues: string[]): AlertsConfig {
+  const bool = (key: string): boolean => {
+    const raw = value(key, 'false');
+    if (raw !== 'true' && raw !== 'false') issues.push(`${key} must be true or false`);
+    return raw === 'true';
+  };
+  const int = (key: string, fallback: number, min: number, max: number): number => {
+    const raw = value(key, String(fallback));
+    const n = Number(raw);
+    if (!/^\d+$/.test(raw) || n < min || n > max) {
+      issues.push(`${key} must be an integer between ${String(min)} and ${String(max)}`);
+      return fallback;
+    }
+    return n;
+  };
+  const enabled = bool('ALERTS_ENABLED');
+  const delivery = bool('ALERTS_DELIVERY_ENABLED');
+  const webhookRaw = value('ALERTS_SLACK_WEBHOOK_URL');
+  if (webhookRaw !== '' && !isSlackWebhookUrl(webhookRaw)) issues.push('ALERTS_SLACK_WEBHOOK_URL must be a Slack Incoming Webhook URL (https://hooks.slack.com/services/...)');
+  if (delivery && !enabled) issues.push('ALERTS_DELIVERY_ENABLED=true requires ALERTS_ENABLED=true');
+  if (delivery && webhookRaw === '') issues.push('ALERTS_DELIVERY_ENABLED=true requires ALERTS_SLACK_WEBHOOK_URL');
+  const publicRaw = value('ALERTS_PUBLIC_URL');
+  let publicUrl: string | null = null;
+  if (publicRaw !== '') {
+    let url: URL | undefined;
+    try { url = new URL(publicRaw); } catch { url = undefined; }
+    if (!url || url.protocol !== 'https:' || url.origin !== publicRaw) issues.push('ALERTS_PUBLIC_URL must be an https origin like https://host (no path, no trailing slash)');
+    else publicUrl = url.origin;
+  }
+  const thresholds: AlertThresholds = {
+    cpuOpenPercent: int('ALERTS_CPU_OPEN_PERCENT', 90, 1, 10_000),
+    cpuClosePercent: int('ALERTS_CPU_CLOSE_PERCENT', 70, 0, 10_000),
+    memoryOpenPercent: int('ALERTS_MEMORY_OPEN_PERCENT', 90, 1, 100),
+    memoryClosePercent: int('ALERTS_MEMORY_CLOSE_PERCENT', 80, 0, 100),
+    confirmSamples: int('ALERTS_CONFIRM_SAMPLES', 3, 1, 20),
+    recoverSamples: int('ALERTS_RECOVER_SAMPLES', 2, 1, 20),
+    statusConfirmSamples: int('ALERTS_STATUS_CONFIRM_SAMPLES', 2, 1, 20),
+    restartsThreshold: int('ALERTS_RESTARTS_THRESHOLD', 3, 1, 1000),
+    restartsWindowSeconds: int('ALERTS_RESTARTS_WINDOW_MINUTES', 10, 2, 1440) * 60,
+  };
+  if (thresholds.cpuClosePercent >= thresholds.cpuOpenPercent) issues.push('ALERTS_CPU_CLOSE_PERCENT must be lower than ALERTS_CPU_OPEN_PERCENT');
+  if (thresholds.memoryClosePercent >= thresholds.memoryOpenPercent) issues.push('ALERTS_MEMORY_CLOSE_PERCENT must be lower than ALERTS_MEMORY_OPEN_PERCENT');
+  return {
+    enabled,
+    deliveryEnabled: enabled && delivery && webhookRaw !== '' && isSlackWebhookUrl(webhookRaw),
+    webhookUrl: webhookRaw === '' ? null : webhookRaw,
+    publicUrl,
+    intervalSeconds: int('ALERTS_INTERVAL_SECONDS', 30, 10, 600),
+    cooldownSeconds: int('ALERTS_COOLDOWN_MINUTES', 15, 0, 1440) * 60,
+    reminderSeconds: int('ALERTS_REMINDER_MINUTES', 0, 0, 10_080) * 60,
+    httpTimeoutMs: int('ALERTS_HTTP_TIMEOUT_MS', 5000, 1000, 30_000),
+    maxAttempts: int('ALERTS_MAX_ATTEMPTS', 6, 1, 15),
+    queueMax: int('ALERTS_QUEUE_MAX', 100, 10, 1000),
+    thresholds,
+  };
+}
+
+/** Defaults for tests and the health-only/auth app paths that do not run alerts. */
+export const ALERTS_DISABLED: AlertsConfig = loadAlertsConfig((_key, fallback = '') => fallback, []);

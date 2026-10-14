@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-14 (Task 012). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-14 (Task 013). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Незалежний review Codex — Task 011 (2026-10-14)
 
@@ -32,6 +32,16 @@ Read-only SSH: control-server current `ac4d967679a723db04185f04f2cdd4e1b6a1d259`
 Незалежно на Node.js 22: 157/157 frontend-тестів (включно з шістьма новими create-while-paging regression), typecheck, lint, frontend build, check:secrets і diff check успішні; UI Playwright із synthetic API 2/2 desktop/mobile. Початковий frontend-прогін був розпочатий перед перериванням review й завершився успішно; порівняння підтвердило той самий фінальний код. Повний check:local, real-DB і user E2E цього разу незалежно не повторювалися; результати Claude вище є історичними. Backend/схема/Agent не змінені.
 
 Read-only SSH: control-server current `0b851511612096c05ba7825b15ab6c51f50975e7`, API/Nginx active, ready 200. Production-користувачі, паролі й конфігурації не змінювались. Запис review підготовлено локально без commit/push/deploy; функціональний код не змінено. Наступна задача — Dashboard за погодженим roadmap, потім Slack, історія метрик і production-підготовка.
+
+## Незалежний review Codex — Task 012 (2026-10-14)
+
+Переглянуто завершений code commit `1c6c58d` і docs-звіт `fe25d5e`; початкове робоче дерево чисте. Перевірено агрегати, freshness, виключення неактивних серверів, розділення live/notLive, bounded списки, permission-aware recentActions і read-only узгоджений snapshot. Нових блокувальних дефектів у переглянутих змінах Dashboard не знайдено.
+
+Незалежно на Node.js 22: check:local exit 0 (89 node:test, 387 backend, 10 smoke, 164 agent +3 opt-in пропущені, 165 frontend; lint/typecheck/secrets/збірки). Окремі real-DB dashboard-тести — 6/6 у per-run схемах ізольованої тестової БД: порожня система, рахунки/JOIN, межі свіжості, обмежені списки й totals, права/overdue/read-only, READ ONLY транзакція. Власний тимчасовий SSH-тунель автоматично закрито. Локальні UI Playwright regression — 2/2 desktop/mobile зі synthetic API. Повний real-DB suite, dashboard E2E і real-PM2 E2E у цьому review не повторювались; їхні результати Claude вище є історичними.
+
+Read-only SSH: control-server current `1c6c58df90083438cf2000a60c63ebe1c38e7eaa`, API/Nginx active, ready 200. Production-користувачі, passwords, серверні дані, Agent/broker і PM2-процеси reviewer не змінював. Відомий timeout graceful shutdown із long-poll описано у звіті деплою; у цьому review не відтворювався і не закритий — потрібна окрема перевірка/виправлення до фінальної production-підготовки.
+
+Dashboard пройшов review; наступна задача за погодженим roadmap — Slack/alerts, потім історія метрик і production-підготовка. Запис review локальний без commit/push/deploy, функціональний код не змінено.
 
 ## Завершено за фактичними файлами
 
@@ -173,6 +183,50 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Task 013 — Alerts Engine, Slack і виправлення graceful shutdown (2026-10-14)
+
+Стан на початок: `main` = `fe25d5e`; у робочому дереві — незакомічений запис review Codex (угорі документа), збережено й закомічено разом із задачею. Рішення — ADR-021; міграція `1791900000006_alerts`.
+
+**Graceful shutdown (відомий дефект із Task 011.1) — дві причини, обидві виправлено:**
+1. `LogHub.close()` викликався в `onClose`, тобто вже після того, як Fastify дочекався активних запитів. Тепер він у `preClose`; `onClose` лишився ідемпотентним; закритий hub відповідає на нові long-poll одразу.
+2. Знайдено під час regression-тесту: навіть звільнений long-poll лишає keep-alive сокет, який став idle вже після старту `close()`. Fastify такі сокети не закриває, і сервер тримався ще ~72 с (keep-alive timeout). Тепер після старту закриття кожна відповідь іде з `Connection: close`.
+
+Regression: справжній HTTP, Agent long-poll і очікувач результату логів у польоті, `lifecycle.shutdown('SIGTERM')` з тайм-аутом 3 с. На старому коді — `false` (тайм-аут), на новому — `true` менш ніж за 2 с, обидва запити отримують 200. Окремо перевірено shutdown із завислою Slack-доставкою: abort, запис повертається в чергу (`aborted`), закриття чисте.
+
+**Alerts:**
+- Правила: `server_offline`, `inventory_stale`, `process_down`, `process_cpu`, `server_memory`, `process_restarts` і відновлення для кожного.
+- Debounce й гістерезис; вибірка, яку вже оцінювали, не рахується вдруге; відсутність даних ніколи не означає відновлення; поки сервер offline, діє лише його alert; рестарти — лише дельта.
+- Durable інциденти, cooldown проти flapping, необов'язкові нагадування.
+- Outbox: lease, `SKIP LOCKED`, межа черги, backoff і `Retry-After`, at-least-once.
+- Slack Incoming Webhook: лише `text`, екранування, allowlist host, без redirect, обмежене читання відповіді.
+- Worker живе в API-процесі: старт в `onReady`, зупинка в `preClose`.
+- API `GET /api/alerts`, `GET /api/alerts/status`; новий permission `alerts:manage` (admin).
+- UI «Сповіщення»:
+  - стан рушія й доставки — без «усе добре», коли вимкнено або невідомо;
+  - активні інциденти й історія закритих зі сторінками;
+  - стан доставки й панель конфігурації — лише для admin, значення webhook не показується.
+
+**Перевірка документації Slack.** Перед реалізацією звірено з офіційною документацією docs.slack.dev: payload, успіх `200 ok`, коди помилок, ~1 повідомлення/с, 429 + `Retry-After`, екранування `& < >`, згадки.
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 89/89, backend 421/421 (нові: `alerts-rules` 18, `alerts-delivery` 10, `alerts-api` 5, shutdown-regression 1), smoke 10/10, agent 164/164 (+3 opt-in), frontend 171/171 (нові `alerts` 6), typecheck, lint, збірки, `check:secrets` OK |
+| Real-DB (`test:backend:db`) | 87/87, нові `db/alerts` 9: атомарні інцидент і outbox; повторна оцінка й «перезапущений» рушій нічого не додають; recovery; never_connected та неактивні сервери не дають alert; cooldown без сповіщення; доставка вимкнена → без outbox; переповнена черга → `dropped`; 6 паралельних оцінювань → без дублікатів; rollback через тригер; роздільні захоплення записів, повторне захоплення після простроченого lease, захист від запису застарілим власником; retention лише власних таблиць; сторінки списку; у таблицях немає webhook |
+| UI Playwright | 2/2 |
+| E2E (`test:e2e`, тестова БД, рушій увімкнено, доставку вимкнено) | 16/16 (+1 opt-in), новий `alerts.spec.ts`: справжній оцінювач створює інцидент для синтетичного сервера, що перестав звітувати; operator бачить його без деталей доставки; `admin: null`; outbox порожній; 390 px |
+| Real-PM2 E2E | 1/1 |
+| Залишки | 0 схем `nc_test_*`; PM2 daemon і `~/.pm2` відсутні |
+
+Під час перевірок:
+- Перший повний E2E упав у двох чинних тестах. Нова специфікація лишала синтетичний сервер, тепер прибирає його в `afterAll`. Також вичерпувався ліміт входів viewer (5/15 хв), тож вона входить як operator. Після виправлення — 16/16.
+- Справжніх Slack-повідомлень не надсилалось: лише mock transport.
+
+Обмеження:
+- Доставка — at-least-once, можливі дублікати (короткий id інциденту в тексті).
+- Стан рушія (час останньої оцінки) — у пам'яті процесу, після рестарту `null` до першого циклу.
+- Ідентичність процесу для рестартів — `source:pm_id:name` + `first_seen_at`.
+- Acknowledgement, silencing і редагування правил в UI не реалізовано.
 
 ## Task 012 — Dashboard поточного стану системи (2026-10-14)
 
@@ -931,9 +985,9 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 012 — Dashboard поточного стану (ADR-020); очікує review Codex. Completed: Task 011.2 (review Codex пройдено).
+In Progress: Task 013 — alerts engine, Slack (вимкнено за замовчуванням) і виправлення graceful shutdown (ADR-021); очікує review Codex. Completed: Task 012 (review Codex пройдено).
 
-Next Task: узгоджений користувачем порядок: Slack/alerts → історія метрик → фінальна production-підготовка. Jenkins redeploy перенесений користувачем у далекий backlog після іншої автоматизації; у поточний план запуску не входить. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
+Next Task: узгоджений користувачем порядок: історія метрик → фінальна production-підготовка. Jenkins redeploy перенесений користувачем у далекий backlog після іншої автоматизації; у поточний план запуску не входить. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.
 
