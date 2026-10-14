@@ -222,6 +222,18 @@ Rollback підготовлено до production `up`: код — `server-relea
 - Таблиця серверів показує ≤ 50 активних за назвою; повний список — «Сервери».
 - Історії метрик немає (наступні задачі).
 
+**Деплой (2026-10-14, ~19:25 UTC, лише центральний сервер).** Deployed code revision: **`1c6c58df90083438cf2000a60c63ebe1c38e7eaa`** (`feat(dashboard): add live system overview and attention lists`). Цей запис — пізніший docs-commit, на сервер не деплоївся. Agent/broker не передеплоювались.
+
+| Крок | Результат |
+|---|---|
+| Baseline | `control-server`; current `0b85151` (ціль rollback), previous `ac4d967`; API active, ready 200; Nginx/PostgreSQL active, failed 0; `api.env` без змін |
+| Артефакт і активація | 51 файл, SHA-256 `b5e750d5…b074bc` OK, manifest `1c6c58d`; unit без змін; міграції applied=6, pending=0 (нових немає). `current` → `1c6c58d`, `previous` → `0b85151`; restart лише `node-control-api` |
+| Після деплою | API active (`nodecontrol`, лише `127.0.0.1:3100`); live/ready 200 локально й HTTPS; HTTPS `/` 200; бандл = `current/frontend/dist`, містить Dashboard. Анонімний `GET /api/dashboard` → 401, bearer → 401, `POST /api/dashboard` → 404 (маршруту немає); `/api/auth/me` → 401; `pm2ControlEnabled:true` без змін; `nginx -t` OK. Новий процес — 0 error/warn |
+| Agent / PM2 | heartbeat 5 с, control status 10 с, inventory 29 с — звіти надходять; керуючих дій не було |
+| Відоме | Старий процес (`0b85151`) знову не завершився за 10 с (`Shutdown failed or timed out`, systemd `Failed with result 'exit-code'`). Це той самий дефект long-poll Agent у graceful shutdown (див. Task 011.1), не код Task 012; новий процес стартував штатно. Окрема задача з `preClose` — рекомендована перед production-підготовкою |
+| Production-дані | Користувачі, паролі, сервери й процеси не змінювались (2 користувачі, 1 активний admin). Автентифікований smoke Dashboard у production не виконувався (без production credentials); агрегати перевірено real-DB і E2E на тестовій БД |
+| Rollback | не застосовувався. `server-release.js rollback` → `0b85151` + restart лише API; схема й дані без змін |
+
 ## Task 011.2 — оновлення актуальної сторінки після створення користувача (2026-10-14)
 
 Стан на початок: `main` = `034794c`; у робочому дереві — незакомічений запис review Codex (Task 011.1, угорі документа), збережено й закомічено разом із виправленням. Backend, SQL і міграції не змінювались.
