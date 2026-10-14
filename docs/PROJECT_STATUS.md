@@ -192,6 +192,8 @@ Rollback підготовлено до production `up`: код — `server-relea
 | PM2 без змін | God Daemon 3807; PID і час старту 5 процесів (6 жовтня) збігаються з baseline; статуси online, restarts 0 — без змін; `pm2` не запускався; listeners ноди без змін |
 | Rollback | не застосовувався. API: `server-release.js rollback --base /opt/goit-node-control` → `3ff4653` + restart API. Agent/broker: якщо в allowlist уже з'явилось `logs` — спершу повернути allowlist із backup, потім `rollback --base /opt/goit-node-control-agent` → `b4ada6d` + restart broker і Agent |
 
+**Увімкнення читання логів (2026-10-14, ~12:48 UTC).** Користувач погодив логи для проєктів `app-server` («включи логи для проектів»). Backup `ubuntu.allowlist.json.bak-20261014T124829Z`; усім 5 записам (catalog-api, billing-api, orders-api-v2, orders-api, public-api) додано `"logs": true`, `actions` без змін; файл `root:root 644`. Broker перечитав allowlist без restart: logs poll ok, broker ok, targets 5; 0 warn/error у журналах Agent і broker. Production-текст логів не читався. Rollback: повернути allowlist із backup (без restart).
+
 Увімкнення читання (оператор, після погодження конкретних сервісів) — розділ «Перегляд логів» у [DEPLOYMENT](DEPLOYMENT.md): backup allowlist → `"logs": true` для погоджених `targetKey` → `install -m 644 -o root -g root`; restart не потрібен. Ручна перевірка UI під сесією — за оператором; production-текст логів у звіти не копіювати.
 
 ## Frontend: одна таблиця сервісів із діями (2026-10-13)
@@ -634,7 +636,7 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 010 — перегляд логів реалізовано; production-читання вимкнене до погодження конкретних сервісів (`logs: true`). Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 010 — перегляд логів реалізовано; production-читання ввімкнене для 5 процесів `app-server` (`logs: true`). Очікує review Codex. Підтвердження серверної частини Task 001 — відкрите.
 
 Next Task: за backlog review Codex — Jenkins redeploy, alerts/Slack, Dashboard/метрики, зміна пароля й керування користувачами. Backlog: зміна власного пароля і керування користувачами для admin. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
