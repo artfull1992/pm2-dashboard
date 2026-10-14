@@ -182,6 +182,21 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 Обмеження: UI показує перші 100 користувачів (API підтримує keyset-курсор, «показати ще» не реалізовано). Admin-reset пароля, MFA, зміна email і фізичне видалення — поза scope.
 
+**Деплой (2026-10-14, ~16:07 UTC, лише центральний сервер).** Deployed code revision: **`20896ddcb0c70f22cb101ba539cac048c333513a`** (`feat(users): add user administration and self-service password change`). Цей запис — пізніший docs-commit, на сервер не деплоївся. Код Agent/broker не змінювався — ноду не передеплоєно (Agent/broker лишаються на `2fe4d95`).
+
+| Крок | Результат |
+|---|---|
+| Baseline | `control-server`; current `2fe4d95` (ціль rollback), previous `401667e`; API active, ready 200; Nginx/PostgreSQL active, failed 0; `api.env` без змін (mtime 2026-10-13 13:41:44) |
+| Артефакт | 49 файлів, SHA-256 `de925478…22a0f85` OK, manifest `20896dd`; unit без змін |
+| Міграція | status: applied=5, pending=1 (`1791900000005_user-credential-version`) → backup лише `node_control_db` (`/root/node-control-backups/node_control_db-20261014T160708Z-pre-20896dd….dump`, 600, `pg_restore --list` OK) → `up` → applied=6, pending=0; 1 наявний користувач отримав `credential_version = 1` |
+| Активація | `current` → `20896dd`, `previous` → `2fe4d95`; restart лише `node-control-api` |
+| Після деплою | API active (`nodecontrol`, лише `127.0.0.1:3100`); live/ready 200 локально й HTTPS; HTTPS `/`, `/users`, `/account` 200; бандл = `current/frontend/dist`, містить нові сторінки. Анонімні `GET/POST /api/users`, `PATCH /api/users/:id`, `POST /api/auth/change-password` (з Origin), `/api/auth/me`, `…/log-targets` → 401; `POST /api/users` без Origin або з чужим Origin → 403. Журнал із restart: 0 error/fatal, 2 warn — це саме ті дві навмисні відмови за Origin; `pm2ControlEnabled:true` без змін; `nginx -t` OK (конфіг не змінювався) |
+| Agent / PM2 | Agent, broker і exporter timer active; під час restart API Agent короткочасно отримав `unavailable` і відновився (heartbeat, control і logs poll ok, 0 warn/error). Свіжість у БД: heartbeat 7 с, control 5 с, inventory 24 с. 5 PM2-процесів online, restarts 0; керуючі дії не виконувались |
+| Без змін | Production-користувачі й паролі не створювались і не змінювались (1 користувач, 1 активний admin, 0 подій `user.*`/`auth.password_change`); allowlist, credentials Agent, HBA/firewall і сторонні служби не змінювались |
+| Rollback | не застосовувався. `server-release.js rollback` → `2fe4d95` + restart лише API; колонка `credential_version` лишається (старий реліз її не читає); змінені паролі не повертаються, відкликані сесії не відновлюються |
+
+Ручна перевірка оператора (під власною сесією): «Обліковий запис» — email/роль; «Користувачі» — таблиця з одним рядком «Ви». Мутації в production не виконувати без потреби.
+
 ## Task 010.1 — ресурсні ліміти перегляду логів (2026-10-14)
 
 Стан на початок: `main` = `de7d395`; у робочому дереві — незакомічений запис review Codex (Task 010) і узгоджений roadmap; збережено й закомічено разом із виправленням. Read-only перевірка ноди: allowlist 5 targets, 5 з `logs: true`, змінено 2026-10-14 12:48:29 UTC — це ввімкнення на запит користувача, задокументоване в `de7d395` (початковий звіт деплою `af89119` описував стан до нього). Allowlist і дозволи в цій задачі не змінювались.
