@@ -204,3 +204,135 @@ describe('user pages', () => {
     await waitFor(() => { expect(rows()[0]).toContain('user100@example.test'); });
   });
 });
+
+// Task 011.2: a create started on one page and answered after the user moved to another page must refresh the
+// CURRENT page (its cursor), decide visibility from the current data, and never reload the abandoned cursor.
+describe('create while paging', () => {
+  async function startCreate(u: ReturnType<typeof userEvent.setup>, email = 'fresh@example.test') {
+    const form = screen.getByRole('form', { name: 'Новий користувач' });
+    await u.type(within(form).getByLabelText('Email'), email);
+    await u.type(within(form).getByLabelText('Початковий пароль'), 'synthetic-Fresh-Passw0rd');
+    await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
+  }
+  function delayedCreate(total: number, reply: () => Response) {
+    const post = deferred<undefined>();
+    let posts = 0;
+    const api = backend(total, (req) => {
+      if (req.url === '/api/users' && req.method === 'POST') {
+        posts += 1;
+        return post.promise.then(reply);
+      }
+      return undefined;
+    });
+    return { ...api, release: post.resolve, posts: () => posts };
+  }
+  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+
+  it('page 1 → pending create → "Далі" → late success: page 2 keeps its rows, only its cursor is reloaded, "Показати" works', async () => {
+    const api = delayedCreate(230, () => json(201, { ...mk(230), email: 'fresh@example.test', role: 'operator' }));
+    renderApp('/users');
+    await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
+    const u = userEvent.setup();
+    await startCreate(u);
+    await u.click(within(pager()).getByRole('button', { name: 'Далі' }));
+    await waitFor(() => { expect(rows()[0]).toContain('user100@example.test'); });
+    const before = lists(api.calls).length;
+    api.users.push({ ...mk(230), email: 'fresh@example.test', role: 'operator' });
+    api.release(undefined);
+    await settle();
+    expect(await screen.findByText(/fresh@example\.test створено.*наприкінці списку/)).toBeTruthy();
+    expect(lists(api.calls).slice(before)).toEqual([id(99)]); // the current page's cursor, never the abandoned first page
+    expect(within(pager()).getByText('Сторінка 2')).toBeTruthy();
+    expect(rows()[0]).toContain('user100@example.test');
+    expect(rows()).toHaveLength(PAGE);
+    await u.click(screen.getByRole('button', { name: 'Показати fresh@example.test' }));
+    await waitFor(() => { expect(rows().some((r) => r.includes('fresh@example.test'))).toBe(true); });
+    expect(within(pager()).getByText('Сторінка 3')).toBeTruthy();
+    expect(api.posts()).toBe(1);
+  });
+
+  it('page 2 → pending create → "Назад" → late success: page 1 keeps its rows and is the one reloaded', async () => {
+    const api = delayedCreate(230, () => json(201, { ...mk(230), email: 'fresh@example.test', role: 'operator' }));
+    renderApp('/users');
+    await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
+    const u = userEvent.setup();
+    await u.click(within(pager()).getByRole('button', { name: 'Далі' }));
+    await waitFor(() => { expect(rows()[0]).toContain('user100@example.test'); });
+    await startCreate(u);
+    await u.click(within(pager()).getByRole('button', { name: 'Назад' }));
+    await waitFor(() => { expect(rows()[0]).toContain('admin@example.test'); });
+    const before = lists(api.calls).length;
+    api.release(undefined);
+    await settle();
+    expect(await screen.findByText(/fresh@example\.test створено/)).toBeTruthy();
+    expect(lists(api.calls).slice(before)).toEqual([null]);
+    expect(within(pager()).getByText('Сторінка 1')).toBeTruthy();
+    expect(rows()[0]).toContain('admin@example.test');
+    expect(rows()).toHaveLength(PAGE);
+  });
+
+  it('a failed create after moving to another page keeps the current list; no reload, no invented row', async () => {
+    const api = delayedCreate(230, () => json(409, {}));
+    renderApp('/users');
+    await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
+    const u = userEvent.setup();
+    await startCreate(u, 'dup@example.test');
+    await u.click(within(pager()).getByRole('button', { name: 'Далі' }));
+    await waitFor(() => { expect(rows()[0]).toContain('user100@example.test'); });
+    const before = lists(api.calls).length;
+    api.release(undefined);
+    await settle();
+    expect(await screen.findByText('Користувач із таким email уже існує.')).toBeTruthy();
+    expect(lists(api.calls).length).toBe(before);
+    expect(rows()[0]).toContain('user100@example.test');
+    expect(rows().some((r) => r.includes('dup@example.test'))).toBe(false);
+  });
+
+  it('logout and a new session during the POST: the late success has no callback, notice or reload', async () => {
+    const api = delayedCreate(230, () => json(201, { ...mk(230), email: 'fresh@example.test', role: 'operator' }));
+    renderApp('/users');
+    await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
+    const u = userEvent.setup();
+    await startCreate(u);
+    await u.click(screen.getByRole('button', { name: 'Вийти' }));
+    await u.type(await screen.findByLabelText('Email'), 'admin@example.test');
+    await u.type(screen.getByLabelText('Пароль'), 'synthetic-Admin-Passw0rd');
+    await u.click(screen.getByRole('button', { name: 'Увійти' }));
+    await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
+    const before = lists(api.calls).length;
+    api.release(undefined);
+    await settle();
+    expect(screen.queryByText(/fresh@example\.test створено/)).toBeNull();
+    expect(lists(api.calls).length).toBe(before);
+  });
+
+  it('created while on the last page with room: shown there after reloading that page (no "Показати"); one POST', async () => {
+    const api = delayedCreate(150, () => json(201, { ...mk(150), email: 'fresh@example.test', role: 'operator' }));
+    renderApp('/users');
+    await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
+    const u = userEvent.setup();
+    await startCreate(u);
+    await u.click(within(pager()).getByRole('button', { name: 'Далі' }));
+    await waitFor(() => { expect(rows()).toHaveLength(50); });
+    api.users.push({ ...mk(150), email: 'fresh@example.test', role: 'operator' });
+    api.release(undefined);
+    await settle();
+    expect(await screen.findByText('Користувача fresh@example.test створено (Оператор).')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Показати fresh@example.test' })).toBeNull();
+    await waitFor(() => { expect(rows().at(-1)).toContain('fresh@example.test'); });
+    expect(within(pager()).getByText('Сторінка 2')).toBeTruthy();
+    expect(api.posts()).toBe(1);
+  });
+
+  it('"Показати" walks a bounded number of pages', async () => {
+    const api = backend(230, (req) => (req.url === '/api/users' && req.method === 'POST' ? json(201, { ...mk(999), email: 'ghost@example.test' }) : undefined));
+    renderApp('/users');
+    await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
+    const u = userEvent.setup();
+    await startCreate(u, 'ghost@example.test'); // the mock never lists it: the walk must stop at the last page
+    const before = lists(api.calls).length;
+    await u.click(await screen.findByRole('button', { name: 'Показати ghost@example.test' }));
+    expect(await screen.findByText(/Не вдалося знайти ghost@example\.test/)).toBeTruthy();
+    expect(lists(api.calls).length - before).toBeLessThanOrEqual(4); // 3 pages (+ at most one reload)
+  });
+});

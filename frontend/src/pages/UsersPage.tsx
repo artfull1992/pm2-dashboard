@@ -40,6 +40,10 @@ function CreateUserForm({ onCreated }: { onCreated: (user: UserView) => void }) 
   const [formError, setFormError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const inflight = useRef<AbortController | null>(null);
+  // Paging stays usable while a create is pending. The answer must reach the CURRENT page's callback (its data and its
+  // keyed reload), not the one captured when the request started — that would reload an abandoned cursor (Task 011.2).
+  const latestOnCreated = useRef(onCreated);
+  useEffect(() => { latestOnCreated.current = onCreated; });
   const ids = { email: useId(), password: useId(), role: useId(), emailError: useId(), passwordError: useId() };
   useEffect(() => () => { inflight.current?.abort(); }, []);
   if (state.status !== 'authenticated') return null;
@@ -64,7 +68,7 @@ function CreateUserForm({ onCreated }: { onCreated: (user: UserView) => void }) 
       const user = await usersApi.create({ email: email.trim(), password, role }, csrfToken, controller.signal);
       if (stale()) return; // left the page or the session: no callback, no reload
       setEmail(''); setPassword(''); setRole('viewer'); setVisible(false);
-      onCreated(user);
+      latestOnCreated.current(user);
     } catch (error) {
       if (stale()) return;
       setPassword('');
