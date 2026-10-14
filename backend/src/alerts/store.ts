@@ -3,7 +3,7 @@ import { INVENTORY_STATE_SQL, SERVER_STATUS_SQL } from '../servers/inventory-sto
 import type { ServerSnapshot } from '../servers/snapshot.js';
 import { type ConditionRow, type Detail, evaluate, type EvaluationResult, type ProcessObs, type Resolution, type Rule, type ServerObs, type Severity, type Transition } from './rules.js';
 import type { MessageIncident } from './slack.js';
-import type { AlertsConfig } from '../config.js';
+import type { EvaluationConfig } from './settings.js';
 
 // Alerts persistence (ADR-021). Parameterized SQL only.
 //  * evaluation: ONE transaction (REPEATABLE READ: a consistent snapshot) under a transaction-scoped advisory lock, so
@@ -18,7 +18,7 @@ export const LEASE_SECONDS = 60;
 const MAX_PROCESSES = 20_000;
 
 export type OutboxKind = 'firing' | 'resolved' | 'reminder';
-export type OutboxStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'unknown' | 'dropped';
+export type OutboxStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'unknown' | 'dropped' | 'cancelled';
 
 export interface EvaluationSummary { skipped: boolean; opened: number; resolved: number; observed: number; enqueued: number; dropped: number; at: string | null }
 
@@ -34,8 +34,9 @@ export interface IncidentView {
 }
 
 export interface AlertsStore {
-  evaluateOnce(config: AlertsConfig): Promise<EvaluationSummary>;
-  claim(limit: number): Promise<ClaimedItem[]>;
+  evaluateOnce(config: EvaluationConfig): Promise<EvaluationSummary>;
+  /** Claims only items of the given integration generation (never another address). */
+  claim(limit: number, generation: number): Promise<ClaimedItem[]>;
   finish(item: { id: string; attempts: number }, outcome: { status: 'sent' } | { status: 'queued'; code: string; delaySeconds: number } | { status: 'failed' | 'unknown'; code: string }): Promise<boolean>;
   listIncidents(input: { state: 'active' | 'resolved'; limit: number; before: string | null; withDelivery: boolean }): Promise<{ items: IncidentView[]; nextBefore: string | null }>;
   summary(withQueue: boolean): Promise<{ active: number; queue: Record<OutboxStatus, number> | null; lastSentAt: string | null }>;
@@ -75,29 +76,43 @@ async function loadSnapshot(tx: QueryClient): Promise<ServerObs[]> {
   });
 }
 
-async function loadConditions(tx: QueryClient): Promise<ConditionRow[]> {
-  const { rows } = await tx.query('SELECT condition_key, server_id, rule, process_key, state, streak, last_sample_at, samples, incident_id FROM alert_conditions');
-  return rows.map((r: Row) => ({
+/**
+ * Streaks counted under older rule thresholds are not carried into the new rules: pending → ok, recovering → firing.
+ * Open incidents, cooldown history and restart baselines are kept.
+ */
+async function loadConditions(tx: QueryClient, rulesRevision: number): Promise<ConditionRow[]> {
+  const { rows } = await tx.query('SELECT condition_key, server_id, rule, process_key, state, streak, last_sample_at, samples, incident_id, rules_revision FROM alert_conditions');
+  return rows.map((r: Row) => {
+    const row = toCondition(r);
+    if (Number(r.rules_revision) === rulesRevision) return row;
+    if (row.state === 'pending') return { ...row, state: 'ok' as const, streak: 0 };
+    if (row.state === 'recovering') return { ...row, state: 'firing' as const, streak: 0 };
+    return row;
+  });
+}
+
+function toCondition(r: Row): ConditionRow {
+  return ({
     key: String(r.condition_key), serverId: String(r.server_id), rule: r.rule as Rule, processKey: (r.process_key as string | null) ?? null,
     state: r.state as ConditionRow['state'], streak: Number(r.streak), lastSampleAt: ms(r.last_sample_at),
     samples: (r.samples as ConditionRow['samples']), incidentId: (r.incident_id as string | null) ?? null,
-  }));
+  });
 }
 
 /** Enqueue (bounded): beyond queueMax pending rows the item is recorded as dropped instead of growing the queue. */
-async function enqueue(tx: QueryClient, incidentId: string, kind: OutboxKind, queueMax: number): Promise<'queued' | 'dropped'> {
+async function enqueue(tx: QueryClient, incidentId: string, kind: OutboxKind, queueMax: number, generation: number): Promise<'queued' | 'dropped'> {
   const pending = Number((await tx.query("SELECT count(*) AS n FROM alert_outbox WHERE status IN ('queued', 'sending')")).rows[0]?.n ?? 0);
   if (pending >= queueMax) {
     await tx.query(
-      `INSERT INTO alert_outbox (incident_id, kind, status, last_error, finished_at) VALUES ($1, $2, 'dropped', 'queue_full', now())
-       ON CONFLICT DO NOTHING`, [incidentId, kind]);
+      `INSERT INTO alert_outbox (incident_id, kind, status, last_error, finished_at, generation) VALUES ($1, $2, 'dropped', 'queue_full', now(), $3)
+       ON CONFLICT DO NOTHING`, [incidentId, kind, generation]);
     return 'dropped';
   }
-  await tx.query('INSERT INTO alert_outbox (incident_id, kind) VALUES ($1, $2) ON CONFLICT DO NOTHING', [incidentId, kind]);
+  await tx.query('INSERT INTO alert_outbox (incident_id, kind, generation) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [incidentId, kind, generation]);
   return 'queued';
 }
 
-async function applyTransitions(tx: QueryClient, result: EvaluationResult, config: AlertsConfig, now: Date): Promise<Omit<EvaluationSummary, 'skipped' | 'at'>> {
+async function applyTransitions(tx: QueryClient, result: EvaluationResult, config: EvaluationConfig, now: Date): Promise<Omit<EvaluationSummary, 'skipped' | 'at'>> {
   const opened = new Map<string, string>();
   let enqueued = 0;
   let dropped = 0;
@@ -105,8 +120,8 @@ async function applyTransitions(tx: QueryClient, result: EvaluationResult, confi
   let resolved = 0;
   const at = (t: Transition) => (t.observedAt > 0 ? new Date(t.observedAt) : now);
   const send = async (incidentId: string, kind: OutboxKind) => {
-    if (!config.deliveryEnabled) return;
-    if ((await enqueue(tx, incidentId, kind, config.queueMax)) === 'queued') enqueued += 1; else dropped += 1;
+    if (!config.deliveryEnabled || config.generation === null) return;
+    if ((await enqueue(tx, incidentId, kind, config.queueMax, config.generation)) === 'queued') enqueued += 1; else dropped += 1;
   };
   for (const t of result.transitions) {
     if (t.kind === 'open') {
@@ -145,12 +160,12 @@ async function applyTransitions(tx: QueryClient, result: EvaluationResult, confi
   for (const row of result.upserts) {
     const incidentId = row.state === 'firing' || row.state === 'recovering' ? (opened.get(row.key) ?? row.incidentId) : null;
     await tx.query(
-      `INSERT INTO alert_conditions (condition_key, server_id, rule, process_key, state, streak, last_sample_at, samples, incident_id, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+      `INSERT INTO alert_conditions (condition_key, server_id, rule, process_key, state, streak, last_sample_at, samples, incident_id, updated_at, rules_revision)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
        ON CONFLICT (condition_key) DO UPDATE SET state = EXCLUDED.state, streak = EXCLUDED.streak, last_sample_at = EXCLUDED.last_sample_at,
-         samples = EXCLUDED.samples, incident_id = EXCLUDED.incident_id, updated_at = EXCLUDED.updated_at`,
+         samples = EXCLUDED.samples, incident_id = EXCLUDED.incident_id, updated_at = EXCLUDED.updated_at, rules_revision = EXCLUDED.rules_revision`,
       [row.key, row.serverId, row.rule, row.processKey, row.state, Math.min(row.streak, 1000), row.lastSampleAt === null ? null : new Date(row.lastSampleAt),
-        JSON.stringify(row.samples.slice(-64)), incidentId, now]);
+        JSON.stringify(row.samples.slice(-64)), incidentId, now, config.rulesRevision]);
   }
   if (result.deletes.length > 0) await tx.query('DELETE FROM alert_conditions WHERE condition_key = ANY($1::text[])', [result.deletes]);
 
@@ -190,22 +205,22 @@ export function createPgAlertsStore(db: Database): AlertsStore {
         if (!lock.rows[0]?.ok) return { skipped: true, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, at: null };
         const now = (await tx.query<{ now: Date }>('SELECT now() AS now')).rows[0]?.now ?? new Date();
         const servers = await loadSnapshot(tx);
-        const conditions = await loadConditions(tx);
+        const conditions = await loadConditions(tx, config.rulesRevision);
         const result = evaluate(servers, conditions, config.thresholds);
         const counts = await applyTransitions(tx, result, config, now);
         return { skipped: false, ...counts, at: now.toISOString() };
       });
     },
 
-    async claim(limit) {
+    async claim(limit, generation) {
       const { rows } = await db.query(
         `WITH picked AS (
            SELECT id FROM alert_outbox
-            WHERE (status = 'queued' AND next_attempt_at <= now()) OR (status = 'sending' AND lease_until < now())
+            WHERE generation = $3 AND ((status = 'queued' AND next_attempt_at <= now()) OR (status = 'sending' AND lease_until < now()))
             ORDER BY next_attempt_at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
          UPDATE alert_outbox o SET status = 'sending', attempts = LEAST(o.attempts + 1, 20), lease_until = now() + make_interval(secs => $2)
            FROM picked WHERE o.id = picked.id
-         RETURNING o.id::text AS outbox_id, o.kind, o.attempts, o.incident_id`, [limit, LEASE_SECONDS]);
+         RETURNING o.id::text AS outbox_id, o.kind, o.attempts, o.incident_id`, [limit, LEASE_SECONDS, generation]);
       if (rows.length === 0) return [];
       const incidents = await db.query(`SELECT ${INCIDENT_COLUMNS} FROM alert_incidents i WHERE i.id = ANY($1::uuid[])`, [rows.map((r: Row) => r.incident_id)]);
       const byId = new Map(incidents.rows.map((r: Row) => [String(r.id), toMessage(r)]));
@@ -256,7 +271,7 @@ export function createPgAlertsStore(db: Database): AlertsStore {
       const active = Number((await db.query("SELECT count(*) AS n FROM alert_incidents WHERE status = 'firing'")).rows[0]?.n ?? 0);
       if (!withQueue) return { active, queue: null, lastSentAt: null };
       const { rows } = await db.query('SELECT status, count(*) AS n FROM alert_outbox GROUP BY status');
-      const queue: Record<OutboxStatus, number> = { queued: 0, sending: 0, sent: 0, failed: 0, unknown: 0, dropped: 0 };
+      const queue: Record<OutboxStatus, number> = { queued: 0, sending: 0, sent: 0, failed: 0, unknown: 0, dropped: 0, cancelled: 0 };
       for (const r of rows) queue[r.status as OutboxStatus] = Number(r.n);
       const last = (await db.query("SELECT max(finished_at) AS t FROM alert_outbox WHERE status = 'sent'")).rows[0]?.t;
       return { active, queue, lastSentAt: iso(last) };

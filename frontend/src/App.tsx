@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from 'react-router';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import { RequireAuth, RequirePermission } from './auth/guards';
 import { Layout } from './components/Layout';
@@ -11,6 +11,7 @@ import { ServersPage } from './pages/ServersPage';
 import { ApplicationsPage } from './pages/ApplicationsPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { NotFoundPage } from './pages/SimplePages';
+import { SettingsPage } from './pages/SettingsPage';
 import { UsersPage } from './pages/UsersPage';
 
 /** Remounts the private area per session, so no component state of one session survives into another. */
@@ -34,6 +35,8 @@ export function AppRoutes() {
         <Route path="servers/:id" element={<RequirePermission permission="monitoring:read"><ServerDetailPage /></RequirePermission>} />
         <Route path="applications" element={<RequirePermission permission="monitoring:read"><ApplicationsPage /></RequirePermission>} />
         <Route path="alerts" element={<RequirePermission permission="monitoring:read"><AlertsPage /></RequirePermission>} />
+        <Route path="settings" element={<Navigate to="/settings/integrations" replace />} />
+        <Route path="settings/:tab" element={<RequirePermission permission="alerts:manage"><SettingsPage /></RequirePermission>} />
         <Route path="audit" element={<RequirePermission permission="audit:read"><AuditPage /></RequirePermission>} />
         <Route path="users" element={<RequirePermission permission="users:manage"><UsersPage /></RequirePermission>} />
         <Route path="account" element={<AccountPage />} />

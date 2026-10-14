@@ -18,6 +18,13 @@ export type AuditEvent =
   | { event: 'user.role_changed'; outcome: 'success'; details: { targetUserId: string; fromRole: Role; toRole: Role; sessionsRevoked: number } }
   | { event: 'user.deactivated' | 'user.activated'; outcome: 'success'; details: { targetUserId: string; sessionsRevoked: number } }
   | { event: 'user.update_rejected'; outcome: 'denied'; details: { targetUserId: string; reason: 'self_change' | 'last_admin' } }
+  // Alert settings and Slack integration (ADR-022): revisions, counts and fixed codes only — never the webhook.
+  | { event: 'settings.alerts_changed'; outcome: 'success'; details: { revision: number; changed: string } }
+  | { event: 'settings.delivery_enabled' | 'settings.delivery_disabled'; outcome: 'success'; details: { revision: number; cancelledItems: number } }
+  | { event: 'integration.slack_configured'; outcome: 'success'; details: { generation: number; replaced: boolean; cancelledItems: number } }
+  | { event: 'integration.slack_removed'; outcome: 'success'; details: { generation: number; cancelledItems: number } }
+  | { event: 'integration.slack_test_requested'; outcome: 'success'; details: { operationId: string; generation: number } }
+  | { event: 'integration.slack_test_result'; outcome: 'success' | 'failure'; details: { operationId: string; generation: number; code?: string; stale?: boolean } }
   | { event: 'auth.logout'; outcome: 'success'; details?: Record<string, never> }
   | { event: 'authz.denied'; outcome: 'denied'; details: { permission: string; route: string } }
   | { event: 'server.created'; outcome: 'success'; details: { serverId: string } }

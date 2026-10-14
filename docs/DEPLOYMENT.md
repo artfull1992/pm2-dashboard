@@ -329,19 +329,24 @@ Rollback: `server-release.js rollback` на попередній реліз + re
 
 Міграція `1791900000006_alerts` (additive: 3 таблиці). Деплой — штатний API-деплой з backup і `up` до активації. **За замовчуванням вимкнено** (`ALERTS_ENABLED=false`, `ALERTS_DELIVERY_ENABLED=false`): нічого не оцінюється й не надсилається.
 
-Увімкнення (оператор, після погодження Slack-каналу й адресатів; root на центральному сервері):
+**З Task 013.1 (ADR-022) рушій, доставка, правила й webhook налаштовує admin в UI («Налаштування»).** В `api.env` — лише deployment-рівень:
+
 ```bash
+# Один раз: ключ шифрування webhook (root на центральному сервері). Значення не виводиться і не потрапляє в історію shell.
 E=/etc/goit-node-control/api.env
 cp -p "$E" "$E.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-# 1) Лише оцінювання (інциденти в UI, без Slack): дописати ALERTS_ENABLED=true (та за потреби ALERTS_PUBLIC_URL=https://control.example.com)
-# 2) Доставка: дописати ALERTS_DELIVERY_ENABLED=true і ALERTS_SLACK_WEBHOOK_URL=<webhook> — редактором, НЕ через argv/echo в історію shell
+umask 077; K=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))")
+printf 'ALERTS_SECRET_KEY=%s\nALERTS_SECRET_KEY_VERSION=1\nALERTS_PUBLIC_URL=https://control.example.com\n' "$K" >> "$E"; unset K
 chmod 600 "$E"; chown nodecontrol:nodecontrol "$E"
 systemctl restart node-control-api
-journalctl -u node-control-api --since "-1 min" -o cat | grep -o '"alertsEnabled":[a-z]*,"alertsDeliveryEnabled":[a-z]*'
+journalctl -u node-control-api --since "-1 min" -o cat | grep -o '"alertsSecretKey":[a-z]*,"alertsPublicUrl":[a-z]*'
 ```
-Перевірка: UI «Сповіщення» (admin бачить «Slack webhook: Налаштовано», черга). Перше повідомлення прийде лише з реальним інцидентом; тестове повідомлення в канал — тільки з погодження адресата.
 
-Вимкнення / rollback: `ALERTS_DELIVERY_ENABLED=false` (і/або `ALERTS_ENABLED=false`) + restart — доставку зупинено; черга й інциденти лишаються (при повторному ввімкненні queued-записи будуть доставлені — за потреби спершу позначити їх `dropped` окремим погодженим SQL). Rollback коду: спершу вимкнути доставку, потім `server-release.js rollback` + restart API; таблиці лишаються, дані не видаляються.
+Далі admin: «Налаштування» → «Інтеграції» → вставити webhook приватного каналу → «Зберегти webhook» → «Надіслати тестове повідомлення» → за успіху увімкнути «Автоматична доставка»; «Правила сповіщень» → увімкнути рушій і за потреби змінити пороги. Restart не потрібен.
+
+**Ключ і backup.** Ключ (`ALERTS_SECRET_KEY`) зберігати окремо від backup БД (менеджер секретів/офлайн-сховище оператора). Backup `node_control_db` без ключа **не дозволяє відновити інтеграцію** — після відновлення без ключа стан «Помилка: ключ…», webhook потрібно ввести заново. Зміна ключа: новий ключ + `ALERTS_SECRET_KEY_VERSION`+1 + restart → інтеграція в стані помилки → повторно зберегти webhook.
+
+Вимкнення: «Налаштування» → вимкнути доставку (черга скасовується) і/або рушій. Rollback коду на реліз до 013.1 (`e8f61c5`): він читає лише `ALERTS_*` з env, яких у production немає, тож рушій і доставка там вимкнені, старий webhook не з'являється; нові таблиці лишаються. Перед rollback вимкнути доставку в UI.
 
 ### Міграції: backup, recovery, rollback
 

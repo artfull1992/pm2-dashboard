@@ -115,3 +115,10 @@ Commit має описувати фактичну зміну. Push — у пот
 - Стан, що має пережити restart (інциденти, cooldown, черга), — лише в БД; переходи й черга — одна транзакція; паралельність — advisory lock / `FOR UPDATE SKIP LOCKED` + lease, результат пише лише власник захоплення.
 - Зовнішні HTTP-виклики: allowlist host/path, `redirect: 'error'`, тайм-аут + AbortSignal, обмежене читання відповіді, жодних URL чи тексту відповіді в журналах/помилках; тести — лише mock transport.
 - Shutdown: ресурси, що тримають HTTP-запити (long-poll, waiters, worker), звільняти в `preClose`, а не в `onClose`; під час закриття відповіді з `Connection: close`. Regression — справжній HTTP + `lifecycle.shutdown()`.
+
+### Налаштування й секрети в UI (Task 013.1)
+
+- Прикладні параметри — в БД з `revision`/`generation` і optimistic concurrency (409 замість мовчазного перезапису); env — лише deployment-рівень (ключі, origin).
+- Секрети, введені в UI: write-only, AES-256-GCM з випадковим nonce й AAD, ключ поза БД; відсутній або неправильний ключ → fail-closed без fallback на plaintext; секрет не повертається жодним GET і не потрапляє в audit/журнали; frontend-парсер відкидає відповідь, схожу на секрет.
+- Hot reload: worker перечитує знімок налаштувань щоциклу; новий `AbortController` на кожен `start()`; зміна адресата скасовує стару чергу (не пересилає).
+- Ручні зовнішні дії (тестове повідомлення) — без DB-транзакції під час мережі, один у польоті, без автоповтору, результат прив'язаний до generation.

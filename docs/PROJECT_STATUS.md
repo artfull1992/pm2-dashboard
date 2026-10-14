@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-14 (Task 013). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-15 (Task 013.1). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Незалежний review Codex — Task 011 (2026-10-14)
 
@@ -183,6 +183,61 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Task 013.1 — admin UI для Slack-інтеграції й правил сповіщень (2026-10-15)
+
+Стан на початок: `main` = `6bf0c6e`, робоче дерево чисте. Task 013 ще **не має** незалежного review Codex — ця задача його розширює й не вважає Task 013 підтвердженим. Рішення — ADR-022; міграція `1791900000007_alert-settings`.
+
+**Реалізовано:**
+- **Джерело конфігурації.**
+  - Singleton `alert_settings` з `revision` і `rules_revision`; DB CHECK для всіх меж і для правила «поріг відновлення нижче порогу проблеми».
+  - `ALERTS_*` прикладні змінні env — лише одноразові початкові значення; збережені налаштування не перезаписуються. `ALERTS_ENABLED`, `ALERTS_DELIVERY_ENABLED` і `ALERTS_SLACK_WEBHOOK_URL` ігноруються з попередженням без значення; webhook з env не імпортується.
+  - В env лишились `ALERTS_SECRET_KEY` (+ `_VERSION`) і `ALERTS_PUBLIC_URL`.
+- **Секрет.**
+  - Webhook шифрується AES-256-GCM: випадковий 12-байтний nonce; AAD прив'язує запис до generation; у таблиці `alert_slack_integration` зберігаються ciphertext, tag і `key_version`.
+  - Ключ — лише в `api.env`. Немає ключа, інша версія або дешифрування не вдається → fail-closed зі станом `error` (`key_missing` | `key_version_mismatch` | `decrypt_failed`), без fallback.
+  - Webhook не повертається, не логується й не потрапляє в audit; frontend-парсер відкидає відповідь, схожу на секрет.
+- **API** (`alerts:manage`, Origin + CSRF, строгі схеми, мутації 30/хв на актора):
+  - `GET` і `PATCH /api/settings/alerts` з optimistic concurrency за `revision` (409);
+  - `PUT` і `DELETE /api/settings/integrations/slack` з `generation` (409);
+  - `POST /api/settings/integrations/slack/test` — 5/хв на актора, один тест у польоті, синхронний результат `success` | `failed` | `unknown`.
+  - Audit — у тій самій транзакції, лише метадані.
+- **Hot reload.**
+  - Worker створюється, коли API запущено з конфігурацією alerts. Кожні 5 с він читає узгоджений знімок налаштувань та інтеграції; оцінювання — коли рушій увімкнено й минув інтервал.
+  - Новий `AbortController` на кожен `start()`.
+  - Зміна правил скидає серії `pending`/`recovering` (`alert_conditions.rules_revision`); відкриті інциденти, cooldown і baseline рестартів лишаються.
+- **Черга.**
+  - Записи outbox прив'язані до `generation`; worker захоплює лише поточну generation.
+  - Заміна чи видалення webhook, а також вимкнення доставки скасовують `queued`/`sending` записи (`cancelled`: `integration_changed` | `delivery_disabled`) — без пересилання новому адресату й без «вибуху» після повторного ввімкнення.
+  - Запит, що вже в польоті, може дійти старому адресату — це задокументовано.
+  - Зменшення ліміту черги нічого не видаляє.
+- **Тестове повідомлення.**
+  - Лише для збереженої інтеграції; незбережене поле — «Спочатку збережіть webhook».
+  - Працює при вимкненій доставці й рушії; не створює інцидент; позначене як тестове; без автоповтору.
+  - Тайм-аут або abort → `unknown`. Результат зберігається лише для поточної generation.
+- **UI.**
+  - Розділ «Налаштування» (лише `alerts:manage`; прямі routes захищені) з вкладками «Інтеграції» та «Правила сповіщень». Чинний дизайн, одиниці й межі біля кожного поля, «Додаткові параметри» в згортанні.
+  - Клієнтська валідація, dirty/saving/success/error/conflict; попередження про незбережені зміни (`beforeunload` + підтвердження при зміні вкладки); поле webhook очищається.
+  - Мутації прив'язані до сесії й abort.
+  - На «Сповіщеннях» для admin — кнопка «Налаштувати».
+
+**Офіційна документація Slack (docs.slack.dev), звірено:** webhook прив'язаний до одного каналу, обраного при встановленні; для приватного каналу встановлювач має бути його учасником; payload не змінює канал; `channel_is_archived`, `no_service`, `no_active_hooks`; URL — секрет. Поля вибору каналу немає.
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 89/89, backend 438/438, smoke 10/10, agent 164/164 (+3 opt-in), frontend 183/183, typecheck, lint, збірки, `check:secrets` OK |
+| Нові backend | `settings-api` 14: доступи, Origin/CSRF, валідація й міжпольові правила, stale revision/generation, відкат при збої audit, шифрування й прив'язка до generation, SSRF/невалідні URL, відсутній ключ, тест success/400/410/429/network/timeout→unknown, другий клік → 409, rate limit, результат старої generation не позначає нову. `alerts-delivery` +3: hot reload й інтервал, claim лише поточної generation та fail-closed, enable → disable → enable |
+| Real-DB (`test:backend:db`) | 94/94, нові `db/settings` 7: одноразова ініціалізація; конкурентні оновлення (рівно один); відкат налаштувань при збої audit; лише ciphertext і виявлення tamper/wrong key/version; скасування черги й claim за generation; скидання серій при зміні правил; результат тесту лише для поточної generation |
+| Frontend | нові `settings` 12 |
+| UI Playwright | 2/2 |
+| E2E (`test:e2e`, тестова БД, випадковий ключ на прогін) | 18/18 (+1 opt-in), нові `settings.spec.ts` 2: admin зберігає синтетичний webhook (у сторінці й audit його немає, у БД лише ciphertext) і правила; operator → 403; 390 px. Кнопка тесту в E2E **не натискалась**: дочірній backend звернувся б до справжнього Slack; тест покритий mock-транспортом |
+| Real-PM2 E2E | 1/1 |
+| Залишки | 0 схем `nc_test_*`; PM2 daemon і `~/.pm2` відсутні |
+
+Обмеження:
+- Попередження про незбережені зміни — `beforeunload` і підтвердження між вкладками; перехід через бічне меню всередині SPA його не показує (BrowserRouter без data-router blocker).
+- Один тест у польоті — на процес API (single instance).
+- Доставка лишається at-least-once.
 
 ## Task 013 — Alerts Engine, Slack і виправлення graceful shutdown (2026-10-14)
 
@@ -1001,7 +1056,7 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 013 — alerts engine, Slack (вимкнено за замовчуванням) і виправлення graceful shutdown (ADR-021); очікує review Codex. Completed: Task 012 (review Codex пройдено).
+In Progress: Task 013 (alerts, Slack, graceful shutdown) і Task 013.1 (admin UI налаштувань і Slack-інтеграції, ADR-022) — очікують незалежного review Codex; Task 013 ще не підтверджено. Completed: Task 012 (review Codex пройдено).
 
 Next Task: узгоджений користувачем порядок: історія метрик → фінальна production-підготовка. Jenkins redeploy перенесений користувачем у далекий backlog після іншої автоматизації; у поточний план запуску не входить. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 

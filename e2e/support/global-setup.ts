@@ -87,9 +87,9 @@ export default async function globalSetup(): Promise<void> {
       AUTH_ALLOWED_ORIGINS: UI_ORIGIN,
       // Control is enabled ONLY in this isolated E2E backend (production default: false).
       PM2_CONTROL_ENABLED: 'true',
-      // Alerts engine on (evaluation only; no webhook → no delivery), short cycle for the alerts spec.
-      ALERTS_ENABLED: 'true',
-      ALERTS_INTERVAL_SECONDS: '10',
+      // Per-run encryption key for the Slack integration (ADR-022); random, never printed. Engine/delivery are
+      // switched in the database (settings), not here.
+      ALERTS_SECRET_KEY: randomBytes(32).toString('base64'),
       AUTH_SESSION_TTL_MINUTES: '30',
       DB_HOST: config.host, DB_PORT: String(config.port), DB_NAME: config.database, DB_USER: config.user, DB_PASS: config.password,
     },

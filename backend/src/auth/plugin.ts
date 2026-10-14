@@ -124,6 +124,8 @@ const auditItemSchema = {
         commandId: { type: 'string' }, targetKey: { type: 'string' }, action: { type: 'string' },
         targetUserId: { type: 'string' }, role: { type: 'string' }, fromRole: { type: 'string' }, toRole: { type: 'string' },
         sessionsRevoked: { type: 'integer' },
+        revision: { type: 'integer' }, generation: { type: 'integer' }, changed: { type: 'string' }, cancelledItems: { type: 'integer' },
+        replaced: { type: 'boolean' }, operationId: { type: 'string' }, code: { type: 'string' }, stale: { type: 'boolean' },
       },
     },
   },

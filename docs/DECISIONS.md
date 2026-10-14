@@ -398,3 +398,44 @@
 - **Shutdown.**
   - Worker стартує в `onReady`. У `preClose` він перестає планувати цикли, перериває запит до Slack (запис повертається в чергу як `aborted`, at-least-once) і чекає поточний цикл не довше 3 с — до закриття БД.
   - Того самого виправлення потребував LogHub: long-poll і очікувачі тепер звільняються в `preClose`, бо в `onClose` вони тримали shutdown до 25 с. Під час закриття всі відповіді йдуть із `Connection: close`: інакше keep-alive сокет, що став idle вже після старту `close()`, тримав сервер до ~72 с.
+
+## ADR-022: Налаштування сповіщень і Slack-інтеграції через admin UI
+
+Статус: прийнято (Task 013.1). Розширює ADR-021: прикладні параметри та webhook керуються адміністратором у UI. Застосовуються без restart. Environment лишається лише для deployment-рівня.
+
+- **Джерело конфігурації.**
+  - БД — єдине джерело прикладних параметрів: singleton `alert_settings` з `revision`.
+  - Колишні `ALERTS_*` прикладні змінні env використовуються **один раз** як початкові значення, коли рядка ще немає (`INSERT … ON CONFLICT DO NOTHING`). Збережені налаштування на старті ніколи не перезаписуються.
+  - `ALERTS_ENABLED`, `ALERTS_DELIVERY_ENABLED` і `ALERTS_SLACK_WEBHOOK_URL` більше не діють. Webhook з env не імпортується; якщо він є, на старті пишеться попередження без значення. Інтеграція, яка не була налаштована, такою й лишається.
+  - У env лишаються: `ALERTS_SECRET_KEY` (base64, 32 байти), `ALERTS_SECRET_KEY_VERSION` і `ALERTS_PUBLIC_URL`.
+- **Секрет (webhook).**
+  - Шифрування AES-256-GCM з випадковим 12-байтним nonce на кожен запис. AAD = `node-control:slack-webhook:<generation>`, тож ciphertext не можна перенести на іншу generation.
+  - У БД зберігаються ciphertext, nonce, tag і `key_version`. Ключ — лише в `api.env` (600), у БД його немає.
+  - Webhook не повертається жодним GET і не потрапляє в audit, журнали чи помилки.
+  - Немає ключа, інша версія ключа або помилка дешифрування → **fail-closed**: доставка й тест не виконуються, admin бачить безпечний стан `error` (`key_missing` | `key_version_mismatch` | `decrypt_failed`). Fallback на plaintext немає.
+  - Backup БД без ключа не дозволяє відновити інтеграцію — тоді webhook вводиться заново.
+- **API** (усе — `alerts:manage`; мутації — Origin + CSRF, строгі схеми, rate limit 30/хв на актора, audit в одній транзакції зі зміною):
+  - `GET /api/settings/alerts` → `{revision, engineEnabled, deliveryEnabled, rules, advanced, limits, slack: {state, generation, configuredAt, keyAvailable, lastTest}, queue, publicUrlConfigured}`. Лише безпечні метадані; `queue` обчислюється.
+  - `PATCH /api/settings/alerts` `{revision, engineEnabled?, deliveryEnabled?, rules?, advanced?}` → 200; застаріла `revision` → **409** (optimistic concurrency); `deliveryEnabled: true` без налаштованої інтеграції → 409.
+  - `PUT /api/settings/integrations/slack` `{generation, webhookUrl}` встановлює або замінює webhook (`generation` = поточна, для concurrency) → нова `generation`.
+  - `DELETE /api/settings/integrations/slack` `{generation}` видаляє інтеграцію й вимикає доставку.
+  - `POST /api/settings/integrations/slack/test` `{generation}` → синхронний результат `{outcome: success|failed|unknown, code, at, generation}` (тайм-аут ≤ параметра запиту).
+- **Hot reload.**
+  - Worker створюється завжди, коли увімкнено API-авторизацію. Кожні 5 с він перечитує налаштування й інтеграцію — один узгоджений знімок на цикл.
+  - Оцінювання запускається, якщо `engineEnabled` і з останньої оцінки минув `intervalSeconds`; зміна інтервалу діє з наступної перевірки.
+  - Single-flight і advisory lock — без змін.
+  - Новий цикл start/stop створює новий `AbortController` (enable → disable → enable коректний).
+  - Зміна правил (нова `revision`) обнуляє серії `pending`/`recovering` у `alert_conditions.rules_revision`: спостереження за старими порогами не зараховуються за новими. Відкриті інциденти, cooldown і baseline рестартів лишаються.
+- **Черга й адресат.**
+  - Кожен запис outbox прив'язаний до `generation` інтеграції; worker захоплює лише записи поточної generation.
+  - Під час заміни чи видалення webhook, а також вимкнення доставки, усі `queued`/`sending` записи стають **`cancelled`** (`integration_changed` | `delivery_disabled`) — стара черга ніколи не пересилається новому адресату й не «вибухає» після повторного ввімкнення. UI попереджає про це перед дією.
+  - HTTP-запит, що вже в польоті, може доставити повідомлення попередньому адресату; abort його не відкликає. Його результат не змінює нову інтеграцію, бо результат записує лише власник захоплення.
+  - Зменшення ліміту черги нічого не видаляє: нові записи понад ліміт стають `dropped`.
+- **Тестове повідомлення.**
+  - Лише явною кнопкою admin і лише для **збереженої** інтеграції: `generation` має збігатися з поточною, інакше 409. Не залежить від `deliveryEnabled` і від рушія, не створює інцидент.
+  - Позначене як тестове, без приватних даних.
+  - Один тест за раз (інакше 409), 5 тестів/хв на актора, без автоповтору. Тайм-аут або abort → `unknown`.
+  - Результат записується лише якщо `generation` не змінилась (тест старого webhook не «перевіряє» новий).
+  - Audit `integration.slack_test_requested` до мережі й `integration.slack_test_result` після — з `operationId`, `generation`, outcome і кодом, без URL.
+- **Audit (metadata-only):** `settings.alerts_changed` `{revision, changed}`, `settings.delivery_enabled` / `settings.delivery_disabled` `{revision, cancelledItems}`, `integration.slack_configured` `{generation, replaced, cancelledItems}`, `integration.slack_removed` `{generation, cancelledItems}`, `integration.slack_test_requested` / `integration.slack_test_result` `{operationId, generation, code}`.
+- **Rollback на `e8f61c5`.** Старий реліз читає лише `ALERTS_*` з env, а в production їх немає: його рушій вимкнений, старий webhook не з'являється, доставка не вмикається. Нові таблиці та колонки він ігнорує.

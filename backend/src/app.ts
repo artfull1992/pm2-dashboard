@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServerOptions } from 'fastify';
-import { AlertsEngine } from './alerts/engine.js';
+import { AlertsEngine, createRuntimeSource } from './alerts/engine.js';
 import { registerAlertRoutes } from './alerts/routes.js';
+import { registerSettingsRoutes } from './alerts/settings-routes.js';
+import { createPgSettingsStore, type SettingsStore } from './alerts/settings-store.js';
 import { type AlertsStore, createPgAlertsStore } from './alerts/store.js';
 import type { Limiter } from './auth/password.js';
 import type { RateLimiter } from './auth/rate-limit.js';
@@ -19,13 +21,13 @@ import { createPgInventoryStore, type InventoryStore } from './servers/inventory
 import { registerInventoryRoutes } from './servers/inventory-routes.js';
 import { registerServerRoutes } from './servers/routes.js';
 import { createPgServerStore, type ServerStore } from './servers/store.js';
-import { ALERTS_DISABLED, type AlertsConfig, type AuthConfig, type LogLevel } from './config.js';
+import { ALERTS_DEFAULTS, type AlertsConfig, type AuthConfig, type LogLevel } from './config.js';
 import { type Database, DatabaseCheckError, withTimeout } from './database.js';
 import { describeError, toErrorResponse } from './errors.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
-    /** The alerts worker when enabled (ADR-021); null otherwise. */
+    /** The alerts worker (ADR-021/022) when the app runs with an alerts configuration; null otherwise. */
     alertsEngine: AlertsEngine | null;
   }
 }
@@ -67,10 +69,14 @@ export interface BuildAppOptions {
     controlLimiter?: Limiter;
     /** Test seam: in-memory log hub (ADR-018). */
     logHub?: LogHub;
-    /** Alerts engine/delivery configuration (ADR-021); default: everything disabled. */
+    /**
+     * Deployment-level alerts configuration (ADR-022). When present (production), settings are initialised on start
+     * and the worker runs (it reads engine/delivery switches from the database each cycle). Absent → no worker.
+     */
     alerts?: AlertsConfig;
-    /** Test seams for alerts: store and the HTTP transport used for Slack (never the real Slack in tests). */
+    /** Test seams for alerts: stores and the HTTP transport used for Slack (never the real Slack in tests). */
     createAlertsStore?: (database: Database) => AlertsStore;
+    createSettingsStore?: (database: Database) => SettingsStore;
     alertsFetch?: typeof fetch;
     /** Test seam for the dashboard aggregate (ADR-020). */
     createDashboardStore?: (database: Database) => DashboardStore;
@@ -186,19 +192,36 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     });
     registerDashboardRoutes(app, { store: (options.auth.createDashboardStore ?? createPgDashboardStore)(database) });
 
-    // Alerts (ADR-021): the worker runs inside this process only when enabled; it starts once the app is ready and
+    // Alerts (ADR-021/022): settings live in the database; the worker runs inside this process when an alerts
+    // configuration is supplied. It starts once the app is ready (after the one-time settings initialisation) and
     // stops in preClose (before in-flight requests are awaited and before the database is closed).
-    const alertsConfig = options.auth.alerts ?? ALERTS_DISABLED;
+    const alertsConfig = options.auth.alerts ?? ALERTS_DEFAULTS;
     const alertsStore = (options.auth.createAlertsStore ?? createPgAlertsStore)(database);
-    const engine = alertsConfig.enabled
-      ? new AlertsEngine(alertsStore, alertsConfig, app.log.child({ component: 'alerts' }), options.auth.alertsFetch ? { fetchImpl: options.auth.alertsFetch } : {})
+    const settingsStore = (options.auth.createSettingsStore ?? createPgSettingsStore)(database);
+    const source = createRuntimeSource(settingsStore, alertsConfig.secretKey);
+    const alertsLog = app.log.child({ component: 'alerts' });
+    const engine = options.auth.alerts
+      ? new AlertsEngine(alertsStore, source, alertsConfig.publicUrl, alertsLog, options.auth.alertsFetch ? { fetchImpl: options.auth.alertsFetch } : {})
       : null;
     if (engine) {
-      app.addHook('onReady', (done) => { engine.start(); done(); });
+      app.addHook('onReady', async () => {
+        try {
+          if (await settingsStore.initialize(alertsConfig.defaults)) alertsLog.info({}, 'Alert settings initialised from defaults');
+        } catch (error) {
+          alertsLog.error({ error: describeError(error) }, 'Alert settings initialisation failed');
+        }
+        if (alertsConfig.legacy.webhook) alertsLog.warn({ key: 'ALERTS_SLACK_WEBHOOK_URL' }, 'Ignored: the Slack webhook is configured in the admin UI (ADR-022)');
+        if (alertsConfig.legacy.flags) alertsLog.warn({ keys: 'ALERTS_ENABLED,ALERTS_DELIVERY_ENABLED' }, 'Ignored: engine/delivery are switched in the admin UI (ADR-022)');
+        engine.start();
+      });
       app.addHook('preClose', async () => { await engine.stop(); });
     }
     app.decorate('alertsEngine', engine);
-    registerAlertRoutes(app, { store: alertsStore, config: alertsConfig, stats: () => engine?.stats() ?? null });
+    registerAlertRoutes(app, { store: alertsStore, source, publicUrlConfigured: alertsConfig.publicUrl !== null, stats: () => engine?.stats() ?? null });
+    registerSettingsRoutes(app, {
+      settings: settingsStore, alerts: alertsStore, source, secretKey: alertsConfig.secretKey, publicUrl: alertsConfig.publicUrl,
+      ...(options.auth.alertsFetch ? { fetchImpl: options.auth.alertsFetch } : {}),
+    });
     registerLogRoutes(app, {
       hub: options.auth.logHub ?? new LogHub(),
       serverExists: async (id) => (await serverStore.get(id)) !== null,

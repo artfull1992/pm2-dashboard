@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { Link } from 'react-router';
 import { alertsApi } from '../api/client';
 import type { AlertRule, AlertsStatus, Incident } from '../api/types';
+import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { usePolledResource } from '../components/usePolledResource';
@@ -98,12 +99,13 @@ function AdminPanel({ a }: { a: NonNullable<AlertsStatus['admin']> }) {
         <dt>Пороги</dt><dd>{`CPU ≥ ${String(t.cpuOpenPercent)} % (відновлення < ${String(t.cpuClosePercent)} %), пам’ять ОС ≥ ${String(t.memoryOpenPercent)} % (< ${String(t.memoryClosePercent)} %), підтвердження ${String(t.confirmSamples)}/${String(t.recoverSamples)} спостережень; рестарти ≥ ${String(t.restartsThreshold)} за ${String(t.restartsWindowMinutes)} хв`}</dd>
         <dt>Цикл і cooldown</dt><dd>{`перевірка кожні ${String(a.intervalSeconds)} с · cooldown ${String(a.cooldownMinutes)} хв · нагадування ${a.reminderMinutes > 0 ? `кожні ${String(a.reminderMinutes)} хв` : 'вимкнено'} · до ${String(a.maxAttempts)} спроб · черга ≤ ${String(a.queueMax)}`}</dd>
       </dl>
-      <p className="hint">Налаштування змінюються лише в конфігурації сервера (api.env).</p>
+      <p className="hint"><Link to="/settings/integrations">Налаштувати Slack</Link> · <Link to="/settings/rules">Правила сповіщень</Link></p>
     </section>
   );
 }
 
 export function AlertsPage() {
+  const { can } = useAuth();
   const loadStatus = useCallback((signal: AbortSignal) => alertsApi.status(signal), []);
   const status = usePolledResource(loadStatus, 'alerts-status');
   const loadActive = useCallback((signal: AbortSignal) => alertsApi.list('active', null, signal), []);
@@ -120,7 +122,10 @@ export function AlertsPage() {
 
   return (
     <section className="page" aria-labelledby="alerts-title">
-      <h1 id="alerts-title" className="page__title">Сповіщення</h1>
+      <div className="dash-head">
+        <h1 id="alerts-title" className="page__title">Сповіщення</h1>
+        {can('alerts:manage') ? <Link className="button" to="/settings/rules">Налаштувати</Link> : null}
+      </div>
       {status.state.status === 'loading' ? <LoadingState label="Завантаження стану…" /> : null}
       {status.state.status === 'error' ? <ErrorState title="Не вдалося отримати стан рушія" onRetry={status.reload}>{`Стан невідомий.${formatRetry(status.state.retryAfterSeconds)}`}</ErrorState> : null}
       {s ? <StatusBanner s={s} /> : null}

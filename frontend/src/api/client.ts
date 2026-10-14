@@ -2,7 +2,7 @@ import {
   type ApplicationPage, type AuditPage, type CommandView, ContractError, type ControlAction, type ControlView, type IssuedCredential,
   parseApplicationPage, parseAuditPage, parseCommandList, parseCommandView, parseControlView, parseIssuedCredential,
   type LogRequestView, type LogTargetsView, parseLogRequestCreated, parseLogRequestView, parseLogTargets,
-  parseDashboard, type DashboardView, parseAlertsStatus, parseIncidentPage, type AlertsStatus, type IncidentPage, parseRevokeResult, parseServerApplications, parseUserPage, parseUserView, type Role, type UserPage, type UserView, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
+  parseDashboard, type DashboardView, parseSettingsView, parseSlackTestResult, type SettingsView, type SlackTestResult, parseAlertsStatus, parseIncidentPage, type AlertsStatus, type IncidentPage, parseRevokeResult, parseServerApplications, parseUserPage, parseUserView, type Role, type UserPage, type UserView, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
   type ProcessStatus, type ServerApplications, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
 } from './types';
 
@@ -67,7 +67,7 @@ export function parseRetryAfter(header: string | null, now = Date.now()): number
 }
 
 export interface RequestOptions<T> {
-  method?: 'GET' | 'POST' | 'PATCH';
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
   csrfToken?: string;
   signal?: AbortSignal;
@@ -136,6 +136,24 @@ export const authApi = {
   /** 204 on success; every session (this one included) is gone afterwards. Never retried automatically. */
   changePassword: (currentPassword: string, newPassword: string, csrfToken: string, signal?: AbortSignal) =>
     apiRequest('/api/auth/change-password', { method: 'POST', body: { currentPassword, newPassword }, csrfToken, ...(signal ? { signal } : {}) }),
+};
+
+// --- Alert settings (Task 013.1, ADR-022) --------------------------------------------------------------------------
+export interface SettingsPatchBody {
+  revision: number; engineEnabled?: boolean; deliveryEnabled?: boolean;
+  rules?: Partial<SettingsView['rules']>; timing?: Partial<SettingsView['timing']>; advanced?: Partial<SettingsView['advanced']>;
+}
+/** Every mutation is sent once; never retried automatically. The webhook is only ever sent, never received. */
+export const settingsApi = {
+  get: (signal?: AbortSignal): Promise<SettingsView> => apiRequest('/api/settings/alerts', { parse: parseSettingsView, ...(signal ? { signal } : {}) }),
+  patch: (body: SettingsPatchBody, csrfToken: string, signal?: AbortSignal): Promise<SettingsView> =>
+    apiRequest('/api/settings/alerts', { method: 'PATCH', body, csrfToken, parse: parseSettingsView, ...(signal ? { signal } : {}) }),
+  saveSlack: (generation: number, webhookUrl: string, csrfToken: string, signal?: AbortSignal): Promise<SettingsView> =>
+    apiRequest('/api/settings/integrations/slack', { method: 'PUT', body: { generation, webhookUrl }, csrfToken, parse: parseSettingsView, ...(signal ? { signal } : {}) }),
+  removeSlack: (generation: number, csrfToken: string, signal?: AbortSignal): Promise<SettingsView> =>
+    apiRequest('/api/settings/integrations/slack', { method: 'DELETE', body: { generation }, csrfToken, parse: parseSettingsView, ...(signal ? { signal } : {}) }),
+  testSlack: (generation: number, csrfToken: string, signal?: AbortSignal): Promise<SlackTestResult> =>
+    apiRequest('/api/settings/integrations/slack/test', { method: 'POST', body: { generation }, csrfToken, timeoutMs: 40_000, parse: parseSlackTestResult, ...(signal ? { signal } : {}) }),
 };
 
 // --- Alerts (Task 013, ADR-021) ----------------------------------------------------------------------------------

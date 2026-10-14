@@ -603,3 +603,69 @@ export function parseAlertsStatus(value: unknown): AlertsStatus {
   }
   return { engine: { enabled: e.enabled, running: e.running, lastEvaluationAt: e.lastEvaluationAt, lastEvaluationOk: e.lastEvaluationOk }, delivery: { enabled: value.delivery.enabled }, activeCount: value.activeCount, admin };
 }
+
+// --- Alert settings & Slack integration (Task 013.1, ADR-022) ----------------------------------------------------
+
+export const RULE_FIELDS = ['cpuOpenPercent', 'cpuClosePercent', 'memoryOpenPercent', 'memoryClosePercent', 'confirmSamples', 'recoverSamples', 'statusConfirmSamples', 'restartsThreshold', 'restartsWindowMinutes'] as const;
+export const TIMING_FIELDS = ['intervalSeconds', 'cooldownMinutes', 'reminderMinutes'] as const;
+export const ADVANCED_FIELDS = ['httpTimeoutMs', 'maxAttempts', 'queueMax'] as const;
+export type RuleField = (typeof RULE_FIELDS)[number];
+export type TimingField = (typeof TIMING_FIELDS)[number];
+export type AdvancedField = (typeof ADVANCED_FIELDS)[number];
+const QUEUE_FIELDS = ['queued', 'sending', 'sent', 'failed', 'unknown', 'dropped', 'cancelled'] as const;
+
+export interface SettingsView {
+  revision: number; updatedAt: string; engineEnabled: boolean; deliveryEnabled: boolean;
+  rules: Record<RuleField, number>; timing: Record<TimingField, number> & { reminderEnabled: boolean }; advanced: Record<AdvancedField, number>;
+  ranges: Record<RuleField | TimingField | AdvancedField, { min: number; max: number; default: number }>;
+  slack: {
+    state: 'not_configured' | 'configured' | 'error'; error: 'key_missing' | 'key_version_mismatch' | 'decrypt_failed' | null; generation: number;
+    configuredAt: string | null; keyAvailable: boolean; lastTest: { outcome: 'success' | 'failed' | 'unknown'; code: string | null; at: string } | null;
+  };
+  queue: Record<(typeof QUEUE_FIELDS)[number], number>;
+  publicUrlConfigured: boolean;
+}
+export interface SlackTestResult { operationId: string; generation: number; outcome: 'success' | 'failed' | 'unknown'; code: string | null; at: string; stored: boolean }
+
+const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1_000_000_000;
+function ints<K extends string>(v: unknown, keys: readonly K[]): Record<K, number> {
+  expect(isObject(v));
+  const out = {} as Record<K, number>;
+  for (const k of keys) { const x = v[k]; expect(isInt(x)); out[k] = x; }
+  return out;
+}
+const SAFE_CODE = /^[a-z0-9_]{1,40}$/;
+
+/** Strict: anything that looks like a secret (a URL, a "webhook" field) is a contract violation, never displayed. */
+export function parseSettingsView(value: unknown): SettingsView {
+  expect(isObject(value) && !JSON.stringify(value).includes('hooks.slack.com'));
+  const { revision, updatedAt, engineEnabled, deliveryEnabled, slack, ranges } = value;
+  expect(isInt(revision) && isDate(updatedAt) && typeof engineEnabled === 'boolean' && typeof deliveryEnabled === 'boolean' && typeof value.publicUrlConfigured === 'boolean');
+  expect(isObject(value.timing) && typeof value.timing.reminderEnabled === 'boolean');
+  expect(isObject(ranges) && isObject(slack));
+  const allFields = [...RULE_FIELDS, ...TIMING_FIELDS, ...ADVANCED_FIELDS] as const;
+  const r = {} as SettingsView['ranges'];
+  for (const k of allFields) { const x = ranges[k]; expect(isObject(x)); const v = ints(x, ['min', 'max', 'default'] as const); r[k] = v; }
+  expect(slack.state === 'not_configured' || slack.state === 'configured' || slack.state === 'error');
+  expect(slack.error === null || slack.error === 'key_missing' || slack.error === 'key_version_mismatch' || slack.error === 'decrypt_failed');
+  expect(isInt(slack.generation) && isNullableDate(slack.configuredAt) && typeof slack.keyAvailable === 'boolean' && !('webhookUrl' in slack));
+  let lastTest: SettingsView['slack']['lastTest'] = null;
+  if (slack.lastTest !== null) {
+    const t = slack.lastTest;
+    expect(isObject(t) && (t.outcome === 'success' || t.outcome === 'failed' || t.outcome === 'unknown') && (t.code === null || (isString(t.code, 40) && SAFE_CODE.test(t.code))) && isDate(t.at));
+    lastTest = { outcome: t.outcome, code: t.code, at: t.at };
+  }
+  return {
+    revision, updatedAt, engineEnabled, deliveryEnabled,
+    rules: ints(value.rules, RULE_FIELDS), timing: { ...ints(value.timing, TIMING_FIELDS), reminderEnabled: value.timing.reminderEnabled }, advanced: ints(value.advanced, ADVANCED_FIELDS),
+    ranges: r,
+    slack: { state: slack.state, error: slack.error, generation: slack.generation, configuredAt: slack.configuredAt, keyAvailable: slack.keyAvailable, lastTest },
+    queue: ints(value.queue, QUEUE_FIELDS), publicUrlConfigured: value.publicUrlConfigured,
+  };
+}
+
+export function parseSlackTestResult(value: unknown): SlackTestResult {
+  expect(isObject(value) && isString(value.operationId, 36) && isInt(value.generation) && isDate(value.at) && typeof value.stored === 'boolean');
+  expect((value.outcome === 'success' || value.outcome === 'failed' || value.outcome === 'unknown') && (value.code === null || (isString(value.code, 40) && SAFE_CODE.test(value.code))));
+  return { operationId: value.operationId, generation: value.generation, outcome: value.outcome, code: value.code, at: value.at, stored: value.stored };
+}

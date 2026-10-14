@@ -4,7 +4,9 @@ import { buildApp } from '../src/app.js';
 import type { AlertsStore, ClaimedItem, IncidentView } from '../src/alerts/store.js';
 import { createRateLimiter } from '../src/auth/rate-limit.js';
 import type { Role } from '../src/auth/rbac.js';
+import { seal } from '../src/alerts/secret.js';
 import { type AlertsConfig, loadAlertsConfig } from '../src/config.js';
+import { FakeSettingsStore } from './support/fake-settings-store.js';
 import { createLifecycle } from '../src/lifecycle.js';
 import { captureLogs, fakeDatabase } from './helpers.js';
 import { FakeAuthStore } from './support/fake-auth-store.js';
@@ -40,21 +42,21 @@ class FakeAlerts implements AlertsStore {
     return Promise.resolve({ items: [{ ...item, notification: input.withDelivery ? item.notification : null, leakedWebhook: WEBHOOK } as IncidentView], nextBefore: null });
   }
   summary(withQueue: boolean) {
-    return Promise.resolve({ active: 1, queue: withQueue ? { queued: 2, sending: 0, sent: 5, failed: 1, unknown: 0, dropped: 0 } : null, lastSentAt: null });
+    return Promise.resolve({ active: 1, queue: withQueue ? { queued: 2, sending: 0, sent: 5, failed: 1, unknown: 0, dropped: 0, cancelled: 0 } : null, lastSentAt: null });
   }
 }
 
 let app: FastifyInstance | undefined;
 afterEach(async () => { await app?.close(); app = undefined; });
 
-function build(alerts: AlertsConfig | undefined, store: FakeAlerts, fetchImpl?: typeof fetch) {
+function build(alerts: AlertsConfig | undefined, store: FakeAlerts, fetchImpl?: typeof fetch, settings = new FakeSettingsStore()) {
   const auth = new FakeAuthStore();
   const logs = captureLogs();
   app = buildApp({
     logLevel: 'info', readinessTimeoutMs: 200, createDatabase: () => fakeDatabase(), logStream: logs.stream,
     auth: {
       config: { allowedOrigins: [ORIGIN], cookieSecure: true, sessionTtlSeconds: 3600 },
-      createStore: () => auth, createAlertsStore: () => store, ...(alerts ? { alerts } : {}), ...(fetchImpl ? { alertsFetch: fetchImpl } : {}),
+      createStore: () => auth, createAlertsStore: () => store, createSettingsStore: () => settings, ...(alerts ? { alerts } : {}), ...(fetchImpl ? { alertsFetch: fetchImpl } : {}),
       extra: { accountLimiter: createRateLimiter({ max: 1000, windowMs: 60_000 }), addressLimiter: createRateLimiter({ max: 1000, windowMs: 60_000 }) },
     },
   });
@@ -67,9 +69,17 @@ function build(alerts: AlertsConfig | undefined, store: FakeAlerts, fetchImpl?: 
   };
   return { app: a, logs, login };
 }
-const enabled = (over: Record<string, string> = {}) => loadAlertsConfig((k, f = '') => ({
-  ALERTS_ENABLED: 'true', ALERTS_DELIVERY_ENABLED: 'true', ALERTS_SLACK_WEBHOOK_URL: WEBHOOK, ALERTS_INTERVAL_SECONDS: '600', ...over,
-} as Record<string, string>)[k] ?? f, []);
+const KEY = Buffer.alloc(32, 9).toString('base64');
+const enabled = () => loadAlertsConfig((k, f = '') => ({ ALERTS_SECRET_KEY: KEY } as Record<string, string>)[k] ?? f, []);
+/** Settings with engine + delivery on and a sealed (encrypted) webhook at generation 1. */
+function enabledSettings(over: { httpTimeoutMs?: number } = {}) {
+  const st = new FakeSettingsStore();
+  const key = enabled().secretKey;
+  if (!key) throw new Error('no key');
+  st.settings = { ...st.settings, engineEnabled: true, deliveryEnabled: true, intervalSeconds: 600, ...(over.httpTimeoutMs ? { httpTimeoutMs: over.httpTimeoutMs } : {}) };
+  st.integration = { generation: 1, sealed: seal(WEBHOOK, 1, key), configuredAt: '2026-10-15T00:00:00.000Z', lastTest: null };
+  return st;
+}
 
 describe('GET /api/alerts and /api/alerts/status', () => {
   it('anonymous → 401 on both', async () => {
@@ -94,7 +104,7 @@ describe('GET /api/alerts and /api/alerts/status', () => {
 
   it('admin: delivery state and non-secret configuration; the webhook URL is never in any response or log', async () => {
     const store = new FakeAlerts();
-    const { app: a, login, logs } = build(enabled(), store);
+    const { app: a, login, logs } = build(enabled(), store, undefined, enabledSettings());
     const cookie = await login('admin');
     const list = await a.inject({ method: 'GET', url: '/api/alerts?state=active&limit=10', headers: { cookie } });
     expect(list.json<{ items: IncidentView[] }>().items[0]?.notification).toEqual({ notify: true, state: 'failed', attempts: 6, lastError: 'http_500' });
@@ -129,7 +139,7 @@ describe('alerts worker lifecycle', () => {
     let inFlight!: () => void;
     const started = new Promise<void>((r) => { inFlight = r; });
     const hang = ((_u: unknown, init?: RequestInit) => { inFlight(); return new Promise<Response>((_r, reject) => { init?.signal?.addEventListener('abort', () => { reject(new Error('aborted')); }); }); }) as unknown as typeof fetch;
-    const { app: a, logs } = build(enabled({ ALERTS_HTTP_TIMEOUT_MS: '30000' }), store, hang);
+    const { app: a, logs } = build(enabled(), store, hang, enabledSettings({ httpTimeoutMs: 30_000 }));
     await a.ready();
     expect(a.alertsEngine?.stats().running).toBe(true);
     store.pending = [{ id: '8', kind: 'firing', attempts: 1, incident: { ...incident(), notification: null } as never }];

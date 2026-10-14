@@ -12,6 +12,8 @@ const snapshot = { agentVersion: '0.4.0', hostname: 'alert-host', platform: 'lin
 
 test.beforeAll(async () => {
   await inRunSchema(async (q) => {
+    // Engine on via settings (ADR-022), short cycle; delivery stays off (no Slack in tests).
+    await q('UPDATE alert_settings SET engine_enabled = true, interval_seconds = 10, revision = revision + 1 WHERE id = 1');
     const id = (await q('INSERT INTO servers (name) VALUES ($1) RETURNING id', [DOWN])).rows[0]?.id as string;
     await q("INSERT INTO server_heartbeats (server_id, received_at, snapshot) VALUES ($1, now() - interval '10 minutes', $2::jsonb)", [id, JSON.stringify(snapshot)]);
   });
@@ -19,7 +21,10 @@ test.beforeAll(async () => {
 
 // Leave the run schema as other specs expect it (they assert an empty server list); incidents cascade.
 test.afterAll(async () => {
-  await inRunSchema((q) => q('DELETE FROM servers WHERE name = $1', [DOWN]));
+  await inRunSchema(async (q) => {
+    await q('DELETE FROM servers WHERE name = $1', [DOWN]);
+    await q('UPDATE alert_settings SET engine_enabled = false, interval_seconds = 30, revision = revision + 1 WHERE id = 1');
+  });
 });
 
 async function login(page: Page, role: E2eRole) {

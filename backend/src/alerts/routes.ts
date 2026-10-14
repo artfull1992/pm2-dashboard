@@ -1,9 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { AUTH_MESSAGES } from '../auth/plugin.js';
 import { hasPermission } from '../auth/rbac.js';
-import type { AlertsConfig } from '../config.js';
 import { describeError, PublicHttpError } from '../errors.js';
-import type { EngineStats } from './engine.js';
+import type { EngineStats, RuntimeSource } from './engine.js';
 import { RULES } from './rules.js';
 import type { AlertsStore } from './store.js';
 
@@ -31,13 +30,13 @@ const incidentSchema = obj({
     },
   },
   openedAt: str, lastObservedAt: str, resolvedAt: nstr,
-  notification: nullableObj({ notify: { type: 'boolean' }, state: { type: 'string', enum: ['none', 'queued', 'sending', 'sent', 'failed', 'unknown', 'dropped'] }, attempts: int, lastError: nstr }),
+  notification: nullableObj({ notify: { type: 'boolean' }, state: { type: 'string', enum: ['none', 'queued', 'sending', 'sent', 'failed', 'unknown', 'dropped', 'cancelled'] }, attempts: int, lastError: nstr }),
 });
 
-export interface AlertRoutesOptions { store: AlertsStore; config: AlertsConfig; stats: () => EngineStats | null }
+export interface AlertRoutesOptions { store: AlertsStore; source: RuntimeSource; publicUrlConfigured: boolean; stats: () => EngineStats | null }
 
 export function registerAlertRoutes(app: FastifyInstance, options: AlertRoutesOptions): void {
-  const { store, config } = options;
+  const { store, source } = options;
   const unavailable = () => new PublicHttpError(503, AUTH_MESSAGES.unavailable, { 'retry-after': '5' });
 
   app.get('/api/alerts', {
@@ -79,8 +78,9 @@ export function registerAlertRoutes(app: FastifyInstance, options: AlertRoutesOp
               cpuOpenPercent: int, cpuClosePercent: int, memoryOpenPercent: int, memoryClosePercent: int, confirmSamples: int,
               recoverSamples: int, statusConfirmSamples: int, restartsThreshold: int, restartsWindowMinutes: int,
             }),
-            queue: obj({ queued: int, sending: int, sent: int, failed: int, unknown: int, dropped: int }),
+            queue: obj({ queued: int, sending: int, sent: int, failed: int, unknown: int, dropped: int, cancelled: int }),
             lastSentAt: nstr, lastDeliveryError: nstr, lastEvaluationError: nstr,
+            integrationState: { type: 'string', enum: ['not_configured', 'configured', 'error'] }, integrationError: nstr,
           }),
         }),
       },
@@ -90,22 +90,25 @@ export function registerAlertRoutes(app: FastifyInstance, options: AlertRoutesOp
     if (!auth) throw new PublicHttpError(401, AUTH_MESSAGES.unauthenticated);
     const admin = hasPermission(auth.role, 'alerts:manage');
     let summary;
+    let rt;
     try {
       summary = await store.summary(admin);
+      rt = await source.load();
     } catch (error) {
       request.log.error({ error: describeError(error) }, 'Alerts status query failed');
       throw unavailable();
     }
     const s = options.stats();
-    const t = config.thresholds;
+    const cfg = rt.settings;
+    const t = cfg.thresholds;
     return {
-      engine: { enabled: config.enabled, running: s?.running ?? false, lastEvaluationAt: s?.lastEvaluationAt ?? null, lastEvaluationOk: s?.lastEvaluationOk ?? null },
-      delivery: { enabled: config.deliveryEnabled },
+      engine: { enabled: cfg.engineEnabled, running: cfg.engineEnabled && (s?.running ?? false), lastEvaluationAt: s?.lastEvaluationAt ?? null, lastEvaluationOk: s?.lastEvaluationOk ?? null },
+      delivery: { enabled: cfg.deliveryEnabled && rt.integration.state === 'configured' },
       activeCount: summary.active,
       admin: admin && summary.queue ? {
-        webhookConfigured: config.webhookUrl !== null, publicUrlConfigured: config.publicUrl !== null,
-        intervalSeconds: config.intervalSeconds, cooldownMinutes: config.cooldownSeconds / 60, reminderMinutes: config.reminderSeconds / 60,
-        maxAttempts: config.maxAttempts, queueMax: config.queueMax,
+        webhookConfigured: rt.integration.state !== 'not_configured', publicUrlConfigured: options.publicUrlConfigured,
+        intervalSeconds: cfg.intervalSeconds, cooldownMinutes: cfg.cooldownSeconds / 60, reminderMinutes: cfg.reminderEnabled ? cfg.reminderSeconds / 60 : 0,
+        maxAttempts: cfg.maxAttempts, queueMax: cfg.queueMax, integrationState: rt.integration.state, integrationError: rt.integration.error,
         thresholds: {
           cpuOpenPercent: t.cpuOpenPercent, cpuClosePercent: t.cpuClosePercent, memoryOpenPercent: t.memoryOpenPercent, memoryClosePercent: t.memoryClosePercent,
           confirmSamples: t.confirmSamples, recoverSamples: t.recoverSamples, statusConfirmSamples: t.statusConfirmSamples,

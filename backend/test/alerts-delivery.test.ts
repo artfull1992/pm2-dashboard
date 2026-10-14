@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AlertsEngine, backoffSeconds } from '../src/alerts/engine.js';
+import { AlertsEngine, type AlertsRuntime, backoffSeconds } from '../src/alerts/engine.js';
 import { isSlackWebhookUrl, type MessageIncident, renderMessage, sendToSlack, slackSafe } from '../src/alerts/slack.js';
 import type { AlertsStore, ClaimedItem } from '../src/alerts/store.js';
-import { type AlertsConfig, loadAlertsConfig } from '../src/config.js';
+import { ALERTS_DEFAULTS, loadAlertsConfig } from '../src/config.js';
 
 // Slack formatting/delivery and the delivery loop (Task 013, ADR-021). Only a local mock transport — never Slack.
 
@@ -13,28 +13,38 @@ const incident = (over: Partial<MessageIncident> = {}): MessageIncident => ({
   lastObservedAt: '2026-10-14T10:01:00.000Z', resolvedAt: null, resolution: null, ...over,
 });
 const env = (over: Record<string, string> = {}) => (key: string, fallback = '') => over[key] ?? fallback;
-function config(over: Record<string, string> = {}): AlertsConfig {
-  const issues: string[] = [];
-  const c = loadAlertsConfig(env({ ALERTS_ENABLED: 'true', ALERTS_DELIVERY_ENABLED: 'true', ALERTS_SLACK_WEBHOOK_URL: WEBHOOK, ALERTS_PUBLIC_URL: 'https://nc.example.test', ...over }), issues);
-  expect(issues).toEqual([]);
-  return c;
+/** A runtime snapshot as the engine reads it from the database (settings + decrypted integration). */
+function runtime(over: { deliveryEnabled?: boolean; engineEnabled?: boolean; httpTimeoutMs?: number; maxAttempts?: number; intervalSeconds?: number; state?: 'configured' | 'error' | 'not_configured' } = {}): AlertsRuntime {
+  const state = over.state ?? 'configured';
+  return {
+    settings: {
+      ...ALERTS_DEFAULTS.defaults, revision: 1, rulesRevision: 1, updatedAt: '2026-10-15T00:00:00.000Z', engineEnabled: over.engineEnabled ?? true,
+      deliveryEnabled: over.deliveryEnabled ?? true, httpTimeoutMs: over.httpTimeoutMs ?? 1000, maxAttempts: over.maxAttempts ?? 6, intervalSeconds: over.intervalSeconds ?? 30,
+    },
+    integration: { generation: 3, state, error: state === 'error' ? 'decrypt_failed' : null, webhook: state === 'configured' ? WEBHOOK : null },
+  };
 }
+const source = (rt: () => AlertsRuntime) => ({ load: () => Promise.resolve(rt()) });
 const reply = (status: number, body: string, headers: Record<string, string> = {}) => () => Promise.resolve(new Response(body, { status, headers }));
 
 describe('configuration (ALERTS_*)', () => {
-  it('everything is off by default; delivery needs the engine and a valid webhook; issues never contain the URL', () => {
-    const off = loadAlertsConfig(env(), []);
-    expect(off).toMatchObject({ enabled: false, deliveryEnabled: false, webhookUrl: null });
+  it('env holds only deployment-level values: key, public origin and one-time defaults (engine/delivery always start off)', () => {
+    const key = Buffer.alloc(32, 7).toString('base64');
+    const ok: string[] = [];
+    const c = loadAlertsConfig(env({ ALERTS_SECRET_KEY: key, ALERTS_PUBLIC_URL: 'https://nc.example.test', ALERTS_ENABLED: 'true', ALERTS_SLACK_WEBHOOK_URL: WEBHOOK, ALERTS_CPU_OPEN_PERCENT: '250' }), ok);
+    expect(ok).toEqual([]);
+    expect(c).toMatchObject({ publicUrl: 'https://nc.example.test', secretKey: { version: 1 }, legacy: { webhook: true, flags: true }, defaults: { engineEnabled: false, deliveryEnabled: false, thresholds: { cpuOpenPercent: 250 } } });
+    expect(JSON.stringify(c.defaults)).not.toContain('hooks.slack.com');
     const issues: string[] = [];
-    loadAlertsConfig(env({ ALERTS_DELIVERY_ENABLED: 'true', ALERTS_SLACK_WEBHOOK_URL: 'https://evil.example/services/T1/B1/secretvalue123456' }), issues);
-    expect(issues.join('\n')).toMatch(/requires ALERTS_ENABLED=true/);
-    expect(issues.join('\n')).toMatch(/must be a Slack Incoming Webhook URL/);
-    expect(issues.join('\n')).not.toContain('secretvalue');
+    loadAlertsConfig(env({ ALERTS_SECRET_KEY: 'c2VjcmV0LW5vdC0zMi1ieXRlcw==' }), issues);
+    expect(issues.join('\n')).toMatch(/ALERTS_SECRET_KEY must be base64 of exactly 32 bytes/);
+    expect(issues.join('\n')).not.toContain('c2VjcmV0');
     const bad: string[] = [];
     loadAlertsConfig(env({ ALERTS_CPU_OPEN_PERCENT: '50', ALERTS_CPU_CLOSE_PERCENT: '60', ALERTS_PUBLIC_URL: 'http://x', ALERTS_INTERVAL_SECONDS: '1' }), bad);
     expect(bad).toEqual(expect.arrayContaining([
       'ALERTS_CPU_CLOSE_PERCENT must be lower than ALERTS_CPU_OPEN_PERCENT', expect.stringMatching(/ALERTS_PUBLIC_URL/), expect.stringMatching(/ALERTS_INTERVAL_SECONDS/),
     ]));
+    expect(ALERTS_DEFAULTS).toMatchObject({ secretKey: null, publicUrl: null, defaults: { engineEnabled: false, deliveryEnabled: false } });
   });
 
   it('only the official Slack webhook host/path is accepted', () => {
@@ -104,7 +114,8 @@ class FakeStore implements AlertsStore {
     if (this.failEvaluate) return Promise.reject(Object.assign(new Error(`relation secret ${WEBHOOK}`), { code: '57P01' }));
     return Promise.resolve({ skipped: false, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, at: '2026-10-14T10:00:00.000Z' });
   }
-  claim(limit: number) { return Promise.resolve(this.items.splice(0, limit)); }
+  claimedGenerations: number[] = [];
+  claim(limit: number, generation: number) { this.claimedGenerations.push(generation); return Promise.resolve(this.items.splice(0, limit)); }
   finish(item: { id: string }, outcome: { status: string; code?: string; delaySeconds?: number }) {
     this.finished.push({ id: item.id, ...outcome });
     return Promise.resolve(true);
@@ -124,7 +135,7 @@ describe('delivery loop', () => {
     const timeoutFetch = (_u: unknown, init?: RequestInit) => new Promise<Response>((_r, reject) => { init?.signal?.addEventListener('abort', () => { reject(new Error('t')); }); });
     const fetchImpl = ((u: unknown, init?: RequestInit) => { const i = n++; return i === 4 ? timeoutFetch(u, init) : (responses[i] ?? reply(200, 'ok'))(); }) as unknown as typeof fetch;
     const sleeps: number[] = [];
-    const engine = new AlertsEngine(store, config({ ALERTS_HTTP_TIMEOUT_MS: '1000' }), quiet, { fetchImpl, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } });
+    const engine = new AlertsEngine(store, source(() => runtime({ httpTimeoutMs: 1000 })), null, quiet, { fetchImpl, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } });
     await engine.deliverNow();
     await engine.deliverNow();
     expect(store.finished.map((f) => [f.id, f.status, f.code])).toEqual([
@@ -146,7 +157,7 @@ describe('delivery loop', () => {
     const store = new FakeStore();
     store.failEvaluate = true;
     const logged: string[] = [];
-    const engine = new AlertsEngine(store, config(), { info: (o) => logged.push(JSON.stringify(o)), warn: (o) => logged.push(JSON.stringify(o)), error: (o) => logged.push(JSON.stringify(o)) });
+    const engine = new AlertsEngine(store, source(() => runtime()), null, { info: (o) => logged.push(JSON.stringify(o)), warn: (o) => logged.push(JSON.stringify(o)), error: (o) => logged.push(JSON.stringify(o)) });
     await expect(engine.evaluateNow()).resolves.toBeUndefined();
     expect(engine.stats()).toMatchObject({ lastEvaluationOk: false, lastEvaluationError: 'internal' }); // a category, never the message
     expect(logged.join('\n')).not.toContain('hooks.slack.com');
@@ -159,7 +170,7 @@ describe('delivery loop', () => {
     let started!: () => void;
     const inFlight = new Promise<void>((r) => { started = r; });
     const hang = ((_u: unknown, init?: RequestInit) => { started(); return new Promise<Response>((_r, reject) => { init?.signal?.addEventListener('abort', () => { reject(new Error('aborted')); }); }); }) as unknown as typeof fetch;
-    const engine = new AlertsEngine(store, config({ ALERTS_HTTP_TIMEOUT_MS: '30000' }), quiet, { fetchImpl: hang });
+    const engine = new AlertsEngine(store, source(() => runtime({ httpTimeoutMs: 30_000 })), null, quiet, { fetchImpl: hang });
     const delivering = engine.deliverNow();
     await inFlight;
     const t0 = Date.now();
@@ -168,5 +179,56 @@ describe('delivery loop', () => {
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(store.finished).toEqual([{ id: '9', status: 'queued', code: 'aborted', delaySeconds: 1 }]);
     expect(engine.stats().running).toBe(false);
+  });
+});
+
+describe('hot reload and lifecycle (Task 013.1)', () => {
+  it('reads settings each cycle: disabled engine does nothing, enabling applies without restart, a new interval applies at the next check', async () => {
+    const store = new FakeStore();
+    let rt = runtime({ engineEnabled: false });
+    let clock = 0;
+    const engine = new AlertsEngine(store, source(() => rt), null, quiet, { now: () => clock });
+    await engine.evaluateTick();
+    expect(store.evaluations).toBe(0);
+    rt = runtime({ engineEnabled: true, intervalSeconds: 600 });
+    await engine.evaluateTick();
+    expect(store.evaluations).toBe(1);
+    clock = 30_000;
+    await engine.evaluateTick(); // 30 s < 600 s
+    expect(store.evaluations).toBe(1);
+    rt = runtime({ engineEnabled: true, intervalSeconds: 10 }); // admin shortens the interval
+    await engine.evaluateTick();
+    expect(store.evaluations).toBe(2);
+  });
+
+  it('delivery claims only the current integration generation; disabled delivery or an undecryptable integration claims nothing (fail-closed)', async () => {
+    const store = new FakeStore();
+    let rt = runtime();
+    const engine = new AlertsEngine(store, source(() => rt), null, quiet);
+    await engine.deliverNow();
+    expect(store.claimedGenerations).toEqual([3]);
+    rt = runtime({ deliveryEnabled: false });
+    await engine.deliverNow();
+    rt = runtime({ state: 'error' });
+    await engine.deliverNow();
+    rt = runtime({ state: 'not_configured' });
+    await engine.deliverNow();
+    expect(store.claimedGenerations).toEqual([3]);
+    expect(engine.stats().lastDeliveryError).toBe('decrypt_failed');
+  });
+
+  it('enable → disable → enable: a fresh AbortController per start, delivery works again after a stop', async () => {
+    const store = new FakeStore();
+    const sent: string[] = [];
+    const fetchImpl = ((_u: unknown, init?: RequestInit) => { sent.push(String(init?.signal?.aborted)); return Promise.resolve(new Response('ok')); }) as unknown as typeof fetch;
+    const engine = new AlertsEngine(store, source(() => runtime()), null, quiet, { fetchImpl });
+    engine.start();
+    await engine.stop();
+    engine.start();
+    store.items = [item('a')];
+    await engine.deliverNow();
+    await engine.stop();
+    expect(store.finished).toEqual([{ id: 'a', status: 'sent' }]);
+    expect(sent).toEqual(['false']); // the request did not carry the previous run's aborted signal
   });
 });

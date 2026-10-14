@@ -154,7 +154,15 @@ npm run backend:start     # node backend/dist/main.js
 | `GET /api/alerts?state=active\|resolved&limit=1..100&before=<uuid>` | `monitoring:read` | `200 {items:[{id, rule, severity, status, resolution, serverId, serverName, serverStatus, processName, pmId, detail, openedAt, lastObservedAt, resolvedAt, notification}], nextBefore}`; `notification` лише для `alerts:manage`, інакше `null` | 400, 401, 403, 503 |
 | `GET /api/alerts/status` | `monitoring:read` | `200 {engine:{enabled, running, lastEvaluationAt, lastEvaluationOk}, delivery:{enabled}, activeCount, admin}`; `admin` (черга, пороги, `webhookConfigured`) лише для `alerts:manage` | 401, 403, 503 |
 
-Налаштування — лише `ALERTS_*` у `api.env` (див. `.env.example`). Webhook ніколи не повертається.
+Налаштування й Slack — у розділі «Налаштування» (admin, ADR-022); в `api.env` лише ключ шифрування й public origin. Webhook ніколи не повертається.
+
+| Запит (усе `alerts:manage`; мутації — Origin + CSRF) | Успіх | Помилки |
+|---|---|---|
+| `GET /api/settings/alerts` | `200 {revision, updatedAt, engineEnabled, deliveryEnabled, rules, timing, advanced, ranges, slack:{state, error, generation, configuredAt, keyAvailable, lastTest}, queue, publicUrlConfigured}` | 401, 403, 503 |
+| `PATCH /api/settings/alerts` `{revision, engineEnabled?, deliveryEnabled?, rules?, timing?, advanced?}` | `200` — новий стан | 400, 409 (застаріла `revision` / доставка без інтеграції), 429, 503 |
+| `PUT /api/settings/integrations/slack` `{generation, webhookUrl}` | `200` (webhook зашифровано, не повертається; стара черга скасована) | 400 (не Slack webhook), 409 (`generation` / немає ключа), 429, 503 |
+| `DELETE /api/settings/integrations/slack` `{generation}` | `200` (доставку вимкнено, черга скасована) | 409, 429, 503 |
+| `POST /api/settings/integrations/slack/test` `{generation}` | `200 {operationId, generation, outcome: success\|failed\|unknown, code, at, stored}` | 409 (не та `generation` / не налаштовано / помилка ключа / тест уже триває), 429, 503 |
 
 ### Dashboard (Task 012, ADR-020)
 

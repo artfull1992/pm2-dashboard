@@ -251,3 +251,15 @@ h1, h2, p { margin: 0; }
 }
 .dash-procs { display: block; margin-top: 6px; font-size: .82rem; }
 .dash-mem { min-width: 120px; }
+
+/* Settings (Task 013.1) */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.tab { padding: 10px 14px; border-radius: 8px 8px 0 0; color: var(--text); text-decoration: none; border: 1px solid transparent; border-bottom: 0; }
+.tab--active { color: var(--primary); border-color: var(--border); background: var(--surface); font-weight: 600; }
+.settings-card { display: grid; gap: 14px; }
+.settings-form { display: grid; gap: 10px; max-width: 640px; }
+.settings-group { border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.settings-group > legend, .settings-group > summary { font-weight: 600; padding: 0 4px; }
+details.settings-group > summary { grid-column: 1 / -1; cursor: pointer; }
+.settings-toggle label { display: flex; gap: 8px; align-items: center; font-weight: 500; }
+.settings-toggle input[type="checkbox"] { width: auto; min-height: 0; margin: 0; }
