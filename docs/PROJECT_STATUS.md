@@ -196,6 +196,18 @@ Rollback підготовлено до production `up`: код — `server-relea
 | Real-DB, real-PM2 E2E | не повторювались: backend, транзакції, Agent і broker не змінювались (останні результати — Task 011: 72/72 і 1/1) |
 | Залишки | 0 схем `nc_test_*`; PM2 daemon відсутній |
 
+**Деплой (2026-10-14, ~17:49 UTC, лише центральний сервер).** Deployed code revision: **`ac4d967679a723db04185f04f2cdd4e1b6a1d259`** (`fix(users): guard stale mutations and paginate user administration`). Цей запис — пізніший docs-commit, на сервер не деплоївся. Agent/broker не передеплоювались.
+
+| Крок | Результат |
+|---|---|
+| Baseline | `control-server`; current `20896dd` (ціль rollback), previous `2fe4d95`; API active, ready 200; Nginx/PostgreSQL active, failed 0; `api.env` без змін |
+| Артефакт і активація | 49 файлів, SHA-256 `82cb05ec…57f29f` OK, manifest `ac4d967`; unit без змін; міграції applied=6, pending=0 (нових немає); `backend/dist` ідентичний попередньому релізу (змінено лише frontend). `current` → `ac4d967`, `previous` → `20896dd`; restart лише `node-control-api` |
+| Після деплою | API active (`nodecontrol`, лише `127.0.0.1:3100`); live/ready 200 локально й HTTPS; HTTPS `/`, `/users`, `/account` 200; бандл = `current/frontend/dist`, містить пагінацію. Анонімні `GET /api/users` (з курсором), `POST /api/users`, `PATCH /api/users/:id`, `POST /api/auth/change-password`, `/api/auth/me` → 401; чужий Origin → 403 (1 warn — саме ця перевірка); `pm2ControlEnabled:true` без змін; `nginx -t` OK. Новий процес — 0 error |
+| Agent | Після restart Agent короткочасно отримав `unavailable` і відновився (heartbeat accepted, control і logs poll ok); heartbeat 8 с при повторній перевірці |
+| Знайдено | **Старий процес (`20896dd`) не завершився за 10 с** (`Shutdown failed or timed out`, exit 1, systemd `Failed with result 'exit-code'`); новий стартував штатно. Причина: на момент зупинки був відкритий long-poll Agent `/api/agent/logs/poll` (утримання до 25 с). `LogHub.close()` викликається в `onClose`, а Fastify викликає `onClose` лише після завершення активних запитів, тож shutdown чекає на long-poll. Дефект існує з Task 010; із 9 рестартів у журналі з 2026-10-13 проявився лише цей. Виправлення (звільняти long-poll/waiters у `preClose`) — окремою задачею; на роботу нового релізу не впливає |
+| Production-дані | Деплой і перевірки не змінювали користувачів. Між деплоями Task 011 і 011.1 через UI створено одного користувача (operator, 17:20 UTC, audit `user.created`) — дія користувачів системи, не цієї задачі. Зараз 2 користувачі, 1 активний admin |
+| Rollback | не застосовувався. `server-release.js rollback` → `20896dd` + restart лише API; БД, hashes і відкликані сесії не відкочуються |
+
 ## Task 011 — користувачі, ролі та зміна власного пароля (2026-10-14)
 
 Стан на початок: `main` = `f0b320c`; у робочому дереві — незакомічений запис повторного review Codex (Task 010.1), збережено й закомічено разом із задачею. Рішення — ADR-019.
