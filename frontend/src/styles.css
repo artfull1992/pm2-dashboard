@@ -258,8 +258,50 @@ h1, h2, p { margin: 0; }
 .tab--active { color: var(--primary); border-color: var(--border); background: var(--surface); font-weight: 600; }
 .settings-card { display: grid; gap: 14px; }
 .settings-form { display: grid; gap: 10px; max-width: 640px; }
-.settings-group { border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-.settings-group > legend, .settings-group > summary { font-weight: 600; padding: 0 4px; }
-details.settings-group > summary { grid-column: 1 / -1; cursor: pointer; }
+/* Alert rules (Task 013.2): one card, groups divided by a rule; every row is "title + explanation | controls" on the
+   same grid; a pair of controls always shares one line and both inputs have one height and width. */
+.rules-form { max-width: 1080px; gap: 0; padding-bottom: 0; }
+.rules-form__head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding-bottom: 6px; }
+.rules-form__limits { min-height: 36px; padding: 4px 12px; font-size: .9rem; }
+.rules-group { border: 0; border-top: 1px solid var(--border); margin: 0; padding: 14px 0 6px; min-width: 0; }
+.rules-group > legend, .rules-group > summary { font-weight: 700; font-size: 1rem; padding: 0; }
+.rules-group > legend { float: left; width: 100%; margin-bottom: 4px; }
+.rules-group > legend + * { clear: both; }
+.rules-group--more > summary { cursor: pointer; min-height: 32px; display: list-item; }
+.rules-group--more[open] > summary { margin-bottom: 4px; }
+.rules-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 440px); gap: 8px 40px; align-items: start; padding: 10px 0; }
+.rules-row__title { font-weight: 600; }
+.rules-row__text .hint { margin-top: 2px; }
+.rules-row__controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.rules-row__wide { grid-column: 1 / -1; }
+.rules-control { display: grid; gap: 4px; min-width: 0; }
+.rules-control__label { font-size: .875rem; font-weight: 600; color: var(--text-muted); line-height: 1.3; }
+.rules-control__note { font-size: .85rem; line-height: 1.35; }
+.affix { display: flex; align-items: center; height: 44px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); min-width: 0; }
+.affix:focus-within { outline: 3px solid var(--focus); outline-offset: 1px; }
+.affix--invalid { border-color: var(--danger); }
+.affix input { flex: 1 1 auto; min-width: 0; height: 100%; border: 0; background: transparent; color: var(--text); font: inherit; padding: 0 4px 0 12px; font-variant-numeric: tabular-nums; }
+.affix input:focus-visible { outline: none; }
+.affix input:disabled { color: var(--text-muted); }
+.affix__unit { flex: none; padding: 0 12px 0 4px; color: var(--text-muted); font-size: .9rem; white-space: nowrap; }
+.switch { display: inline-flex; gap: 10px; align-items: center; min-height: 44px; cursor: pointer; font-weight: 500; }
+.switch--boxed { height: 44px; }
+.switch input { appearance: none; flex: none; width: 40px; height: 24px; margin: 0; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; transition: background .15s; }
+.switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgb(0 0 0 / 30%); transition: left .15s; }
+.switch input:checked { background: var(--primary); }
+.switch input:checked::after { left: 19px; }
+.switch input:disabled { opacity: .6; cursor: not-allowed; }
+.rules-actions { border-top: 1px solid var(--border); margin: 0 -18px; padding: 12px 18px 14px; background: var(--surface); border-radius: 0 0 var(--radius) var(--radius); display: grid; gap: 10px; }
+.rules-actions__bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+.rules-actions__dirty { display: inline-flex; align-items: center; gap: 8px; font-size: .9rem; font-weight: 600; }
+.rules-actions__dirty::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--warning); }
+.rules-actions__message { display: grid; gap: 8px; justify-items: start; }
+.rules-form .button--secondary { width: auto; }
+@media (max-width: 760px) {
+  .rules-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .rules-row__controls { gap: 12px; }
+  .rules-actions .button { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) { .switch input, .switch input::after { transition: none; } }
 .settings-toggle label { display: flex; gap: 8px; align-items: center; font-weight: 500; }
 .settings-toggle input[type="checkbox"] { width: auto; min-height: 0; margin: 0; }

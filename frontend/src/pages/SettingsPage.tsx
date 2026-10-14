@@ -14,23 +14,40 @@ import { formatDate } from './ServersPage';
 // The webhook is write-only: typed into a password field, sent once, cleared; it is never received back.
 
 type Field = RuleField | TimingField | AdvancedField;
-const LABELS: Record<Field, { label: string; unit: string; hint?: string }> = {
-  cpuOpenPercent: { label: 'CPU процесу — поріг проблеми', unit: '%', hint: 'CPU за PM2; на кількох ядрах може перевищувати 100 %.' },
-  cpuClosePercent: { label: 'CPU процесу — поріг відновлення', unit: '%', hint: 'Нижче порогу проблеми.' },
-  memoryOpenPercent: { label: 'Пам’ять ОС — поріг проблеми', unit: '%', hint: 'Зайнято = всього − вільно, за знімком ОС.' },
-  memoryClosePercent: { label: 'Пам’ять ОС — поріг відновлення', unit: '%', hint: 'Нижче порогу проблеми.' },
-  confirmSamples: { label: 'Підтверджень проблеми (CPU, пам’ять)', unit: 'спостережень' },
-  recoverSamples: { label: 'Підтверджень відновлення (CPU, пам’ять)', unit: 'спостережень' },
-  statusConfirmSamples: { label: 'Підтверджень статусу процесу й даних PM2', unit: 'вибірок' },
-  restartsThreshold: { label: 'Рестартів для сповіщення', unit: 'рестартів', hint: 'Нові рестарти між вибірками, не накопичений лічильник.' },
-  restartsWindowMinutes: { label: 'Вікно для рестартів', unit: 'хв' },
-  intervalSeconds: { label: 'Інтервал перевірки', unit: 'с' },
-  cooldownMinutes: { label: 'Cooldown після відновлення', unit: 'хв', hint: 'Повторна проблема в цей час записується без сповіщення.' },
-  reminderMinutes: { label: 'Інтервал нагадувань', unit: 'хв' },
-  httpTimeoutMs: { label: 'Тайм-аут запиту до Slack', unit: 'мс' },
-  maxAttempts: { label: 'Максимум спроб доставки', unit: 'спроб' },
-  queueMax: { label: 'Ліміт черги', unit: 'повідомлень', hint: 'Зменшення нічого не видаляє: нові понад ліміт відкидаються.' },
+// `label` is the full accessible name of the input; `short` is the visible label next to it (the row title gives context).
+const LABELS: Record<Field, { label: string; short: string; unit: string }> = {
+  cpuOpenPercent: { label: 'CPU процесу — поріг проблеми', short: 'Проблема', unit: '%' },
+  cpuClosePercent: { label: 'CPU процесу — поріг відновлення', short: 'Відновлення', unit: '%' },
+  memoryOpenPercent: { label: 'Пам’ять ОС — поріг проблеми', short: 'Проблема', unit: '%' },
+  memoryClosePercent: { label: 'Пам’ять ОС — поріг відновлення', short: 'Відновлення', unit: '%' },
+  confirmSamples: { label: 'Підтверджень проблеми (CPU, пам’ять)', short: 'Проблема', unit: 'поспіль' },
+  recoverSamples: { label: 'Підтверджень відновлення (CPU, пам’ять)', short: 'Відновлення', unit: 'поспіль' },
+  statusConfirmSamples: { label: 'Підтверджень статусу процесу й даних PM2', short: 'Підтверджень', unit: 'поспіль' },
+  restartsThreshold: { label: 'Рестартів для сповіщення', short: 'Кількість', unit: 'рестартів' },
+  restartsWindowMinutes: { label: 'Вікно для рестартів', short: 'За період', unit: 'хв' },
+  intervalSeconds: { label: 'Інтервал перевірки', short: 'Інтервал', unit: 'с' },
+  cooldownMinutes: { label: 'Пауза (cooldown) після відновлення', short: 'Пауза', unit: 'хв' },
+  reminderMinutes: { label: 'Інтервал нагадувань', short: 'Інтервал', unit: 'хв' },
+  httpTimeoutMs: { label: 'Тайм-аут запиту до Slack', short: 'Тайм-аут', unit: 'мс' },
+  maxAttempts: { label: 'Максимум спроб доставки', short: 'Спроб', unit: 'разів' },
+  queueMax: { label: 'Ліміт черги', short: 'Ліміт', unit: 'повідомл.' },
 };
+// One row = a title with a short explanation on the left and one control or a pair of equal controls on the right.
+type Row = { title: string; text: string; fields: readonly [Field] | readonly [Field, Field] };
+const LOAD_ROWS: Row[] = [
+  { title: 'CPU процесу', text: 'CPU за PM2; на кількох ядрах може перевищувати 100 %. Відновлення — нижче проблеми.', fields: ['cpuOpenPercent', 'cpuClosePercent'] },
+  { title: 'Пам’ять ОС', text: 'Зайнята пам’ять сервера (всього − вільно), не пам’ять застосунку. Відновлення — нижче проблеми.', fields: ['memoryOpenPercent', 'memoryClosePercent'] },
+  { title: 'Підтвердження', text: 'Скільки спостережень CPU й пам’яті поспіль відкривають і закривають проблему.', fields: ['confirmSamples', 'recoverSamples'] },
+];
+const PROCESS_ROWS: Row[] = [
+  { title: 'Статус процесу', text: 'Скільки вибірок поспіль підтверджують зміну статусу або відсутність даних PM2.', fields: ['statusConfirmSamples'] },
+  { title: 'Рестарти', text: 'Нові рестарти між вибірками за період, не накопичений лічильник PM2.', fields: ['restartsThreshold', 'restartsWindowMinutes'] },
+];
+const ADVANCED_ROWS: Row[] = [
+  { title: 'Тайм-аут запиту', text: 'Скільки чекати відповіді Slack на одну спробу.', fields: ['httpTimeoutMs'] },
+  { title: 'Спроби доставки', text: 'Максимум спроб для одного повідомлення.', fields: ['maxAttempts'] },
+  { title: 'Ліміт черги', text: 'Зменшення нічого не видаляє: нові понад ліміт відкидаються.', fields: ['queueMax'] },
+];
 const KEY_ERRORS = { key_missing: 'на сервері не задано ключ шифрування', key_version_mismatch: 'ключ шифрування має іншу версію', decrypt_failed: 'збережений секрет не вдалося розшифрувати' } as const;
 
 function errorText(error: unknown, what: 'save' | 'webhook' | 'test' | 'load'): string {
@@ -205,18 +222,32 @@ function RulesPanel({ data, onData, onReload, onDirty }: { data: SettingsView; o
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved) || base !== data.revision;
   useEffect(() => { onDirty(dirty); }, [dirty, onDirty]);
 
-  const field = (k: Field) => {
+  const [showLimits, setShowLimits] = useState(false);
+  // Range/default help is shown on demand (a button, not hover); an error always replaces it, right under its input.
+  const control = (k: Field) => {
     const id = `${idPrefix}-${k}`;
     const meta = LABELS[k];
+    const r = data.ranges[k];
+    const note = errors[k] ?? (showLimits ? `${String(r.min)}–${String(r.max)}, типово ${String(r.default)}` : null);
     return (
-      <div className="field" key={k}>
-        <label htmlFor={id}>{meta.label} <span className="hint">({meta.unit})</span></label>
-        <input id={id} inputMode="numeric" value={draft[k]} disabled={pending} onChange={(e) => { setDraft({ ...draft, [k]: e.target.value }); }}
-          aria-invalid={errors[k] ? true : undefined} aria-describedby={`${id}-hint`} />
-        <p id={`${id}-hint`} className={errors[k] ? 'field__error' : 'hint'}>{errors[k] ?? `${meta.hint ? `${meta.hint} ` : ''}Межі ${String(data.ranges[k].min)}–${String(data.ranges[k].max)}, типово ${String(data.ranges[k].default)}.`}</p>
+      <div className="rules-control" key={k}>
+        <label htmlFor={id} className="rules-control__label">{meta.short}</label>
+        <div className={`affix${errors[k] ? ' affix--invalid' : ''}`}>
+          <input id={id} inputMode="numeric" aria-label={`${meta.label}, ${meta.unit}`} value={draft[k]} disabled={pending}
+            onChange={(e) => { setDraft({ ...draft, [k]: e.target.value }); }}
+            aria-invalid={errors[k] ? true : undefined} aria-describedby={note ? `${id}-note` : undefined} />
+          <span className="affix__unit" aria-hidden="true">{meta.unit}</span>
+        </div>
+        {note ? <p id={`${id}-note`} className={errors[k] ? 'field__error rules-control__note' : 'hint rules-control__note'}>{note}</p> : null}
       </div>
     );
   };
+  const row = (r: Row) => (
+    <div className="rules-row" key={r.title}>
+      <div className="rules-row__text"><p className="rules-row__title">{r.title}</p><p className="hint">{r.text}</p></div>
+      <div className="rules-row__controls">{r.fields.map(control)}</div>
+    </div>
+  );
 
   const onSubmit = async (e: SyntheticEvent) => {
     e.preventDefault();
@@ -241,34 +272,57 @@ function RulesPanel({ data, onData, onReload, onDirty }: { data: SettingsView; o
   };
 
   return (
-    <form className="card settings-card" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="rules-title">
-      <h2 id="rules-title" className="card__title">Правила сповіщень</h2>
-      {message ? <div className={message.kind === 'ok' ? 'notice' : 'form-error'} role={message.kind === 'ok' ? 'status' : 'alert'}>
-        <p>{message.text}</p>
-        {message.kind === 'conflict' ? <button type="button" className="button" onClick={() => { onReload(); setMessage(null); }}>Перечитати стан</button> : null}
-      </div> : null}
-      {dirty ? <p className="notice notice--warning">Є незбережені зміни.</p> : null}
-      <div className="field settings-toggle">
-        <label><input type="checkbox" checked={draft.engineEnabled} disabled={pending} onChange={(e) => { setDraft({ ...draft, engineEnabled: e.target.checked }); }} /> Рушій сповіщень (перевірка проблем)</label>
-        <p className="hint">Вимкнений рушій нічого не відстежує й не надсилає.</p>
+    <form className="card rules-form" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="rules-title">
+      <div className="rules-form__head">
+        <h2 id="rules-title" className="card__title">Правила сповіщень</h2>
+        <button type="button" className="button button--secondary rules-form__limits" aria-pressed={showLimits} onClick={() => { setShowLimits(!showLimits); }}>
+          {showLimits ? 'Сховати межі' : 'Показати межі й типові'}
+        </button>
       </div>
-      <fieldset className="settings-group"><legend>Навантаження</legend>{(['cpuOpenPercent', 'cpuClosePercent', 'memoryOpenPercent', 'memoryClosePercent', 'confirmSamples', 'recoverSamples'] as const).map(field)}</fieldset>
-      <fieldset className="settings-group"><legend>Процеси</legend>{(['statusConfirmSamples', 'restartsThreshold', 'restartsWindowMinutes'] as const).map(field)}</fieldset>
-      <fieldset className="settings-group">
-        <legend>Цикл і повтори</legend>
-        {field('intervalSeconds')}{field('cooldownMinutes')}
-        <div className="field settings-toggle">
-          <label><input type="checkbox" checked={draft.reminderEnabled} disabled={pending} onChange={(e) => { setDraft({ ...draft, reminderEnabled: e.target.checked }); }} /> Нагадування про незакриті проблеми</label>
+      <fieldset className="rules-group">
+        <legend>Загальний стан</legend>
+        <div className="rules-row">
+          <div className="rules-row__text"><p className="rules-row__title">Моніторинг проблем</p><p className="hint">Вимкнений рушій нічого не відстежує й не надсилає.</p></div>
+          <div className="rules-row__controls">
+            <label className="switch rules-row__wide"><input type="checkbox" role="switch" checked={draft.engineEnabled} disabled={pending} onChange={(e) => { setDraft({ ...draft, engineEnabled: e.target.checked }); }} />
+              <span>Рушій сповіщень (перевірка проблем)</span></label>
+          </div>
         </div>
-        {field('reminderMinutes')}
       </fieldset>
-      <details className="settings-group">
+      <fieldset className="rules-group"><legend>Навантаження</legend>{LOAD_ROWS.map(row)}</fieldset>
+      <fieldset className="rules-group"><legend>Процеси</legend>{PROCESS_ROWS.map(row)}</fieldset>
+      <fieldset className="rules-group">
+        <legend>Цикл і повтори</legend>
+        {row({ title: 'Інтервал перевірки', text: 'Як часто рушій перевіряє стан процесів і серверів.', fields: ['intervalSeconds'] })}
+        {row({ title: 'Пауза після відновлення', text: 'Повторна проблема в цей час записується без сповіщення.', fields: ['cooldownMinutes'] })}
+        <div className="rules-row">
+          <div className="rules-row__text"><p className="rules-row__title">Нагадування</p><p className="hint">Повторне сповіщення, поки проблема не закрита. Інтервал зберігається й тоді, коли нагадування вимкнені.</p></div>
+          <div className="rules-row__controls">
+            <div className="rules-control">
+              <span className="rules-control__label" aria-hidden="true">Стан</span>
+              <label className="switch switch--boxed"><input type="checkbox" role="switch" aria-label="Нагадування про незакриті проблеми" checked={draft.reminderEnabled} disabled={pending} onChange={(e) => { setDraft({ ...draft, reminderEnabled: e.target.checked }); }} />
+                <span aria-hidden="true">Надсилати</span></label>
+            </div>
+            {control('reminderMinutes')}
+          </div>
+        </div>
+      </fieldset>
+      <details className="rules-group rules-group--more">
         <summary>Додаткові параметри</summary>
-        {ADVANCED_FIELDS.map(field)}
+        {ADVANCED_ROWS.map(row)}
       </details>
-      <div className="button-row">
-        <button type="submit" className="button button--primary" disabled={pending || !dirty}>{pending ? 'Збереження…' : 'Зберегти'}</button>
-        <button type="button" className="button button--secondary" disabled={pending || !dirty} onClick={() => { setDraft(saved); setBase(data.revision); setErrors({}); setMessage(null); }}>Скасувати зміни</button>
+      <div className="rules-actions">
+        {message ? <div className={message.kind === 'ok' ? 'notice rules-actions__message' : 'form-error rules-actions__message'} role={message.kind === 'ok' ? 'status' : 'alert'}>
+          <p>{message.text}</p>
+          {message.kind === 'conflict' ? <button type="button" className="button" onClick={() => { onReload(); setMessage(null); }}>Перечитати стан</button> : null}
+        </div> : null}
+        <div className="rules-actions__bar">
+          {dirty ? <p className="rules-actions__dirty">Є незбережені зміни.</p> : <p className="hint">Змін немає.</p>}
+          <div className="button-row">
+            <button type="button" className="button button--secondary" disabled={pending || !dirty} onClick={() => { setDraft(saved); setBase(data.revision); setErrors({}); setMessage(null); }}>Скасувати зміни</button>
+            <button type="submit" className="button button--primary" disabled={pending || !dirty}>{pending ? 'Збереження…' : 'Зберегти'}</button>
+          </div>
+        </div>
       </div>
     </form>
   );

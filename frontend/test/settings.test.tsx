@@ -159,6 +159,39 @@ describe('rules tab', () => {
     expect(JSON.parse(patch[0]?.body ?? '{}')).toMatchObject({ revision: 1, engineEnabled: false, rules: { cpuOpenPercent: 250, cpuClosePercent: 180 }, timing: { intervalSeconds: 30, reminderEnabled: false }, advanced: { queueMax: 100 } });
   });
 
+  it('layout (Task 013.2): short visible labels keep full names, limits on demand, error replaces help, switches send the same payload', async () => {
+    const calls = backend('admin', (req) => (req.method === 'PATCH' ? json(200, view({ revision: 2, engineEnabled: true, timing: { ...view().timing, reminderEnabled: true } })) : undefined));
+    renderApp('/settings/rules');
+    const u = userEvent.setup();
+    const close = await screen.findByLabelText<HTMLInputElement>('CPU процесу — поріг відновлення, %');
+    expect(screen.getAllByText('Відновлення', { selector: 'label' })).toHaveLength(3); // short visible labels
+    expect(close.getAttribute('aria-describedby')).toBeNull();
+    expect(screen.queryByText('0–10000, типово 70')).toBeNull();
+    const limits = screen.getByRole('button', { name: 'Показати межі й типові' });
+    await u.click(limits);
+    expect(screen.getByRole('button', { name: 'Сховати межі' }).getAttribute('aria-pressed')).toBe('true');
+    const help = screen.getByText('0–10000, типово 70');
+    expect(close.getAttribute('aria-describedby')).toBe(help.id);
+    await u.clear(close);
+    await u.type(close, '95');
+    await u.click(screen.getByRole('button', { name: 'Зберегти' }));
+    expect(screen.queryByText('0–10000, типово 70')).toBeNull();
+    expect(document.getElementById(close.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Має бути нижче порогу проблеми.');
+    await u.click(screen.getByRole('button', { name: 'Скасувати зміни' })); // restores the saved values and clears the errors
+    expect(close.value).toBe('70');
+    expect(screen.queryByText('Має бути нижче порогу проблеми.')).toBeNull();
+    expect(screen.getByText('Змін немає.')).toBeTruthy();
+    await u.click(screen.getByRole('switch', { name: 'Рушій сповіщень (перевірка проблем)' }));
+    await u.click(screen.getByRole('switch', { name: 'Нагадування про незакриті проблеми' }));
+    await u.click(screen.getByRole('button', { name: 'Зберегти' }));
+    expect(await screen.findByText(/Збережено/)).toBeTruthy();
+    const patch = sentTo(calls, 'PATCH', '/api/settings/alerts');
+    expect(JSON.parse(patch[0]?.body ?? '{}')).toEqual({
+      revision: 1, engineEnabled: true, rules: view().rules,
+      timing: { intervalSeconds: 30, cooldownMinutes: 15, reminderMinutes: 60, reminderEnabled: true }, advanced: view().advanced,
+    });
+  });
+
   it('409 conflict: explained, edits not applied, "Перечитати стан" reloads', async () => {
     const calls = backend('admin', (req) => (req.method === 'PATCH' ? json(409, {}) : undefined));
     renderApp('/settings/rules');
