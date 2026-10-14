@@ -179,6 +179,17 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 Обмеження: операції `logTargets` і `list` (керування) не мають окремого ліміту на завислий PM2 `list()`; Agent викликає їх послідовно, по одній на цикл. Це поза scope задачі. Фронтенд не змінювався: 429 і 503 уже показуються без автоповтору.
 
+**Деплой (2026-10-14).** Deployed code revision: **`2fe4d953f69bcf901bfaa73cc3d715a28264d446`** (`fix(logs): enforce read concurrency and result waiter limits`) — API/UI, Agent і broker. Цей запис — пізніший docs-commit, на сервери не деплоївся.
+
+| Крок | Результат |
+|---|---|
+| Центральний (`control-server`) | Baseline current `401667e` (ціль rollback), previous `3ff4653`; API active, ready 200; Nginx/PostgreSQL active, failed 0. Артефакт API 46 файлів, SHA-256 `35e0ce51…261e9` OK, manifest `2fe4d95`; міграції pending=0; unit і `api.env` без змін. `current` → `2fe4d95`, `previous` → `401667e`; restart лише `node-control-api`. Agent-реліз центрального сервера активовано, unit вимкнений — не запускався |
+| Після деплою (центральний) | API active (`nodecontrol`, лише `127.0.0.1:3100`); `/health/live`, `/health/ready` 200 локально й HTTPS; HTTPS `/` 200, бандл = `current/frontend/dist`; анонімні `…/log-targets`, `GET /api/log-requests/:id`, `POST …/log-requests` (з Origin), `/api/auth/me` → 401; `POST /api/agent/logs/poll` без токена → 401; журнал з restart: 0 error/fatal, `pm2ControlEnabled:true` без змін; `nginx -t` OK (конфіг не змінювався) |
+| Нода `app-server` | Baseline Agent current `401667e` (ціль rollback), previous `b4ada6d`; allowlist 5 targets, 5 з `logs: true`. Артефакт Agent SHA-256 `01d7e5c2…b32c9` OK; `prepare --no-install`, 4 unit-файли без змін; `current` → `2fe4d95`, `previous` → `401667e`; restart broker, потім Agent |
+| Після деплою (нода) | broker active (`logDirs:1`); Agent 0.4.0 active; heartbeat/inventory accepted; control poll ok (broker ok, targets 5); logs poll ok (broker ok, targets 5); 0 warn/error у журналах Agent і broker; exporter timer active |
+| Без змін | SHA-256 allowlist, broker env і `agent.env` збігаються з baseline; God Daemon 3807, PID і час старту 5 PM2-процесів, статуси online і restarts 0 — без змін; `pm2` не запускався; listeners ноди без змін. Production-текст логів не читався |
+| Rollback | не застосовувався. API: `server-release.js rollback --base /opt/goit-node-control` → `401667e` + restart API. Agent/broker: `rollback --base /opt/goit-node-control-agent` → `401667e` + restart broker і Agent (allowlist з `logs` сумісний із `401667e`; журнал дедуплікації broker не видаляти, БД не відкочувати) |
+
 ## Task 010 — обмежений авторизований перегляд логів сервісів (2026-10-14)
 
 Стан на початок: `main` = `7eece06`; у робочому дереві — незакомічений запис незалежного review Codex (нижче, «Незалежний review Codex — об'єднана таблиця сервісів»). Його збережено й закомічено разом із задачею. Застарілі твердження ARCHITECTURE, на які вказав review, актуалізовано.
