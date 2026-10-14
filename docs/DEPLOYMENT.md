@@ -39,7 +39,7 @@ Central API та Agents — Node.js 22, systemd. PM2 керує лише зас�
 | Релізи | `/opt/goit-node-control/releases/<git-sha>` — `root:root`, без запису для group/other |
 | Поточний / попередній | symlinks `/opt/goit-node-control/current`, `/opt/goit-node-control/previous` |
 | Конфігурація | `/etc/goit-node-control/api.env` — `600 nodecontrol:nodecontrol`; каталог `750 root:nodecontrol`; єдине джерело — `ENV_FILE` у unit |
-| Listener | `127.0.0.1:3100` (лише loopback; unit додатково `IPAddressAllow=localhost`) |
+| Listener | `127.0.0.1:3100` (лише loopback, `API_HOST` валідується). Egress-фільтра `IPAddressDeny` немає з Task 013.2: потрібен вихідний HTTPS до Slack; призначення обмежує код (лише `hooks.slack.com/services/…`) |
 | Логи | journal, `SyslogIdentifier=node-control-api` (операційні логи, **не** Audit Log) |
 
 Історичний `/etc/pm2-dashboard` (Task 001/002) не використовується сервісом і не змінюється; з нього лише один раз копіюються `DB_*` у новий конфіг.

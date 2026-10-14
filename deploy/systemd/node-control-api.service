@@ -54,9 +54,9 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-# Network: loopback only (API listener on 127.0.0.1, PostgreSQL on 127.0.0.1:5432).
-IPAddressDeny=any
-IPAddressAllow=localhost
+# Network: the listener stays on 127.0.0.1 (API_HOST, loopback-validated) and PostgreSQL is 127.0.0.1:5432.
+# Outbound HTTPS is required for Slack alert delivery (ADR-021/022), so there is no IPAddressDeny egress filter:
+# destinations are restricted in code (only https://hooks.slack.com/services/…, no redirects, no user-supplied hosts).
 
 [Install]
 WantedBy=multi-user.target
