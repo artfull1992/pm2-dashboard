@@ -239,6 +239,24 @@ Rollback підготовлено до production `up`: код — `server-relea
 - Один тест у польоті — на процес API (single instance).
 - Доставка лишається at-least-once.
 
+**Деплой (2026-10-14, ~21:43 UTC, лише центральний сервер).** Deployed code revision: **`325cc91d5ee7abb125e0cbc955e330e2ddd16cfc`** (`feat(settings): add admin-managed Slack integration and alert rules`). Цей запис — пізніший docs-commit, на сервер не деплоївся. Agent/broker не передеплоювались.
+
+| Крок | Результат |
+|---|---|
+| Baseline | `control-server`; current `e8f61c5` (ціль rollback), previous `1c6c58d`; API active, ready 200; Nginx/PostgreSQL active, failed 0; `api.env` `nodecontrol:nodecontrol 600`, ключів `ALERTS_*` не було |
+| Артефакт | 62 файли, SHA-256 `6430ca14…d56e48ee` OK, manifest `325cc91`; unit без змін |
+| Backup | `api.env.bak-20261014T214333Z` (600); `node_control_db-20261014T214333Z-pre-325cc91….dump` (600, `pg_restore --list` OK) — лише `node_control_db` |
+| Міграція | applied=7, pending=1 (`1791900000007_alert-settings`) → `up` → applied=8, pending=0 |
+| Ключ шифрування | Згенеровано на сервері (32 випадкові байти, base64), **значення ніде не виводилось**; дописано в `api.env` (`ALERTS_SECRET_KEY`, `ALERTS_SECRET_KEY_VERSION=1`, `ALERTS_PUBLIC_URL=https://control.example.com`), права `600 nodecontrol`. Окрема копія ключа: `/root/node-control-keys/alerts-secret-key-20261014T214333Z.env` (каталог 700, файл 600). Оператору рекомендовано зберегти ключ і поза сервером (менеджер секретів): backup БД без ключа не відновлює інтеграцію |
+| Активація | `current` → `325cc91`, `previous` → `e8f61c5`; restart лише `node-control-api`; журнал: `alertsSecretKey:true`, `alertsPublicUrl:true`; «Alert settings initialised from defaults» (рядок створено один раз); legacy-попереджень немає |
+| Чистий shutdown | Обидва рестарти (`e8f61c5` → новий і контрольний рестарт нового коду з утримуваним long-poll Agent) — `Shutdown complete`, ~0,1 с, без `Failed` |
+| Після деплою | API active (`nodecontrol`, лише `127.0.0.1:3100`); live/ready 200 локально й HTTPS; HTTPS `/settings/integrations` 200; бандл = `current/frontend/dist`, містить «Налаштування». Анонімні `GET/PATCH /api/settings/alerts`, `PUT /api/settings/integrations/slack`, `POST …/slack/test`, `/api/alerts/status` → 401; чужий Origin → 403 (1 warn — саме ця перевірка). Журнал: 0 error/fatal; ні ключа, ні `hooks.slack` у журналі; `nginx -t` OK |
+| Стан сповіщень | `alert_settings`: revision 1, **рушій вимкнено, доставку вимкнено**, типові пороги; Slack: generation 0, **не налаштовано**; інцидентів/outbox/умов — 0. Тестових повідомлень не надсилалось |
+| Agent / PM2 | heartbeat 0 с, control 9 с — звіти надходять; керуючих дій не було; користувачі без змін (2, 1 активний admin) |
+| Rollback | не застосовувався. Спершу вимкнути доставку в UI (якщо ввімкнена), далі `server-release.js rollback` → `e8f61c5` + restart лише API. Старий реліз читає лише `ALERTS_*` з env (`ALERTS_ENABLED`/`DELIVERY`/`WEBHOOK` відсутні) — рушій і доставка там вимкнені, старий webhook не з'являється. Ключ і нові таблиці лишаються; secrets/outbox не видаляються |
+
+Подальші кроки — admin у UI: «Налаштування» → «Інтеграції» → зберегти webhook приватного каналу → «Надіслати тестове повідомлення» → за успіху увімкнути доставку; «Правила сповіщень» → увімкнути рушій.
+
 ## Task 013 — Alerts Engine, Slack і виправлення graceful shutdown (2026-10-14)
 
 Стан на початок: `main` = `fe25d5e`; у робочому дереві — незакомічений запис review Codex (угорі документа), збережено й закомічено разом із задачею. Рішення — ADR-021; міграція `1791900000006_alerts`.
