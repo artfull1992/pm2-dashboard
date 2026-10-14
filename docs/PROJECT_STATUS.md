@@ -181,6 +181,19 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 Не покрито автотестом: детермінована підміна inode між `lstat` і `open` (гонка; код її відсікає порівнянням inode/dev відкритого дескриптора).
 
+**Деплой (2026-10-14, ~12:2x–12:4x UTC).** Deployed code revision: **`401667e653ed80f395a17a2ffa1c12657b9c9079`** (`feat(logs): add bounded authorized service log viewing`) — API/UI, Agent і broker (один артефакт). Цей запис — пізніший docs-commit, на сервери не деплоївся. Production-читання логів **вимкнене**: жодного `logs: true` в allowlist (окремого погодження сервісів у сесії не було).
+
+| Крок | Результат |
+|---|---|
+| Центральний (`control-server`) | Baseline current `3ff4653`, previous `b4ada6d`. Артефакт API 46 файлів, SHA-256 `9a656028…7d692` OK; міграції pending=0; unit без змін. `current` → `401667e`, `previous` → `3ff4653`; restart лише `node-control-api`; `pm2ControlEnabled:true` (без змін). Agent-реліз центрального сервера активовано, unit вимкнений — не запускався |
+| Після деплою (центральний) | `/health/live`, `/health/ready` 200 (локально й HTTPS); HTTPS `/` 200; публічний бандл = `current/frontend/dist`, містить «Переглянути логи»; анонімні `GET …/log-targets`, `GET /api/log-requests/:id`, `POST …/log-requests` (з Origin) → 401, без Origin → 403; `POST /api/agent/logs/poll` без токена → 401; журнал API: 0 error/fatal |
+| Нода `app-server` | Baseline Agent `b4ada6d`; backup `agent.env` (600), broker env і allowlist (`*.bak-20261014T123303Z`); allowlist без `logs`. Артефакт Agent SHA-256 `7a95410a…be9b6` OK; `prepare --no-install`, 4 unit-файли без змін; `current` → `401667e`, `previous` → `b4ada6d`; restart broker, потім Agent |
+| Після деплою (нода) | broker active, `broker started` з `logDirs:1`; Agent active, `version 0.4.0`; heartbeat/inventory accepted; control poll ok, broker ok, targets 5; logs poll ok, broker ok, **targets 0**; 0 warn/error у журналах Agent і broker; exporter timer active |
+| PM2 без змін | God Daemon 3807; PID і час старту 5 процесів (6 жовтня) збігаються з baseline; статуси online, restarts 0 — без змін; `pm2` не запускався; listeners ноди без змін |
+| Rollback | не застосовувався. API: `server-release.js rollback --base /opt/goit-node-control` → `3ff4653` + restart API. Agent/broker: якщо в allowlist уже з'явилось `logs` — спершу повернути allowlist із backup, потім `rollback --base /opt/goit-node-control-agent` → `b4ada6d` + restart broker і Agent |
+
+Увімкнення читання (оператор, після погодження конкретних сервісів) — розділ «Перегляд логів» у [DEPLOYMENT](DEPLOYMENT.md): backup allowlist → `"logs": true` для погоджених `targetKey` → `install -m 644 -o root -g root`; restart не потрібен. Ручна перевірка UI під сесією — за оператором; production-текст логів у звіти не копіювати.
+
 ## Frontend: одна таблиця сервісів із діями (2026-10-13)
 
 Зміни підготував Codex за запитом користувача; я переглянув їх, виправив недоліки й перевірив. API, Agent, broker, міграції й production-конфігурація не змінювались.
