@@ -184,6 +184,40 @@ Rollback підготовлено до production `up`: код — `server-relea
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
 
+## Task 013.2 — Slack-тест завершувався тайм-аутом: egress API-юніта (2026-10-15)
+
+**Симптом.** Після налаштування webhook в UI тестове повідомлення не надходило в Slack. Audit показав обидва тести (22:09 і 22:10 UTC) як `integration.slack_test_result` з `unknown/timeout` — рівно 5 с, без відповіді.
+
+**Діагностика** (лише метадані, без значення webhook):
+- DNS `hooks.slack.com` резолвиться; TLS-з'єднання з сервера встановлюється за ~0,06 с (`curl -4` до кореня хоста, 302);
+- `fetch` Node.js від користувача `nodecontrol` поза systemd — відповідь за 0,3 с;
+- у юніті `node-control-api` (з Task 003) стояло `IPAddressDeny=any` + `IPAddressAllow=localhost`: systemd тихо відкидав вихідні пакети API-процесу до будь-якої не-loopback адреси.
+
+Автотести цього не виявили: Slack у них мокається, а E2E-backend запускається не під systemd.
+
+**Рішення користувача:** відкрити вихідні з'єднання. Egress-фільтр знято з `deploy/systemd/node-control-api.service`. Вхідний доступ не змінився: listener лише `127.0.0.1:3100`. Призначення обмежує код (лише `https://hooks.slack.com/services/…`, `redirect: 'error'`). ADR-022 і DEPLOYMENT оновлено.
+
+**Деплой (~22:14 UTC).** Code revision **`9e7f71bdf9317a152e972fe85c09e1f773b85f11`** (`fix(alerts): allow outbound HTTPS from the API unit for Slack delivery`).
+
+| Крок | Результат |
+|---|---|
+| Backup юніта | `/root/node-control-backups/node-control-api.service.bak-20261014T221443Z` |
+| Юніт | `systemd-analyze verify` OK, `daemon-reload` |
+| Реліз | `current` → `9e7f71b`, `previous` → `325cc91` (ціль rollback); міграцій немає; restart лише API, старий процес завершився штатно |
+| Стан юніта | `IPAddressDeny`/`IPAddressAllow` порожні; `RestrictAddressFamilies` і `User=nodecontrol` без змін |
+| Після | ready 200 локально й HTTPS; 0 error; `hooks.slack` у журналі немає |
+| Стан сповіщень | доставку admin увімкнув, рушій вимкнений; outbox порожній; інцидентів немає; останній тест — ще старий `unknown/timeout`, admin має повторити тест |
+
+Під час деплою скрипт зупинився на `diff` юніта (`set -e` + `pipefail`, код 1 при відмінностях) ще до встановлення юніта. Сервер лишався на `325cc91`, далі кроки виконано окремо.
+
+**Rollback:**
+1. Відновити юніт із backup.
+2. `daemon-reload`.
+3. `server-release.js rollback` → `325cc91`.
+4. Restart API.
+
+Після цього Slack знову стане недоступним.
+
 ## Task 013.1 — admin UI для Slack-інтеграції й правил сповіщень (2026-10-15)
 
 Стан на початок: `main` = `6bf0c6e`, робоче дерево чисте. Task 013 ще **не має** незалежного review Codex — ця задача його розширює й не вважає Task 013 підтвердженим. Рішення — ADR-022; міграція `1791900000007_alert-settings`.
