@@ -22,6 +22,8 @@ export interface ExecutorDeps {
   sleep?: (ms: number) => Promise<void>;
   /** How long to wait for the expected state after the PM2 call (default 10 s). */
   verifyTimeoutMs?: number;
+  /** Allowed log directories for the read-only log tail (ADR-018); none = no log can be read. */
+  logDirs?: readonly string[];
 }
 
 /** Commands must not claim a deadline further away than this (protects against a bogus far-future deadline). */
@@ -50,7 +52,8 @@ export async function listTargets(deps: Pick<ExecutorDeps, 'loadAllowlist' | 'li
   } catch {
     raw = null;
   }
-  const targets = entries.map((e): BrokerTarget => {
+  // Logs-only entries (no actions) are not control targets (ADR-018).
+  const targets = entries.filter((e) => e.actions.length > 0).map((e): BrokerTarget => {
     if (!raw) return { targetKey: e.id, name: e.name, pmId: null, actions: e.actions, matchStatus: 'daemon_unavailable' };
     const m = matchEntry(e, raw);
     return { targetKey: e.id, name: e.name, pmId: m.status === 'ok' ? m.view.pmId : null, actions: e.actions, matchStatus: m.status };

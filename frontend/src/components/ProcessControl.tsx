@@ -1,9 +1,10 @@
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react';
-import { ApiError, controlApi } from '../api/client';
+import { ApiError, controlApi, logsApi } from '../api/client';
 import { type ApplicationItem, type CommandView, type ControlAction, type ControlTarget, FINAL_COMMAND_STATUSES } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { formatDate } from '../pages/ServersPage';
 import { Dialog } from './Dialog';
+import { LogViewer } from './LogViewer';
 import { ErrorState, formatRetry, LoadingState } from './StatusMessage';
 import { usePolledResource } from './usePolledResource';
 
@@ -59,7 +60,11 @@ const newKey = () => crypto.randomUUID();
 
 export type RowActions = (app: ApplicationItem) => ReactNode;
 
-function ActionMenu({ name, actions, disabled, onSelect }: { name: string; actions: ControlAction[]; disabled: boolean; onSelect: (action: ControlAction) => void }) {
+export interface MenuItem { key: string; label: string; danger?: boolean; disabled: boolean; onSelect: () => void }
+
+function ActionMenu({ name, items }: { name: string; items: MenuItem[] }) {
+  // The trigger is usable as long as at least one item is; each item carries its own availability.
+  const disabled = items.every((i) => i.disabled);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -84,9 +89,9 @@ function ActionMenu({ name, actions, disabled, onSelect }: { name: string; actio
         aria-label={`Дії: ${name}`} aria-expanded={open && !disabled} aria-controls={id}
         onClick={() => { setOpen(!open); }}>Дії <span aria-hidden="true">⌄</span></button>
       {open && !disabled ? <div id={id} className="action-menu__list" role="group" aria-label={`Дії для ${name}`}>
-        {actions.map((action) => <button key={action} type="button"
-          className={`action-menu__item ${action === 'stop' ? 'action-menu__item--danger' : ''}`}
-          onClick={() => { trigger.current?.focus(); setOpen(false); onSelect(action); }}>{ACTION_LABELS[action]}</button>)}
+        {items.map((item) => <button key={item.key} type="button" disabled={item.disabled}
+          className={`action-menu__item ${item.danger ? 'action-menu__item--danger' : ''}`}
+          onClick={() => { trigger.current?.focus(); setOpen(false); item.onSelect(); }}>{item.label}</button>)}
       </div> : null}
     </div>
   );
@@ -107,6 +112,12 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tracked, setTracked] = useState<CommandView | null>(null);
+  const [logView, setLogView] = useState<{ targetKey: string; name: string } | null>(null);
+  const closeLogs = useCallback(() => { setLogView(null); }, []);
+  const canLogs = can('logs:read');
+  // Log targets are fetched only for users who may read logs (ADR-018); others never ask.
+  const loadLogTargets = useCallback((signal: AbortSignal) => (canLogs ? logsApi.targets(serverId, signal) : Promise.resolve(null)), [serverId, canLogs]);
+  const logTargets = usePolledResource(loadLogTargets, `${serverId}:${String(canLogs)}`);
   const inflight = useRef<AbortController | null>(null);
   const statusRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => () => { inflight.current?.abort(); }, []);
@@ -160,7 +171,29 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
   const ready = view.state.status === 'ready' && current !== null && current.enabled && current.serverStatus === 'online' && current.broker?.state === 'ok' && current.broker.daemon === 'ok' && current.broker.allowlist === 'ok' && current.broker.fresh;
   const list = commands.state.status === 'ready' ? commands.state.data : commands.state.status === 'error' ? commands.state.data : null;
 
+  const lt = logTargets.state.status === 'ready' ? logTargets.state.data : null;
+  const logs = lt && lt.serverId === serverId ? lt : null;
+
   const renderActions: RowActions = (app) => {
+    // Logs: an explicit log target matching both name and PM2 id (never inferred from the inventory).
+    const logCandidates = logs?.targets.filter((t) => t.name === app.name && t.pmId === app.pmId) ?? [];
+    const logTarget = canLogs && logs?.state === 'supported' && logCandidates.length === 1 && logCandidates[0]?.matchStatus === 'ok' ? logCandidates[0] : undefined;
+    const logItem: MenuItem[] = logTarget ? [{
+      key: 'logs', label: 'Переглянути логи', disabled: false,
+      onSelect: () => { setLogView({ targetKey: logTarget.targetKey, name: app.name }); },
+    }] : [];
+    const logHint = !canLogs || logTarget ? null
+      : !logs ? null
+        : logs.state === 'unsupported' ? 'Перегляд логів не підтримується'
+          : logs.state === 'not_connected' ? 'Логи: агент не на зв’язку'
+            : logs.state === 'broker_unavailable' ? 'Логи тимчасово недоступні'
+              : 'Логи не дозволені';
+    if (!canControl) {
+      return <div className="service-actions">
+        {logItem.length > 0 ? <ActionMenu name={app.name} items={logItem} /> : null}
+        {logHint ? <span className="hint">{logHint}</span> : null}
+      </div>;
+    }
     // Both name and PM2 id must agree; never infer control identity from the inventory alone.
     const candidates = current?.targets.filter((t) => t.name === app.name && t.pmId === app.pmId) ?? [];
     const target = candidates.length === 1 ? candidates[0] : undefined;
@@ -170,18 +203,24 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
       : named && named.matchStatus !== 'ok' ? MATCH_LABELS[named.matchStatus] : named ? 'Ідентичність процесу не підтверджена' : 'Не дозволено керування';
     const blocked = app.inventoryState !== 'current' || app.serverStatus !== 'online' || !ready || !target || target.matchStatus !== 'ok' || pending || !trackedFinal;
     return <div className="service-actions">
-      {target && target.actions.length > 0 ? <ActionMenu name={app.name} actions={target.actions}
-        disabled={blocked} onSelect={(action) => { setError(null); setConfirm({ target, action, key: newKey() }); }} /> : null}
+      {(target && target.actions.length > 0) || logItem.length > 0 ? <ActionMenu name={app.name} items={[
+        ...(target ? target.actions.map((action): MenuItem => ({
+          key: action, label: ACTION_LABELS[action], danger: action === 'stop', disabled: blocked,
+          onSelect: () => { setError(null); setConfirm({ target, action, key: newKey() }); },
+        })) : []),
+        ...logItem,
+      ]} /> : null}
       {target && (app.inventoryState !== 'current' || app.serverStatus !== 'online') ? <span className="hint">Потрібні актуальні дані</span> : null}
       {!target ? <span className="hint">{unavailableReason}</span> : null}
       {target && target.matchStatus !== 'ok' ? <span className="hint">{MATCH_LABELS[target.matchStatus]}</span> : null}
+      {logHint ? <span className="hint">{logHint}</span> : null}
       {tracked && target?.targetKey === tracked.targetKey ? <span className="hint">{({ queued: 'Команда очікує агента', dispatched: 'Команда виконується', succeeded: 'Команду завершено', failed: 'Помилка команди', rejected: 'Команду відхилено', expired: 'Дедлайн минув', unknown: 'Потрібна перевірка результату' })[tracked.status]}</span> : null}
     </div>;
   };
 
   return (
     <section className="card services-card" aria-labelledby="apps-title">
-      {children(canControl ? renderActions : undefined)}
+      {children(canControl || canLogs ? renderActions : undefined)}
       {view.state.status === 'loading' ? <LoadingState /> : null}
       {view.state.status === 'error' ? <ErrorState title="Не вдалося оновити стан керування" onRetry={view.reload}>{`Сервіс тимчасово недоступний.${formatRetry(view.state.retryAfterSeconds)}`}</ErrorState> : null}
       {current ? (
@@ -211,6 +250,11 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
             ))}
           </ul>
         </details>
+      ) : null}
+
+      {logView ? (
+        <LogViewer key={`${serverId}:${logView.targetKey}`} serverId={serverId} serverName={serverName}
+          targetKey={logView.targetKey} name={logView.name} onClose={closeLogs} />
       ) : null}
 
       {confirm ? (

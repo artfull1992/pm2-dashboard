@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, type Page, test } from '@playwright/test';
@@ -15,6 +15,7 @@ import { credentials, type E2eRole } from '../support/env.js';
 const enabled = process.env.NC_E2E_REAL_PM2 === '1';
 const ROOT = join(import.meta.dirname, '..', '..');
 const PM2 = 'pm2@7.0.4';
+const LOG_SECRET = 'SYNTHETIC_E2E_LOG_SECRET_4410';
 
 async function login(page: Page, role: E2eRole) {
   const { email, password } = credentials(role);
@@ -29,7 +30,8 @@ test.skip(!enabled, 'opt-in: NC_E2E_REAL_PM2=1 (needs npx pm2@7.0.4)');
 
 test('operator stops and starts an allowlisted process through Agent + broker; viewer cannot; broker down → disabled', async ({ page, browser }) => {
   test.setTimeout(300_000);
-  const base = mkdtempSync(join(tmpdir(), 'nc-e2e-ctl-'));
+  // Real path: the broker refuses log paths with a symlinked component (macOS /var → /private/var).
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'nc-e2e-ctl-')));
   const home = join(base, 'h');
   const run = join(base, 'run');
   const state = join(base, 'state');
@@ -55,7 +57,8 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
   let agent: ReturnType<typeof startAgent> | null = null;
   try {
     const script = join(base, 'app.cjs');
-    writeFileSync(script, 'setInterval(() => {}, 1000);\n');
+    // Synthetic stdout/stderr, including a fake credential that must arrive masked.
+    writeFileSync(script, `console.log('e2e stdout line password=${LOG_SECRET}'); console.error('e2e stderr line'); setInterval(() => { console.log('tick'); }, 1000);\n`);
     pm2('start', script, '--name', 'e2e-allowed');
     pm2('start', script, '--name', 'e2e-other');
 
@@ -63,7 +66,7 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     const fp = spawnSync(process.execPath, [join(ROOT, 'agent', 'dist', 'pm2-broker.js'), 'fingerprint'], { env: brokerEnv, encoding: 'utf8' });
     const entry = fp.stdout.split('\n').filter(Boolean).map((l) => JSON.parse(l) as { name: string; fingerprint: string }).find((p) => p.name === 'e2e-allowed');
     expect(fp.stdout).not.toContain(base);
-    writeFileSync(brokerEnv.NC_BROKER_ALLOWLIST, JSON.stringify({ version: 1, targets: [{ id: 'e2e-allowed', name: 'e2e-allowed', actions: ['start', 'stop', 'restart'], fingerprint: entry?.fingerprint }] }), { mode: 0o644 });
+    writeFileSync(brokerEnv.NC_BROKER_ALLOWLIST, JSON.stringify({ version: 1, targets: [{ id: 'e2e-allowed', name: 'e2e-allowed', actions: ['start', 'stop', 'restart'], fingerprint: entry?.fingerprint, logs: true }] }), { mode: 0o644 });
     broker = spawn(process.execPath, [join(ROOT, 'agent', 'dist', 'pm2-broker.js'), 'serve'], { env: brokerEnv, stdio: 'ignore' });
     await expect.poll(() => spawnSync('test', ['-S', brokerEnv.NC_BROKER_SOCKET]).status, { timeout: 10_000 }).toBe(0);
 
@@ -124,6 +127,26 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
       `SELECT event FROM audit_log WHERE event LIKE 'process.%' AND details->>'serverId' = $1 ORDER BY id`, [serverId])).rows.map((r) => r.event));
     expect(audit).toEqual(['process.command_requested', 'process.command_dispatched', 'process.command_succeeded',
       'process.command_requested', 'process.command_dispatched', 'process.command_succeeded']);
+
+    // Logs (ADR-018): the allowed process from its row menu; the secret arrives masked; the other process has none.
+    await expect(control.getByText('Логи не дозволені')).toBeVisible({ timeout: 30_000 });
+    await expect(async () => {
+      await control.getByRole('button', { name: 'Дії: e2e-allowed' }).click();
+      await expect(op.getByRole('button', { name: 'Переглянути логи' })).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 60_000 });
+    await op.getByRole('button', { name: 'Переглянути логи' }).click();
+    const viewerDialog = op.getByRole('dialog', { name: 'Логи: e2e-allowed' });
+    await expect(viewerDialog.getByText(/e2e stdout line password=\*\*\*/)).toBeVisible({ timeout: 30_000 });
+    expect(await viewerDialog.textContent()).not.toContain(LOG_SECRET);
+    await viewerDialog.getByRole('tab', { name: 'stderr' }).click();
+    await expect(viewerDialog.getByText(/e2e stderr line/)).toBeVisible();
+    await op.keyboard.press('Escape');
+    await expect(viewerDialog).toHaveCount(0);
+    const logAudit = await inRunSchema(async (q) => (await q(
+      `SELECT event, details FROM audit_log WHERE event LIKE 'logs.%' AND details->>'serverId' = $1`, [serverId])).rows);
+    expect(logAudit).toEqual([{ event: 'logs.view_opened', details: { serverId, targetKey: 'e2e-allowed' } }]);
+    const leaked = await inRunSchema(async (q) => (await q(`SELECT count(*)::int AS n FROM audit_log WHERE details::text LIKE '%e2e stdout%' OR details::text LIKE $1`, [`%${LOG_SECRET}%`])).rows[0]);
+    expect(leaked).toEqual({ n: 0 });
     await opContext.close();
 
     // Viewer: sees the target, has no buttons; the API refuses even with a valid CSRF token.
@@ -144,6 +167,15 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
       return res.status;
     }, serverId);
     expect(status).toBe(403);
+    const logStatus = await viewer.evaluate(async (id) => {
+      const me = await (await fetch('/api/auth/me', { credentials: 'same-origin' })).json() as { csrfToken: string };
+      const res = await fetch(`/api/servers/${id}/log-requests`, {
+        method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': me.csrfToken, 'content-type': 'application/json' },
+        body: JSON.stringify({ targetKey: 'e2e-allowed' }),
+      });
+      return res.status;
+    }, serverId);
+    expect(logStatus).toBe(403);
     expect(statusOf('e2e-allowed')).toBe('online');
     await viewerContext.close();
 

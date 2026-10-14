@@ -1,6 +1,7 @@
 import {
   type ApplicationPage, type AuditPage, type CommandView, ContractError, type ControlAction, type ControlView, type IssuedCredential,
   parseApplicationPage, parseAuditPage, parseCommandList, parseCommandView, parseControlView, parseIssuedCredential,
+  type LogRequestView, type LogTargetsView, parseLogRequestCreated, parseLogRequestView, parseLogTargets,
   parseRevokeResult, parseServerApplications, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
   type ProcessStatus, type ServerApplications, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
 } from './types';
@@ -168,6 +169,26 @@ export const applicationsApi = {
       },
       ...(signal ? { signal } : {}),
     }),
+};
+
+export const logsApi = {
+  targets: (serverId: string, signal?: AbortSignal): Promise<LogTargetsView> =>
+    apiRequest(`${serverPath(serverId)}/log-targets`, {
+      parse: (v) => { const r = parseLogTargets(v); if (r.serverId !== serverId) throw new ContractError(); return r; },
+      ...(signal ? { signal } : {}),
+    }),
+  /** Starts one bounded read (never retried automatically). */
+  create: (serverId: string, targetKey: string, csrfToken: string, signal?: AbortSignal): Promise<{ requestId: string; deadlineAt: string }> =>
+    apiRequest(`${serverPath(serverId)}/log-requests`, { method: 'POST', body: { targetKey }, csrfToken, parse: parseLogRequestCreated, ...(signal ? { signal } : {}) }),
+  /** The server waits up to 8 s for the result; the client timeout covers that. */
+  get: (requestId: string, signal?: AbortSignal): Promise<LogRequestView> => {
+    if (!UUID_RE.test(requestId)) throw new ApiError('invalid_request');
+    return apiRequest(`/api/log-requests/${requestId}`, {
+      timeoutMs: 12_000,
+      parse: (v) => { const r = parseLogRequestView(v); if (r.requestId !== requestId) throw new ContractError(); return r; },
+      ...(signal ? { signal } : {}),
+    });
+  },
 };
 
 export const controlApi = {

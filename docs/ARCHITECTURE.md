@@ -60,26 +60,28 @@ server.ts ── loadConfig ──► ConfigError → stderr, exit 1
 
 Health endpoints публічні навмисно. `/api/*` проходить auth-hook: Origin → сесія → CSRF → permission (ADR-011); кожен маршрут декларує `config.access`. API підключається до PostgreSQL лише по loopback (або SSH-тунелю в розробці) без TLS у `pg`; пряме віддалене підключення не підтримується без окремого рішення.
 
-## Затверджена архітектура поточного етапу — ще не реалізовано
+## Поточна архітектура (оновлено в Task 010)
 
 ```mermaid
 flowchart LR
   User[Користувач] --> Nginx[Nginx на хості / TLS]
-  Nginx --> UI[React + Vite / статичні файли]
-  Nginx --> API[Fastify Central API / systemd / REST + WebSocket]
-  Agent[Node.js Agent / systemd] -->|Вихідне захищене з'єднання| API
-  Agent --> PM2[Локальний PM2 API]
-  API --> DB[PostgreSQL на хості / systemd]
-  API --> Jenkins[Існуючий Jenkins API / pipelines]
-  API --> Slack[Slack Alerts]
-  API --> менеджер секретів[Існуючий менеджер секретів]
+  Nginx --> UI[React + Vite / статика]
+  Nginx --> API[Fastify Central API / systemd / REST]
+  Agent[Agent / systemd / nodecontrol-agent] -->|вихідний HTTPS: heartbeat, inventory, control poll, log long-poll| API
+  Agent -- unix-сокет --> Broker[PM2 broker / власник PM2]
+  Exporter[PM2 exporter / timer / власник PM2] -- snapshot-файл --> Agent
+  Broker --> PM2[PM2 daemon]
+  Exporter --> PM2
+  API --> DB[PostgreSQL на хості]
 ```
 
-Central API: authentication, authorization, реєстри серверів і застосунків, Audit Logs, Alerts Engine, Jenkins integration. Frontend: Dashboard, Servers, Applications, Logs, Metrics, Deployments, Settings. Agent: PM2-процеси, CPU/RAM застосунків і сервера, потік логів, Start/Stop/Restart через обмежений протокол операцій.
+Прийняті рішення (не плани): транспорт Agent — лише вихідний HTTPS із bounded polling/long-poll (ADR-015…018), без WebSocket; модель ролей admin/operator/viewer з permissions (ADR-011, `logs:read` — ADR-018); схема БД і міграції — версійні SQL через node-pg-migrate (ADR-009); PM2 — лише через exporter (read-only) і broker (allowlist) від власника PM2.
 
-MVP1 охоплює кілька серверів, моніторинг, логи в реальному часі, керування процесами, redeploy, доступ за ролями та аудит усіх адміністративних дій. Slack: зупинка процесу, недоступність сервера, високі CPU/RAM, часті рестарти, невдалий деплой і відновлення; обов'язкові cooldown та deduplication.
+Реалізовано: auth/RBAC/audit, реєстр серверів, heartbeat, PM2 inventory, керування дозволеними процесами, перегляд обмеженого хвоста логів. **Не реалізовано:** Jenkins redeploy, alerts/Slack, Dashboard з метриками та retention, зміна власного пароля й керування користувачами, кілька PM2 owners, видалення процесів, менеджер секретів-інтеграція.
 
-Транспорт агента, формат команд, модель ролей, retention метрик/логів, схема БД та міграційний інструмент ще не обрані. Не видавати їх за прийняті рішення.
+### Перегляд логів (Task 010, ADR-018)
+
+UI → `POST /api/servers/:id/log-requests` (`logs:read`, CSRF) → запит у пам'яті API → long-poll Agent `POST /api/agent/logs/poll` → broker `logs` (allowlist `logs: true`, ідентичність, шляхи з PM2 у дозволених каталогах, хвіст ≤ 256 KiB, ≤ 100 рядків, ≤ 8 KiB, маскування) → `POST /api/agent/logs/result` → `GET /api/log-requests/:id` (лише ініціатор). Текст не зберігається в БД, audit чи журналах; TTL у пам'яті 60 с.
 
 ## Життєвий цикл і майбутня фаза
 
@@ -124,7 +126,7 @@ flowchart LR
 
 | Шлях | Відповідальність |
 |---|---|
-| `agent/src/control/` | протокол Agent⇄broker, allowlist, ідентичність (fingerprint), журнал, виконавець, сервер сокета, клієнт і цикл Agent |
+| `agent/src/control/` | протокол Agent⇄broker, allowlist, ідентичність (fingerprint), журнал, виконавець, сервер сокета, клієнт і цикл Agent; логи: `logs-protocol.ts`, `logs.ts` (безпечне читання хвоста), `logs-loop.ts` (long-poll Agent) |
 | `agent/src/pm2-broker.ts` | entrypoint broker (`serve`, `fingerprint`) |
 | `backend/src/servers/control*.ts` | контракт, SQL lifecycle (claim/lease/expiry/unknown, idempotency, audit), маршрути |
 | `frontend/src/components/ProcessControl.tsx` | цілі, підтвердження, статус команди, історія |

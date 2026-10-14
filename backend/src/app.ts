@@ -5,6 +5,8 @@ import { registerAuth } from './auth/plugin.js';
 import { type AuthStore, createPgAuthStore } from './auth/store.js';
 import { createPgControlStore, type ControlStore } from './servers/control-store.js';
 import { registerControlRoutes } from './servers/control-routes.js';
+import { LogHub } from './servers/logs.js';
+import { registerLogRoutes } from './servers/logs-routes.js';
 import { createPgInventoryStore, type InventoryStore } from './servers/inventory-store.js';
 import { registerInventoryRoutes } from './servers/inventory-routes.js';
 import { registerServerRoutes } from './servers/routes.js';
@@ -48,6 +50,8 @@ export interface BuildAppOptions {
     createControlStore?: (database: Database) => ControlStore;
     /** Test seam: bounds concurrent control transactions. */
     controlLimiter?: Limiter;
+    /** Test seam: in-memory log hub (ADR-018). */
+    logHub?: LogHub;
     extra?: Omit<Parameters<typeof registerAuth>[1], 'config' | 'store'>;
   };
 }
@@ -137,6 +141,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     registerControlRoutes(app, {
       store: controlStore, enabled: options.auth.controlEnabled === true,
       ...(options.auth.controlLimiter ? { limiter: options.auth.controlLimiter } : {}),
+    });
+    registerLogRoutes(app, {
+      hub: options.auth.logHub ?? new LogHub(),
+      serverExists: async (id) => (await serverStore.get(id)) !== null,
+      audit: (entry, context) => store.recordAudit(entry, context),
     });
   }
 

@@ -297,6 +297,28 @@ journalctl -u node-control-agent -n 5 -o cat                             # "cont
 
 **Rollback / аварійне вимкнення** (у будь-якому порядку, PM2-процеси не зупиняються): `PM2_CONTROL_ENABLED=false` + restart API (нові команди → 409, черга не видається й експірує); прибрати `NC_AGENT_CONTROL_SOCKET` з `agent.env` + restart Agent; `systemctl disable --now node-control-pm2-broker@<owner>`; спорожнити allowlist. Журнал broker (`/var/lib/goit-node-control-pm2-broker`) не видаляти: він захищає від повторного виконання. Таблиці керування лишаються (additive).
 
+### Перегляд логів (Task 010, ADR-018)
+
+Міграцій немає. Порядок rollout: **API/UI → реліз Agent (Agent і broker — один артефакт) → restart Agent і broker → (лише з погодження) `logs: true` у allowlist.** До останнього кроку читання логів вимкнене: UI показує «Логи не дозволені». Старий Agent/broker → «Перегляд логів не підтримується».
+
+```bash
+# Увімкнути логи для погодженого сервісу (root на керованій ноді). Backup → правка → перевірка; broker перечитує allowlist сам.
+A=/etc/goit-node-control-pm2-broker/<owner>.allowlist.json
+cp -p "$A" "$A.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+python3 - "$A" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+allowed = {"<targetKey>"}                      # погоджені сервіси
+for t in d["targets"]:
+    if t["id"] in allowed: t["logs"] = True
+json.dump(d, open(p + ".new", "w"), indent=1)
+PY
+install -m 644 -o root -g root "$A.new" "$A" && rm "$A.new"
+# Каталоги логів: типово <PM2_HOME>/logs. Інший каталог — лише явно: NC_BROKER_LOG_DIRS=... у /etc/goit-node-control-pm2-broker/<owner>.env + restart broker.
+```
+
+Перевірка: UI → сервер → «Сервіси сервера» → «Дії» → «Переглянути логи» (operator/admin). Rollback логів: повернути allowlist із backup (діє без restart). **Rollback broker на реліз до Task 010:** спершу повернути allowlist без поля `logs` (старий broker вважає його невалідним і відхилятиме всі дії), потім `server-release.js rollback --base /opt/goit-node-control-agent` і restart broker та Agent.
+
 ### Міграції: backup, recovery, rollback
 
 - Перед кожним production `up` — `pg_dump -Fc` лише `node_control_db` у `/root/node-control-backups/` (каталог `700`, файл `600`), перевірка `pg_restore --list`. Не дамп усього кластера.

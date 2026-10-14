@@ -1,8 +1,10 @@
-import { chmod, lstat, unlink } from 'node:fs/promises';
+import { chmod, lstat, realpath, unlink } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { dirname, isAbsolute, join, normalize, relative } from 'node:path';
 import { RpcError, callDaemon } from '../pm2/rpc.js';
 import { readAllowlist } from './allowlist.js';
+import { listLogTargets, readLogs } from './logs.js';
+import { LOG_LIMITS, type LogsRequest, type LogsResponse, type LogTargetsRequest, type LogTargetsResponse, parseLogsRequest } from './logs-protocol.js';
 import { executeCommand, type ExecutorDeps, listTargets, type Pm2ActionMethod } from './executor.js';
 import { Journal } from './journal.js';
 import { type BrokerRequest, type BrokerResponse, type ExecuteResult, MAX_FRAME_BYTES, parseBrokerRequest } from './protocol.js';
@@ -17,6 +19,8 @@ export interface BrokerConfig {
   journalDir: string;
   pm2TimeoutMs: number;
   allowSelfOwnedAllowlist: boolean;
+  /** Directories log files may be read from (ADR-018); default <PM2_HOME>/logs. */
+  logDirs: string[];
 }
 
 export class BrokerConfigError extends Error {
@@ -44,10 +48,15 @@ export function loadBrokerConfig(env: Record<string, string | undefined>, uid: n
   if (pm2Home && socketPath && !relative(pm2Home, socketPath).startsWith('..')) issues.push('NC_BROKER_SOCKET must not be inside NC_PM2_HOME');
   const rawTimeout = env.NC_PM2_TIMEOUT_SECONDS ?? '20';
   if (!/^\d+$/.test(rawTimeout) || Number(rawTimeout) < 1 || Number(rawTimeout) > 60) issues.push('NC_PM2_TIMEOUT_SECONDS must be an integer 1..60');
+  const logDirs = (env.NC_BROKER_LOG_DIRS ?? (pm2Home ? `${pm2Home}/logs` : '')).split(',').map((d) => d.trim()).filter((d) => d !== '');
+  for (const d of logDirs) {
+    if (!isAbsolute(d) || normalize(d) !== d || d.endsWith('/') || d === '/' || /^\/(proc|sys|dev)(\/|$)/.test(d)) issues.push('NC_BROKER_LOG_DIRS must list normalized absolute directories (not /, /proc, /sys, /dev)');
+  }
+  if (logDirs.length > 8) issues.push('NC_BROKER_LOG_DIRS allows at most 8 directories');
   if (issues.length > 0) throw new BrokerConfigError(issues);
   return {
     pm2Home, socketPath, allowlistPath, journalDir, pm2TimeoutMs: Number(rawTimeout) * 1000,
-    allowSelfOwnedAllowlist: env.NC_BROKER_ALLOW_SELF_OWNED_ALLOWLIST === 'true',
+    allowSelfOwnedAllowlist: env.NC_BROKER_ALLOW_SELF_OWNED_ALLOWLIST === 'true', logDirs,
   };
 }
 
@@ -77,7 +86,21 @@ export function realDeps(config: BrokerConfig, uid: number = process.getuid?.() 
       await callDaemon({ socketPath, timeoutMs: config.pm2TimeoutMs }, method, method === 'restartProcessId' ? { id: pmId } : pmId);
     },
     journal: new Journal(config.journalDir),
+    logDirs: config.logDirs,
   };
+}
+
+/** Keeps only log directories that exist and are their own real path (no symlinked directory is trusted). */
+export async function verifiedLogDirs(dirs: readonly string[]): Promise<string[]> {
+  const ok: string[] = [];
+  for (const d of dirs) {
+    try {
+      if ((await realpath(d)) === d && (await lstat(d)).isDirectory()) ok.push(d);
+    } catch {
+      // missing directory: no logs can be read from it
+    }
+  }
+  return ok;
 }
 
 export interface BrokerLogger {
@@ -91,6 +114,27 @@ export const MAX_PENDING_EXECUTIONS = 4;
 export function createBroker(deps: ExecutorDeps, logger: BrokerLogger): { server: Server; idle: () => Promise<void> } {
   let chain: Promise<unknown> = Promise.resolve();
   let pending = 0;
+
+  let logReads = 0;
+  // Log reads (ADR-018) are read-only and independent of the action chain: bounded concurrency + timeout.
+  const handleLogs = async (req: LogTargetsRequest | LogsRequest): Promise<LogTargetsResponse | LogsResponse> => {
+    const logDeps = { loadAllowlist: deps.loadAllowlist, list: deps.list, logDirs: deps.logDirs ?? [] };
+    if (req.op === 'logTargets') return listLogTargets(logDeps);
+    const busy = (reason: 'broker_busy' | 'timeout'): LogsResponse =>
+      ({ v: 1, op: 'logs', requestId: req.requestId, outcome: 'failed', reason, readAt: new Date().toISOString(), stdout: null, stderr: null });
+    if (logReads >= LOG_LIMITS.maxConcurrentReads) return busy('broker_busy');
+    logReads += 1;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        readLogs(req, logDeps),
+        new Promise<LogsResponse>((resolve) => { timer = setTimeout(() => { resolve(busy('timeout')); }, LOG_LIMITS.readTimeoutMs); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      logReads -= 1;
+    }
+  };
 
   const handle = async (req: BrokerRequest): Promise<BrokerResponse> => {
     if (req.op === 'list') return { v: 1, op: 'list', ...(await listTargets(deps)) };
@@ -122,10 +166,22 @@ export function createBroker(deps: ExecutorDeps, logger: BrokerLogger): { server
       if (newline < 0) return;
       done = true;
       let req: BrokerRequest | null = null;
+      let logReq: LogTargetsRequest | LogsRequest | null = null;
       try {
-        req = parseBrokerRequest(JSON.parse(buffer.slice(0, newline)));
+        const parsed: unknown = JSON.parse(buffer.slice(0, newline));
+        req = parseBrokerRequest(parsed);
+        if (!req && typeof parsed === 'object' && parsed !== null && (parsed as { v?: unknown }).v === 1) logReq = parseLogsRequest(parsed as Record<string, unknown>);
       } catch {
         req = null;
+      }
+      if (logReq) {
+        const op = logReq.op;
+        // Metadata only: never the log text.
+        handleLogs(logReq).then(
+          (response) => { socket.end(`${JSON.stringify(response)}\n`); },
+          (error: unknown) => { logger.warn({ msg: 'request failed', op, name: error instanceof Error ? error.name : 'unknown' }); socket.destroy(); },
+        );
+        return;
       }
       if (!req) { logger.warn({ msg: 'bad request' }); socket.destroy(); return; }
       handle(req).then(

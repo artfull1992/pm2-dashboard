@@ -15,6 +15,8 @@ export interface AllowlistEntry {
   actions: ControlAction[];
   /** sha256 of the process definition (see identity.ts) — identifies the definition, it does not authorise anyone. */
   fingerprint: string;
+  /** Explicit local permission to read this process's stdout/stderr tail (ADR-018). Absent = not allowed. */
+  logs?: boolean;
 }
 
 export class AllowlistError extends Error {
@@ -44,16 +46,21 @@ export function parseAllowlist(value: unknown): AllowlistEntry[] {
   const ids = new Set<string>();
   const names = new Set<string>();
   return targets.map((t: unknown) => {
-    if (!isObject(t) || Object.keys(t).sort().join() !== 'actions,fingerprint,id,name') throw new AllowlistError('entry keys');
-    const { id, name, actions, fingerprint } = t;
-    if (!isTargetKey(id) || !isProcessName(name) || !isActionList(actions) || typeof fingerprint !== 'string' || !FINGERPRINT_RE.test(fingerprint)) {
+    // Version-1 format; `logs` is the only optional key (ADR-018), so lists without it stay valid.
+    const keys = isObject(t) ? Object.keys(t).sort().join() : '';
+    if (!isObject(t) || (keys !== 'actions,fingerprint,id,name' && keys !== 'actions,fingerprint,id,logs,name')) throw new AllowlistError('entry keys');
+    const { id, name, actions, fingerprint, logs } = t;
+    if (logs !== undefined && typeof logs !== 'boolean') throw new AllowlistError('entry value');
+    // A logs-only entry may have no actions; otherwise at least one action.
+    const actionsOk = isActionList(actions) || (logs === true && Array.isArray(actions) && actions.length === 0);
+    if (!isTargetKey(id) || !isProcessName(name) || !actionsOk || typeof fingerprint !== 'string' || !FINGERPRINT_RE.test(fingerprint)) {
       throw new AllowlistError('entry value');
     }
     // One entry per id and per PM2 name: two entries for the same name would make the identity ambiguous.
     if (ids.has(id) || names.has(name)) throw new AllowlistError('duplicate');
     ids.add(id);
     names.add(name);
-    return { id, name, actions, fingerprint };
+    return { id, name, actions: actions as ControlAction[], fingerprint, ...(logs === true ? { logs: true } : {}) };
   });
 }
 

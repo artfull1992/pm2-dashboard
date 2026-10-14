@@ -11,18 +11,23 @@ export class BrokerError extends Error {
 }
 
 export function brokerRequest(socketPath: string, req: BrokerRequest, timeoutMs: number): Promise<BrokerResponse> {
+  return brokerCall(socketPath, req, timeoutMs, (value) => parseBrokerResponse(value, req));
+}
+
+/** One request/response over the broker socket with a caller-supplied strict parser. */
+export function brokerCall<T>(socketPath: string, req: object, timeoutMs: number, parse: (value: unknown) => T | null): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let sent = false;
     let buffer = '';
     const socket = connect({ path: socketPath });
-    const finish = (error: BrokerError | null, value?: BrokerResponse) => {
+    const finish = (error: BrokerError | null, value?: T) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       socket.destroy();
       if (error) reject(error);
-      else if (value) resolve(value);
+      else if (value !== undefined) resolve(value);
     };
     const timer = setTimeout(() => { finish(new BrokerError('timeout', sent)); }, timeoutMs);
     socket.setEncoding('utf8');
@@ -37,13 +42,13 @@ export function brokerRequest(socketPath: string, req: BrokerRequest, timeoutMs:
       if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) { finish(new BrokerError('protocol', sent)); return; }
       const newline = buffer.indexOf('\n');
       if (newline < 0) return;
-      let parsed: BrokerResponse | null;
+      let parsed: T | null;
       try {
-        parsed = parseBrokerResponse(JSON.parse(buffer.slice(0, newline)), req);
+        parsed = parse(JSON.parse(buffer.slice(0, newline)));
       } catch {
         parsed = null;
       }
-      if (parsed) finish(null, parsed);
+      if (parsed !== null) finish(null, parsed);
       else finish(new BrokerError('protocol', sent));
     });
   });

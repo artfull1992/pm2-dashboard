@@ -175,8 +175,8 @@ describe('rbac matrix', () => {
   it('matches the documented matrix', () => {
     expect(ROLE_PERMISSIONS).toEqual({
       viewer: ['monitoring:read'],
-      operator: ['monitoring:read', 'processes:control'],
-      admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read'],
+      operator: ['monitoring:read', 'processes:control', 'logs:read'],
+      admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read'],
     });
     for (const role of ROLES) for (const p of PERMISSIONS) expect(hasPermission(role, p)).toBe(ROLE_PERMISSIONS[role].includes(p));
   });

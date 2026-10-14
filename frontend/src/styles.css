@@ -198,3 +198,14 @@ h1, h2, p { margin: 0; }
   .facts { grid-template-columns: 1fr; gap: 4px; }
   .facts dd { margin-bottom: 8px; }
 }
+
+/* Log viewer (Task 010) */
+.dialog--wide { width: min(100%, 980px); max-height: calc(100vh - 32px); overflow: auto; }
+.log-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+.log-tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.log-tab { background: var(--surface); border: 0; padding: 8px 14px; font: inherit; color: var(--text); cursor: pointer; }
+.log-tab--active { background: var(--primary); color: var(--primary-text); }
+.log-auto { display: inline-flex; gap: 6px; align-items: center; font-size: .9rem; }
+.log-text { margin: 0; max-height: 55vh; overflow: auto; padding: 12px; background: #0f172a; color: #e2e8f0; border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.action-menu__item:disabled { color: var(--text-muted); cursor: not-allowed; }
+.log-auto input { width: auto; min-height: 0; margin: 0; }

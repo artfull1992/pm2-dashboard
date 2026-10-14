@@ -96,9 +96,9 @@ export type MachinePostOutcome<T> =
  */
 export async function machinePost<T>(
   config: AgentConfig, path: `/api/agent/${string}`, payload: unknown, signal: AbortSignal,
-  parseOk: (text: string) => T | null, fetchImpl: FetchLike = fetch,
+  parseOk: (text: string) => T | null, fetchImpl: FetchLike = fetch, timeoutMs: number = config.timeoutSeconds * 1000,
 ): Promise<MachinePostOutcome<T>> {
-  const timeout = AbortSignal.timeout(config.timeoutSeconds * 1000);
+  const timeout = AbortSignal.timeout(timeoutMs);
   const combined = AbortSignal.any([signal, timeout]);
   const failure = (): MachinePostOutcome<T> => {
     if (signal.aborted) return { kind: 'aborted' };

@@ -1,7 +1,7 @@
 // Runtime validation of API responses (ADR-012). The backend contract is in README / ADR-011; anything that
 // does not match exactly is treated as an unexpected response instead of being trusted by the UI.
 
-export const KNOWN_PERMISSIONS = ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read'] as const;
+export const KNOWN_PERMISSIONS = ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read'] as const;
 export type Permission = (typeof KNOWN_PERMISSIONS)[number];
 export const KNOWN_ROLES = ['admin', 'operator', 'viewer'] as const;
 export type Role = (typeof KNOWN_ROLES)[number];
@@ -20,7 +20,7 @@ export interface AuditItem {
   outcome: 'success' | 'failure' | 'denied';
   actorUserId: string | null;
   requestId: string | null;
-  details: { reason?: string; permission?: string; route?: string; serverId?: string; rotated?: boolean; revoked?: boolean };
+  details: { reason?: string; permission?: string; route?: string; serverId?: string; targetKey?: string; commandId?: string; action?: string; rotated?: boolean; revoked?: boolean };
 }
 
 export interface AuditPage {
@@ -60,7 +60,7 @@ export function parseSessionInfo(value: unknown): SessionInfo {
   };
 }
 
-const DETAIL_KEYS = ['reason', 'permission', 'route', 'serverId'] as const;
+const DETAIL_KEYS = ['reason', 'permission', 'route', 'serverId', 'targetKey', 'commandId', 'action'] as const;
 const DETAIL_FLAGS = ['rotated', 'revoked'] as const;
 
 function parseAuditItem(value: unknown): AuditItem {
@@ -346,4 +346,50 @@ export function parseCommandView(value: unknown): CommandView {
 export function parseCommandList(value: unknown): CommandView[] {
   expect(isObject(value) && Array.isArray(value.items) && value.items.length <= 50);
   return value.items.map(parseCommandView);
+}
+
+// Bounded log viewing (ADR-018). Text is shown as plain React text only; never stored.
+export const LOG_STREAM_STATES = ['ok', 'empty', 'missing', 'unavailable', 'merged'] as const;
+export type LogsSupport = 'supported' | 'not_connected' | 'unsupported' | 'broker_unavailable';
+export interface LogTarget { targetKey: string; name: string; pmId: number | null; matchStatus: MatchStatus }
+export interface LogTargetsView { serverId: string; state: LogsSupport; reportedAt: string | null; targets: LogTarget[] }
+export interface LogStream { state: (typeof LOG_STREAM_STATES)[number]; text: string; lines: number; truncated: boolean; sizeBytes: number | null; modifiedAt: string | null }
+export interface LogResult { outcome: 'ok' | 'rejected' | 'failed'; reason: string | null; readAt: string; stdout: LogStream | null; stderr: LogStream | null }
+export interface LogRequestView { requestId: string; serverId: string; targetKey: string; status: 'pending' | 'done' | 'expired'; deadlineAt: string; result: LogResult | null }
+
+function parseLogStream(v: unknown): LogStream | null {
+  if (v === null) return null;
+  expect(isObject(v) && oneOf(LOG_STREAM_STATES, v.state) && typeof v.text === 'string' && v.text.length <= 16_384 && typeof v.truncated === 'boolean');
+  expect(typeof v.lines === 'number' && Number.isInteger(v.lines) && isCount(v.lines, 100));
+  expect((v.sizeBytes === null || isCount(v.sizeBytes, Number.MAX_SAFE_INTEGER)) && isNullableDate(v.modifiedAt));
+  return { state: v.state, text: v.text, lines: v.lines, truncated: v.truncated, sizeBytes: v.sizeBytes, modifiedAt: v.modifiedAt };
+}
+
+export function parseLogTargets(value: unknown): LogTargetsView {
+  expect(isObject(value) && Array.isArray(value.targets) && value.targets.length <= 50);
+  const { serverId, state, reportedAt } = value;
+  expect(isString(serverId, 36) && UUID_RE.test(serverId) && oneOf(['supported', 'not_connected', 'unsupported', 'broker_unavailable'] as const, state) && isNullableDate(reportedAt));
+  const targets = value.targets.map((t: unknown) => {
+    expect(isObject(t) && isString(t.targetKey, 64) && TARGET_KEY_RE.test(t.targetKey) && isString(t.name, 128) && t.name.length > 0 && oneOf(MATCH_STATUSES, t.matchStatus));
+    expect(t.pmId === null || (typeof t.pmId === 'number' && Number.isInteger(t.pmId) && isCount(t.pmId, 1_000_000)));
+    return { targetKey: t.targetKey, name: t.name, pmId: t.pmId, matchStatus: t.matchStatus };
+  });
+  return { serverId, state, reportedAt, targets };
+}
+
+export function parseLogRequestCreated(value: unknown): { requestId: string; deadlineAt: string } {
+  expect(isObject(value) && isString(value.requestId, 36) && UUID_RE.test(value.requestId) && isDate(value.deadlineAt));
+  return { requestId: value.requestId, deadlineAt: value.deadlineAt };
+}
+
+export function parseLogRequestView(value: unknown): LogRequestView {
+  expect(isObject(value) && isString(value.requestId, 36) && UUID_RE.test(value.requestId) && isString(value.serverId, 36) && UUID_RE.test(value.serverId));
+  expect(isString(value.targetKey, 64) && TARGET_KEY_RE.test(value.targetKey) && oneOf(['pending', 'done', 'expired'] as const, value.status) && isDate(value.deadlineAt));
+  let result: LogResult | null = null;
+  if (value.result !== null) {
+    const r = value.result;
+    expect(isObject(r) && oneOf(['ok', 'rejected', 'failed'] as const, r.outcome) && (r.reason === null || (isString(r.reason, 40) && REASON_RE.test(r.reason))) && isDate(r.readAt));
+    result = { outcome: r.outcome, reason: r.reason, readAt: r.readAt, stdout: parseLogStream(r.stdout), stderr: parseLogStream(r.stderr) };
+  }
+  return { requestId: value.requestId, serverId: value.serverId, targetKey: value.targetKey, status: value.status, deadlineAt: value.deadlineAt, result };
 }

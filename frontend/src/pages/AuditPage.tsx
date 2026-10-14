@@ -21,6 +21,8 @@ function describeDetails(details: AuditItem['details']): string {
   if (details.reason) parts.push(`причина: ${REASON_LABELS[details.reason] ?? details.reason}`);
   if (details.permission) parts.push(`дозвіл: ${details.permission}`);
   if (details.route) parts.push(`маршрут: ${details.route}`);
+  if (details.targetKey) parts.push(`сервіс: ${details.targetKey}`);
+  if (details.action) parts.push(`дія: ${details.action}`);
   return parts.join('; ') || '—';
 }
 

@@ -262,6 +262,17 @@ npm run test:agent:pm2   # opt-in: справжній одноразовий PM2
 
 Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HOME` (абсолютний), `NC_PM2_SNAPSHOT_FILE` (поза `PM2_HOME`), `NC_PM2_SOURCE` (типово `pm2`), `NC_PM2_TIMEOUT_SECONDS` (1–60), `NC_PM2_MAX_PROCESSES` (≤500). Agent: `NC_AGENT_INVENTORY_FILE` (вмикає inventory), `NC_AGENT_INVENTORY_INTERVAL_SECONDS` (30–600, типово 60), `NC_AGENT_INVENTORY_MAX_AGE_SECONDS` (30–3600, типово 120).
 
+### Перегляд логів сервісів (Task 010, ADR-018) — лише явно дозволені сервіси
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `GET /api/servers/:id/log-targets` | `logs:read` (admin, operator) | `200 {serverId, state: supported\|not_connected\|unsupported\|broker_unavailable, reportedAt, targets:[{targetKey, name, pmId, matchStatus}]}` | 400, 401, 403, 404 |
+| `POST /api/servers/:id/log-requests` `{"targetKey","lines"?: 1..100}` | `logs:read` + Origin + CSRF | `202 {requestId, deadlineAt}` | 400, 401, 403, 404, 409 (не підтримується/не на зв'язку/не дозволено), 429, 503 |
+| `GET /api/log-requests/:id` | `logs:read`, лише ініціатор | `200 {requestId, serverId, targetKey, status: pending\|done\|expired, deadlineAt, result:{outcome, reason, readAt, stdout, stderr}\|null}` (чекає ≤ 8 с) | 400, 401, 403, 404 |
+| `POST /api/agent/logs/poll` / `POST /api/agent/logs/result` | **machine** | long-poll ≤ 25 с → `{requests:[≤4]}` / `{status:"recorded"}` | 400, 401, 403, 404, 409, 413, 429 |
+
+`stdout`/`stderr`: `{state: ok|empty|missing|unavailable|merged, text, lines, truncated, sizeBytes, modifiedAt}` — без шляхів і env. Дозвіл на ноді: `"logs": true` у записі allowlist broker (окремо від `actions`); `processes:control` не дає читання логів. Текст не зберігається.
+
 ### Керування PM2-процесами (Task 009, ADR-017) — вимкнено за замовчуванням
 
 | Запит | Доступ | Успіх | Помилки |

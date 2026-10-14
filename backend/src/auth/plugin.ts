@@ -31,7 +31,8 @@ export interface AgentResolver {
 /** Machine (Agent) route limits: before any DB lookup, bounded key maps. */
 export const AGENT_LIMITS = Object.freeze({
   perAddress: { max: 120, windowMs: 60_000 },
-  perToken: { max: 20, windowMs: 60_000 },
+  // Heartbeat + inventory + control poll + log long-poll/results (5 s refresh while a viewer is open): ADR-018.
+  perToken: { max: 90, windowMs: 60_000 },
 });
 
 export interface AuthState {

@@ -5,7 +5,7 @@ import { parseEnv } from 'node:util';
 // Agent configuration (ADR-015). One env file (ENV_FILE, mode 600, owned by the agent's service user) holds the
 // API URL and the bearer token. Errors name keys and rules only — never values.
 
-export const AGENT_VERSION = '0.3.0';
+export const AGENT_VERSION = '0.4.0';
 const TOKEN_RE = /^ncag_[A-Za-z0-9_-]{43}$/;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 

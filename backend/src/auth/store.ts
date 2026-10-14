@@ -16,7 +16,10 @@ export type AuditEvent =
   | { event: 'agent.credential_issued'; outcome: 'success'; details: { serverId: string; rotated: boolean } }
   | { event: 'agent.credential_revoked'; outcome: 'success'; details: { serverId: string; revoked: boolean } }
   // PM2 process control lifecycle (ADR-017). reason is a server-defined code; never PM2 output.
-  | { event: ProcessCommandEvent; outcome: AuditOutcome; details: ProcessCommandDetails };
+  | { event: ProcessCommandEvent; outcome: AuditOutcome; details: ProcessCommandDetails }
+  // Log viewing (ADR-018): metadata only — never log text.
+  | { event: 'logs.view_opened'; outcome: 'success'; details: { serverId: string; targetKey: string } }
+  | { event: 'logs.view_denied'; outcome: 'denied'; details: { serverId: string; targetKey: string; reason: string } };
 
 export type ProcessCommandEvent =
   | 'process.command_requested' | 'process.command_rejected' | 'process.command_expired' | 'process.command_dispatched'

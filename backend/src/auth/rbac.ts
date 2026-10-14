@@ -11,13 +11,15 @@ export const PERMISSIONS = [
   'users:manage', // future: user administration
   'servers:manage', // server registry and Agent credentials (Task 007)
   'audit:read',
+  'logs:read', // bounded stdout/stderr tail of explicitly allowed services (Task 010, ADR-018)
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = Object.freeze({
   viewer: ['monitoring:read'],
-  operator: ['monitoring:read', 'processes:control'],
-  admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read'],
+  // Logs can contain sensitive data: viewer does not get logs:read; processes:control does not imply it.
+  operator: ['monitoring:read', 'processes:control', 'logs:read'],
+  admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read'],
 });
 
 export function isRole(value: unknown): value is Role {

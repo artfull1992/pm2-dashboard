@@ -3,6 +3,7 @@
 import { runAgent } from './agent.js';
 import { AGENT_VERSION, AgentConfigError, loadAgentConfig, readSecureEnvFile } from './config.js';
 import { runControl } from './control/loop.js';
+import { runLogs } from './control/logs-loop.js';
 import { runInventory } from './inventory/report.js';
 
 const log = (level: 'info' | 'warn' | 'error', event: Record<string, unknown>) => {
@@ -37,7 +38,11 @@ try {
     log('error', { msg: 'control loop stopped', name: error instanceof Error ? error.name : 'unknown' });
     return 0;
   });
-  await Promise.all([runAgent(config, controller.signal, { logger }), inventory, control]);
+  const logs = runLogs(config, controller.signal, { logger }).catch((error: unknown) => {
+    log('error', { msg: 'logs loop stopped', name: error instanceof Error ? error.name : 'unknown' });
+    return 0;
+  });
+  await Promise.all([runAgent(config, controller.signal, { logger }), inventory, control, logs]);
   log('info', { msg: 'agent stopped' });
 } catch (error) {
   if (error instanceof AgentConfigError) {

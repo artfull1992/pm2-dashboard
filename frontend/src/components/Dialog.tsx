@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useId, useRef } from 'react';
 // Accessible modal (no native <dialog> dependency): role=dialog, aria-modal, labelled, focus moved inside on open
 // and restored on close, Escape closes, Tab stays inside.
 
-export function Dialog({ title, children, onClose, actions }: { title: string; children: ReactNode; onClose: () => void; actions: ReactNode }) {
+export function Dialog({ title, children, onClose, actions, className }: { title: string; children: ReactNode; onClose: () => void; actions: ReactNode; className?: string }) {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
 
@@ -27,7 +27,7 @@ export function Dialog({ title, children, onClose, actions }: { title: string; c
 
   return (
     <div className="dialog-backdrop">
-      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={panel}>
+      <div className={`dialog ${className ?? ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={panel}>
         <h2 id={titleId} className="dialog__title">{title}</h2>
         <div className="dialog__body">{children}</div>
         <div className="dialog__actions">{actions}</div>
