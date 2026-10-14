@@ -228,6 +228,22 @@ Regression: справжній HTTP, Agent long-poll і очікувач рез�
 - Ідентичність процесу для рестартів — `source:pm_id:name` + `first_seen_at`.
 - Acknowledgement, silencing і редагування правил в UI не реалізовано.
 
+**Деплой (2026-10-14, ~20:46 UTC, лише центральний сервер).** Deployed code revision: **`e8f61c56bd6028284865bdeb713c4b2715d05213`** (`feat(alerts): add persistent incidents and Slack notifications`). Цей запис — пізніший docs-commit, на сервер не деплоївся. Agent/broker не передеплоювались.
+
+| Крок | Результат |
+|---|---|
+| Baseline | `control-server`; current `1c6c58d` (ціль rollback), previous `0b85151`; API active, ready 200; Nginx/PostgreSQL active, failed 0; `api.env` без змін (ключів `ALERTS_*` немає) |
+| Артефакт | 57 файлів, SHA-256 `0641b18f…85492e` OK, manifest `e8f61c5`; unit без змін |
+| Міграція | status: applied=6, pending=1 (`1791900000006_alerts`) → backup лише `node_control_db` (`node_control_db-20261014T204620Z-pre-e8f61c5….dump`, 600, `pg_restore --list` OK) → `up` → applied=7, pending=0; створено `alert_conditions`, `alert_incidents`, `alert_outbox` |
+| Активація | `current` → `e8f61c5`, `previous` → `1c6c58d`; restart лише `node-control-api` |
+| Graceful shutdown у production | Рестарт старого процесу (`1c6c58d`) знову дав `Shutdown failed or timed out` і `Failed with result 'exit-code'` (10 с) — це старий код. **Контрольний рестарт нового коду** через ~20 с роботи, з утримуваним long-poll Agent: 0,1 с, `Shutdown complete`, без `Failed` |
+| Після деплою | API active (`nodecontrol`, лише `127.0.0.1:3100`); live/ready 200 локально й HTTPS; HTTPS `/`, `/alerts` 200; бандл = `current/frontend/dist`, містить «Сповіщення». Анонімні `/api/alerts`, `/api/alerts/status`, `/api/dashboard` → 401. Журнал нового процесу: 0 error/warn; `pm2ControlEnabled:true`, **`alertsEnabled:false`, `alertsDeliveryEnabled:false`**; у журналі немає `hooks.slack`; `nginx -t` OK |
+| Стан alerts | Рушій і доставка вимкнені; `alert_incidents` = 0, `alert_outbox` = 0, `alert_conditions` = 0. Webhook не налаштовано, повідомлень не надсилалось |
+| Agent / PM2 | Після двох рестартів API Agent відновився (heartbeat 4 с, control 0 с, inventory ~40 с); керуючих дій не було; production-користувачі без змін (2, 1 активний admin) |
+| Rollback | не застосовувався. Спершу `ALERTS_DELIVERY_ENABLED=false`, якщо доставку вмикали, потім `server-release.js rollback` → `1c6c58d` + restart лише API; таблиці alerts лишаються, дані не видаляються |
+
+Увімкнення — після погодження Slack-каналу й адресатів, за кроками розділу «Сповіщення» в [DEPLOYMENT](DEPLOYMENT.md): спершу лише `ALERTS_ENABLED=true` (інциденти в UI), потім доставка з webhook у `api.env`.
+
 ## Task 012 — Dashboard поточного стану системи (2026-10-14)
 
 Стан на початок: `main` = `cd48ef8`; у робочому дереві — незакомічений запис review Codex (угорі документа), збережено й закомічено разом із задачею. Рішення — ADR-020. Міграцій немає.
