@@ -280,3 +280,59 @@
     - `apiRequest` відкидає результат, що надійшов після abort або timeout.
     - Abort лише перестає чекати й **не** скасовує серверну мутацію.
     - Список користувачів — сторінки по 100 через чинний курсор `after` («Назад»/«Далі», ресурс keyed за курсором). Щойно створений користувач — наприкінці; «Показати» проходить ≤ 50 сторінок від поточної до сторінки з ним. Backend-контракт не змінено.
+
+## ADR-020: Dashboard — агрегований read-only огляд системи
+
+Статус: прийнято (Task 012). Лише поточний стан із наявних даних (heartbeat snapshot, PM2 inventory, метадані команд). Без історії метрик, трендів, alerts, Jenkins, нового збору CPU/disk і WebSocket.
+
+- **Endpoint.** `GET /api/dashboard` (`monitoring:read`; GET без CSRF, без audit, без мутацій) → один узгоджений знімок:
+  - читається однією транзакцією `REPEATABLE READ READ ONLY`;
+  - усі вікна свіжості рахуються від одного `now()` транзакції — це `generatedAt`.
+- **Поля відповіді:**
+  - `generatedAt`; `windows` `{onlineSeconds: 90, inventoryFreshSeconds: 180}`;
+  - `servers`: `{total, inactive, active, online, offline, neverConnected}`;
+  - `inventory`: `{current, stale, unavailable, notReported}`;
+  - `processes`: `{live: {total, online, problem, transitional}, notLive}`;
+  - `attentionServers`, `attentionProcesses`, `serverList` — кожен `{items, total, limit}`;
+  - `recentActions`: `{items, limit} | null`.
+- **Правила підрахунку:**
+  - **Неактивні сервери.** Входять лише в `servers.total` і `servers.inactive`. Більше ніде — ні в статуси, ні в inventory, процеси чи списки.
+  - **Статус сервера.** `online` — прийнятий heartbeat свіжіший за 90 с; `offline` — heartbeat був, але давніше; `neverConnected` — heartbeat жодного разу.
+  - **Inventory.** `current` — зібрано менше ніж 180 с тому і стан `ok`. `stale` — exporter повідомив `stale` або дані старіші. `unavailable` — exporter недоступний. `notReported` — Agent ще не надсилав inventory.
+  - **«Live» процес.** Сервер активний **і online**, inventory `current`. Лише такі процеси рахуються за статусами. Решта відомих процесів (сервер offline, inventory stale/unavailable) — `notLive`. Їхній останній статус не видається за поточний: старий `online` офлайн-сервера не збільшує «Зараз працюють».
+  - **Групи статусів PM2:**
+    - `online`;
+    - `problem` = `errored`, `stopped`, `waiting restart`, `unknown`;
+    - `transitional` = `launching`, `stopping`, `one-launch-status`.
+
+    Рестарти — накопичений лічильник PM2, не «частота».
+- **«Потребує уваги».**
+  - **Сервери** (лише активні), в порядку пріоритету:
+    1. `offline`;
+    2. `never_connected`;
+    3. online, але inventory `unavailable`;
+    4. online, але inventory `stale`;
+    5. online, але inventory `not_reported`.
+
+    Усередині пріоритету — за назвою, потім за id.
+  - **Сервіси** — лише live-процеси з `problem`-статусом. Порядок: `errored` → `waiting restart` → `unknown` → `stopped`, потім сервер, назва, pm_id.
+  - Процеси сервера з неактуальними даними окремо не перелічуються: проблему видно як «сервер потребує уваги», без дублювання.
+- **Ліміти.** `attentionServers` ≤ 20, `attentionProcesses` ≤ 20, `serverList` ≤ 50 (активні сервери за назвою), `recentActions` ≤ 10. Кожен список повертає точний `total` за допомогою `count(*) OVER ()`; якщо `total > items.length`, UI показує, що це лише частина записів.
+- **Метрики серверів.**
+  - Знімок (uptime, cpuCount, load average 1/5/15 хв, пам'ять) повертається **лише для online-сервера**. Для offline і never_connected — `null`, щоб старі дані не видавалися за поточні; `lastSeenAt` повертається завжди.
+  - Load average — довжина черги виконання, не відсоток CPU.
+  - Зайнята пам'ять = `total − free` за OS-знімком (це не пам'ять застосунків). Якщо `totalBytes = 0`, відсоток `null`.
+- **Останні дії** (`recentActions`):
+  - Лише для ролей із `processes:control` (operator, admin). Для інших backend повертає `null` і цей запит не виконує.
+  - Поля: id, сервер (id, назва), targetKey, action, status, reason, requestedAt, completedAt, `requestedByMe`, `overdue`. Без id/email ініціатора, результатів PM2, логів і audit details.
+  - `overdue` — команда ще `queued`/`dispatched` після дедлайну: lifecycle її не матеріалізував, і UI не показує її як гарантовано активну. GET нічого не прострочує й не очищає.
+  - Чинна історія команд окремого сервера (`monitoring:read`) не змінена.
+- **SQL.**
+  - Параметризований.
+  - Без N+1: агрегати через `count(*) FILTER`, лічильники процесів сервера — через `LEFT JOIN LATERAL` з агрегатом.
+  - `servers` з'єднується з `server_heartbeats` і `server_inventories` 1:1 (PK `server_id`), тож рахунки не множаться.
+  - Нових індексів немає: `servers`/`server_*` малі; `recentActions` — top-N сортування `control_commands` (за зростання таблиці — окремий індекс `(requested_at DESC, id DESC)`).
+- **Frontend.**
+  - Сторінка «Огляд»: підсумкові картки, «Потребують уваги» (сервери та сервіси), таблиця серверів із поточними метриками, «Останні дії» для дозволених ролей.
+  - Polling 15 с, лише коли вкладка видима; ручне «Оновити»; abort при unmount чи зміні сесії; запізнілі відповіді відкидаються.
+  - Після помилки лишаються останні відомі дані з явною позначкою та часом останньої успішної відповіді. Якщо відповідь старша за online-вікно, сторінка позначає всі статуси як неактуальні.

@@ -8,6 +8,8 @@ import { registerUserRoutes } from './auth/users-routes.js';
 import { createPgUserStore, type UserStore } from './auth/users-store.js';
 import { createPgControlStore, type ControlStore } from './servers/control-store.js';
 import { registerControlRoutes } from './servers/control-routes.js';
+import { createPgDashboardStore, type DashboardStore } from './servers/dashboard-store.js';
+import { registerDashboardRoutes } from './servers/dashboard-routes.js';
 import { LogHub } from './servers/logs.js';
 import { registerLogRoutes } from './servers/logs-routes.js';
 import { createPgInventoryStore, type InventoryStore } from './servers/inventory-store.js';
@@ -55,6 +57,8 @@ export interface BuildAppOptions {
     controlLimiter?: Limiter;
     /** Test seam: in-memory log hub (ADR-018). */
     logHub?: LogHub;
+    /** Test seam for the dashboard aggregate (ADR-020). */
+    createDashboardStore?: (database: Database) => DashboardStore;
     /** Test seam for user administration (ADR-019). */
     createUserStore?: (database: Database) => UserStore;
     /** Test seam: user administration rate limit per actor. */
@@ -155,6 +159,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       store: controlStore, enabled: options.auth.controlEnabled === true,
       ...(options.auth.controlLimiter ? { limiter: options.auth.controlLimiter } : {}),
     });
+    registerDashboardRoutes(app, { store: (options.auth.createDashboardStore ?? createPgDashboardStore)(database) });
     registerLogRoutes(app, {
       hub: options.auth.logHub ?? new LogHub(),
       serverExists: async (id) => (await serverStore.get(id)) !== null,

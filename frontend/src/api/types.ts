@@ -423,3 +423,98 @@ export function parseUserPage(value: unknown): UserPage {
   expect(value.nextAfter === null || (isString(value.nextAfter, 36) && USER_ID_RE.test(value.nextAfter)));
   return { items: value.items.map(parseUserView), nextAfter: value.nextAfter };
 }
+
+// --- Dashboard (Task 012, ADR-020) -------------------------------------------------------------------------------
+
+export type InventoryStateAll = 'current' | 'stale' | 'unavailable' | 'not_reported';
+export type AttentionReason = 'offline' | 'never_connected' | 'inventory_unavailable' | 'inventory_stale' | 'inventory_not_reported';
+interface Bounded<T> { items: T[]; total: number; limit: number }
+
+export interface DashboardServer {
+  id: string; name: string; status: ServerStatus; lastSeenAt: string | null;
+  metrics: { hostname: string; uptimeSeconds: number; cpuCount: number; loadAverage: [number, number, number]; memory: { totalBytes: number; usedBytes: number; usedPercent: number | null } } | null;
+  inventory: { state: InventoryStateAll; collectedAt: string | null };
+  processes: { total: number; online: number; problem: number } | null;
+}
+export interface RecentAction {
+  id: string; serverId: string; serverName: string; targetKey: string; action: ControlAction; status: CommandView['status']; reason: string | null;
+  requestedAt: string; completedAt: string | null; requestedByMe: boolean; overdue: boolean;
+}
+export interface DashboardView {
+  generatedAt: string;
+  windows: { onlineSeconds: number; inventoryFreshSeconds: number };
+  servers: { total: number; inactive: number; active: number; online: number; offline: number; neverConnected: number };
+  inventory: { current: number; stale: number; unavailable: number; notReported: number };
+  processes: { live: { total: number; online: number; problem: number; transitional: number }; notLive: number };
+  attentionServers: Bounded<{ id: string; name: string; status: ServerStatus; reason: AttentionReason; lastSeenAt: string | null; inventoryCollectedAt: string | null }>;
+  attentionProcesses: Bounded<{ serverId: string; serverName: string; pmId: number; name: string; status: ProcessStatus; restarts: number | null; uptimeSeconds: number | null }>;
+  serverList: Bounded<DashboardServer>;
+  recentActions: { items: RecentAction[]; limit: number } | null;
+}
+
+const DASH_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const INVENTORY_STATES_ALL = ['current', 'stale', 'unavailable', 'not_reported'] as const;
+const ATTENTION_REASONS = ['offline', 'never_connected', 'inventory_unavailable', 'inventory_stale', 'inventory_not_reported'] as const;
+const COMMAND_STATUSES_ALL = ['queued', 'dispatched', 'succeeded', 'failed', 'rejected', 'expired', 'unknown'] as const;
+const isId = (v: unknown): v is string => typeof v === 'string' && DASH_UUID.test(v);
+const isName = (v: unknown): v is string => isString(v, 253) && v.length > 0;
+const isNum = (v: unknown, max = Number.MAX_SAFE_INTEGER): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max;
+function counts<K extends string>(v: unknown, keys: readonly K[]): Record<K, number> {
+  expect(isObject(v) && Object.keys(v).length === keys.length);
+  const out = {} as Record<K, number>;
+  for (const k of keys) { const n = v[k]; expect(isNum(n) && Number.isInteger(n)); out[k] = n; }
+  return out;
+}
+function bounded<T>(v: unknown, item: (x: unknown) => T, max: number): Bounded<T> {
+  expect(isObject(v) && Array.isArray(v.items) && v.items.length <= max && isNum(v.total) && isNum(v.limit) && v.items.length <= v.total);
+  return { items: v.items.map(item), total: v.total, limit: v.limit };
+}
+
+function parseDashboardServer(v: unknown): DashboardServer {
+  expect(isObject(v) && isId(v.id) && isName(v.name) && isServerStatus(v.status) && isNullableDate(v.lastSeenAt));
+  expect(isObject(v.inventory) && oneOf(INVENTORY_STATES_ALL, v.inventory.state) && isNullableDate(v.inventory.collectedAt));
+  let metrics: DashboardServer['metrics'] = null;
+  if (v.metrics !== null) {
+    const m = v.metrics;
+    expect(isObject(m) && isName(m.hostname) && isNum(m.uptimeSeconds) && isNum(m.cpuCount, 4096) && Array.isArray(m.loadAverage) && m.loadAverage.length === 3 && m.loadAverage.every((x) => isNum(x)));
+    expect(isObject(m.memory) && isNum(m.memory.totalBytes) && isNum(m.memory.usedBytes) && (m.memory.usedPercent === null || isNum(m.memory.usedPercent, 100)));
+    const [a, b, c] = m.loadAverage as [number, number, number];
+    metrics = { hostname: m.hostname, uptimeSeconds: m.uptimeSeconds, cpuCount: m.cpuCount, loadAverage: [a, b, c], memory: { totalBytes: m.memory.totalBytes, usedBytes: m.memory.usedBytes, usedPercent: m.memory.usedPercent } };
+  }
+  const processes = v.processes === null ? null : counts(v.processes, ['total', 'online', 'problem'] as const);
+  return { id: v.id, name: v.name, status: v.status, lastSeenAt: v.lastSeenAt, metrics, inventory: { state: v.inventory.state, collectedAt: v.inventory.collectedAt }, processes };
+}
+
+/** Strict: unknown statuses, out-of-range numbers or oversized lists are a contract violation (nothing is guessed). */
+export function parseDashboard(value: unknown): DashboardView {
+  expect(isObject(value) && isDate(value.generatedAt));
+  const windows = counts(value.windows, ['onlineSeconds', 'inventoryFreshSeconds'] as const);
+  const servers = counts(value.servers, ['total', 'inactive', 'active', 'online', 'offline', 'neverConnected'] as const);
+  const inventory = counts(value.inventory, ['current', 'stale', 'unavailable', 'notReported'] as const);
+  expect(isObject(value.processes) && Object.keys(value.processes).length === 2 && isNum(value.processes.notLive));
+  const processes = { live: counts(value.processes.live, ['total', 'online', 'problem', 'transitional'] as const), notLive: value.processes.notLive };
+  const attentionServers = bounded(value.attentionServers, (x) => {
+    expect(isObject(x) && isId(x.id) && isName(x.name) && isServerStatus(x.status) && oneOf(ATTENTION_REASONS, x.reason) && isNullableDate(x.lastSeenAt) && isNullableDate(x.inventoryCollectedAt));
+    return { id: x.id, name: x.name, status: x.status, reason: x.reason, lastSeenAt: x.lastSeenAt, inventoryCollectedAt: x.inventoryCollectedAt };
+  }, 100);
+  const attentionProcesses = bounded(value.attentionProcesses, (x) => {
+    expect(isObject(x) && isId(x.serverId) && isName(x.serverName) && isNum(x.pmId) && isString(x.name, 128) && oneOf(PROCESS_STATUSES, x.status));
+    expect((x.restarts === null || isNum(x.restarts)) && (x.uptimeSeconds === null || isNum(x.uptimeSeconds)));
+    return { serverId: x.serverId, serverName: x.serverName, pmId: x.pmId, name: x.name, status: x.status, restarts: x.restarts, uptimeSeconds: x.uptimeSeconds };
+  }, 100);
+  const serverList = bounded(value.serverList, parseDashboardServer, 100);
+  let recentActions: DashboardView['recentActions'] = null;
+  if (value.recentActions !== null) {
+    const r = value.recentActions;
+    expect(isObject(r) && Array.isArray(r.items) && r.items.length <= 50 && isNum(r.limit));
+    recentActions = {
+      limit: r.limit,
+      items: r.items.map((x: unknown) => {
+        expect(isObject(x) && isId(x.id) && isId(x.serverId) && isName(x.serverName) && isString(x.targetKey, 64) && oneOf(CONTROL_ACTIONS, x.action) && oneOf(COMMAND_STATUSES_ALL, x.status));
+        expect(isNullableString(x.reason) && isDate(x.requestedAt) && isNullableDate(x.completedAt) && typeof x.requestedByMe === 'boolean' && typeof x.overdue === 'boolean');
+        return { id: x.id, serverId: x.serverId, serverName: x.serverName, targetKey: x.targetKey, action: x.action, status: x.status, reason: x.reason, requestedAt: x.requestedAt, completedAt: x.completedAt, requestedByMe: x.requestedByMe, overdue: x.overdue };
+      }),
+    };
+  }
+  return { generatedAt: value.generatedAt, windows, servers, inventory, processes, attentionServers, attentionProcesses, serverList, recentActions };
+}

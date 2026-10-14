@@ -50,11 +50,11 @@ export interface InventoryStore {
 }
 
 const FRESH = `make_interval(secs => ${String(INVENTORY_FRESH_SECONDS)})`;
-const INVENTORY_STATE_SQL = `CASE WHEN i.server_id IS NULL THEN 'not_reported'
+export const INVENTORY_STATE_SQL = `CASE WHEN i.server_id IS NULL THEN 'not_reported'
             WHEN i.state = 'unavailable' THEN 'unavailable'
             WHEN i.state = 'stale' OR i.inventory_collected_at IS NULL OR i.inventory_collected_at <= now() - ${FRESH} THEN 'stale'
             ELSE 'current' END`;
-const SERVER_STATUS_SQL = `CASE WHEN h.received_at IS NULL THEN 'never_connected'
+export const SERVER_STATUS_SQL = `CASE WHEN h.received_at IS NULL THEN 'never_connected'
             WHEN h.received_at > now() - make_interval(secs => ${String(ONLINE_WINDOW_SECONDS)}) THEN 'online'
             ELSE 'offline' END`;
 

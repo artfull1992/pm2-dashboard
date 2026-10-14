@@ -130,7 +130,8 @@ describe('logout', () => {
     installFetch((req) => (req.url === '/api/auth/logout' ? json(503, {}) : json(200, session())));
     renderApp('/');
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Вийти' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Не вдалося вийти');
+    // The overview on this page may show its own alert (this mock has no dashboard data); look for the logout one.
+    expect((await screen.findByText(/Не вдалося вийти/)).getAttribute('role')).toBe('alert');
     expect(screen.getByText('admin@example.test')).toBeTruthy();
   });
 });

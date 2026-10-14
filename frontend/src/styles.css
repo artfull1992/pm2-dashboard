@@ -221,3 +221,33 @@ h1, h2, p { margin: 0; }
 .pager { align-items: center; flex-wrap: wrap; }
 .pager__page { color: var(--text-muted); font-size: .9rem; font-variant-numeric: tabular-nums; }
 .user-status { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+
+/* Dashboard (Task 012) */
+.dash-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; }
+.dash-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.dash-stat { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border: 1px solid var(--border); border-left-width: 4px; border-radius: 12px; background: var(--surface); }
+.dash-stat__label { font-size: .8rem; color: var(--text-muted); }
+.dash-stat__value { font-size: 1.7rem; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.dash-stat__detail { font-size: .78rem; color: var(--text-muted); }
+.dash-stat--ok { border-left-color: var(--success); }
+.dash-stat--bad { border-left-color: var(--danger); }
+.dash-stat--warn { border-left-color: var(--warning); }
+.dash-stat--neutral { border-left-color: var(--border); }
+.dash-attention { display: grid; gap: 12px; }
+.dash-attention__cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.dash-subtitle { font-size: .95rem; margin: 0 0 8px; }
+.dash-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.dash-list li { padding: 10px 12px; background: var(--bg); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.dash-list__why { flex-basis: 100%; font-size: .82rem; color: var(--text-muted); }
+.dash-problem { color: var(--danger); font-size: .8rem; }
+.dash-mem { display: grid; gap: 4px; min-width: 140px; }
+.meter { display: block; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.meter__fill { display: block; height: 100%; background: var(--primary); }
+.dash--outdated .badge, .dash--outdated .dash-stat__value, .dash--outdated .meter__fill { opacity: .55; }
+.dash--outdated .meter__fill { background: var(--text-muted); }
+@media (max-width: 760px) {
+  .dash-attention__cols { grid-template-columns: 1fr; }
+  .dash-stat__value { font-size: 1.4rem; }
+}
+.dash-procs { display: block; margin-top: 6px; font-size: .82rem; }
+.dash-mem { min-width: 120px; }

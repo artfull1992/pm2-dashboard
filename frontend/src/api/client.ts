@@ -2,7 +2,7 @@ import {
   type ApplicationPage, type AuditPage, type CommandView, ContractError, type ControlAction, type ControlView, type IssuedCredential,
   parseApplicationPage, parseAuditPage, parseCommandList, parseCommandView, parseControlView, parseIssuedCredential,
   type LogRequestView, type LogTargetsView, parseLogRequestCreated, parseLogRequestView, parseLogTargets,
-  parseRevokeResult, parseServerApplications, parseUserPage, parseUserView, type Role, type UserPage, type UserView, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
+  parseDashboard, type DashboardView, parseRevokeResult, parseServerApplications, parseUserPage, parseUserView, type Role, type UserPage, type UserView, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
   type ProcessStatus, type ServerApplications, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
 } from './types';
 
@@ -136,6 +136,11 @@ export const authApi = {
   /** 204 on success; every session (this one included) is gone afterwards. Never retried automatically. */
   changePassword: (currentPassword: string, newPassword: string, csrfToken: string, signal?: AbortSignal) =>
     apiRequest('/api/auth/change-password', { method: 'POST', body: { currentPassword, newPassword }, csrfToken, ...(signal ? { signal } : {}) }),
+};
+
+// --- Dashboard (Task 012, ADR-020) -------------------------------------------------------------------------------
+export const dashboardApi = {
+  get: (signal?: AbortSignal): Promise<DashboardView> => apiRequest('/api/dashboard', { parse: parseDashboard, ...(signal ? { signal } : {}) }),
 };
 
 // --- Users (Task 011, ADR-019) -----------------------------------------------------------------------------------

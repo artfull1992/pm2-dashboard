@@ -8,7 +8,8 @@ import { LoginPage } from './pages/LoginPage';
 import { ServerDetailPage } from './pages/ServerDetailPage';
 import { ServersPage } from './pages/ServersPage';
 import { ApplicationsPage } from './pages/ApplicationsPage';
-import { DashboardPage, NotFoundPage } from './pages/SimplePages';
+import { DashboardPage } from './pages/DashboardPage';
+import { NotFoundPage } from './pages/SimplePages';
 import { UsersPage } from './pages/UsersPage';
 
 /** Remounts the private area per session, so no component state of one session survives into another. */

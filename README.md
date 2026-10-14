@@ -147,6 +147,14 @@ npm run backend:start     # node backend/dist/main.js
 | `POST /api/auth/logout` (без тіла) | сесія + Origin + `x-csrf-token` | `204`, cookie очищено | 401, 403 (Origin/CSRF), 503 |
 | `GET /api/audit?limit=1..100&beforeId=<id>` | `audit:read` (admin) | `200 {items:[{id,occurredAt,event,outcome,actorUserId,requestId,details}], nextBeforeId}` — `id DESC`, keyset | 400, 401, 403 `Insufficient permissions`, 503 |
 
+### Dashboard (Task 012, ADR-020)
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `GET /api/dashboard` | `monitoring:read` (усі ролі); read-only, без audit | `200 {generatedAt, windows, servers, inventory, processes, attentionServers, attentionProcesses, serverList, recentActions}` — точні агрегати всіх записів + обмежені списки `{items, total, limit}`; `recentActions` лише для `processes:control` (інакше `null`) | 401, 403, 503 + `Retry-After` |
+
+Правила (неактивні сервери, «live» процеси, «потребує уваги», ліміти, метрики лише online-серверів) — ADR-020.
+
 ### Користувачі та зміна власного пароля (Task 011, ADR-019)
 
 | Запит | Доступ | Успіх | Помилки |

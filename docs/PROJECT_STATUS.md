@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-14 (Task 011.2). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-14 (Task 012). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Незалежний review Codex — Task 011 (2026-10-14)
 
@@ -24,6 +24,14 @@ Read-only SSH: control-server current `20896ddcb0c70f22cb101ba539cac048c333513a`
 Незалежний check:local на Node.js 22 exit 0: 89 node:test, 380 backend, 10 smoke, 164 agent +3 opt-in пропущені, 151 frontend; lint/typecheck/secrets/збірки. UI Playwright із synthetic API: 2/2 desktop/mobile. Новий окремий reproduction-тест підтвердив дефект і видалений. Real-DB та повні user E2E цього разу не повторювалися (backend не змінено).
 
 Read-only SSH: control-server current `ac4d967679a723db04185f04f2cdd4e1b6a1d259`, API/Nginx active, ready 200. Production-користувачі/паролі/конфігурації не змінювались. Task 011.1 потребує одного додаткового frontend-виправлення перед переходом до Dashboard. Запис review локальний, без commit/push/deploy; функціональний код reviewer не змінював.
+
+## Незалежний review Codex — Task 011.2 (2026-10-14)
+
+Переглянуто фінальний code commit `0b85151` і docs-звіт `cd48ef8`; початкове дерево чисте. Попередній P2 закрито: CreateUserForm викликає актуальний onCreated, що використовує data/reload поточного cursor. Нових блокувальних дефектів у переглянутому diff не знайдено. Це закриває зауваження review Task 011/011.1 у межах реалізованих сценаріїв.
+
+Незалежно на Node.js 22: 157/157 frontend-тестів (включно з шістьма новими create-while-paging regression), typecheck, lint, frontend build, check:secrets і diff check успішні; UI Playwright із synthetic API 2/2 desktop/mobile. Початковий frontend-прогін був розпочатий перед перериванням review й завершився успішно; порівняння підтвердило той самий фінальний код. Повний check:local, real-DB і user E2E цього разу незалежно не повторювалися; результати Claude вище є історичними. Backend/схема/Agent не змінені.
+
+Read-only SSH: control-server current `0b851511612096c05ba7825b15ab6c51f50975e7`, API/Nginx active, ready 200. Production-користувачі, паролі й конфігурації не змінювались. Запис review підготовлено локально без commit/push/deploy; функціональний код не змінено. Наступна задача — Dashboard за погодженим roadmap, потім Slack, історія метрик і production-підготовка.
 
 ## Завершено за фактичними файлами
 
@@ -165,6 +173,54 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Task 012 — Dashboard поточного стану системи (2026-10-14)
+
+Стан на початок: `main` = `cd48ef8`; у робочому дереві — незакомічений запис review Codex (угорі документа), збережено й закомічено разом із задачею. Рішення — ADR-020. Міграцій немає.
+
+**Backend.** `GET /api/dashboard` (`monitoring:read`, read-only, без audit):
+- Один узгоджений знімок: транзакція `REPEATABLE READ READ ONLY`, усі вікна свіжості від одного `now()` = `generatedAt`.
+- Точні агрегати всіх записів: сервери за статусами, неактивні окремо; inventory за станами; live-процеси за групами; `notLive`.
+- Обмежені списки з точним `total`: `attentionServers` ≤ 20, `attentionProcesses` ≤ 20, `serverList` ≤ 50.
+- `recentActions` ≤ 10 лише для `processes:control`: для viewer — `null`, і запит до команд не виконується. Без id чи email ініціатора (лише `requestedByMe`), результатів PM2, логів і audit details. `overdue` для pending після дедлайну, без мутацій.
+- SQL параметризований; з'єднання 1:1 за PK `server_id`; лічильники процесів сервера — `LEFT JOIN LATERAL`; без N+1. Нових індексів немає (обґрунтування в ADR-020).
+- Строга response-схема: nullable-об'єкти через `type: ['object', 'null']`, бо з `anyOf` зайве поле давало 500 замість відкидання. Помилка БД → 503 + `Retry-After` без тексту.
+
+**Frontend.** «Огляд» (`DashboardPage`, замість статичного привітання):
+- Шапка з часом останньої успішної відповіді й «Оновити».
+- 5 підсумкових карток:
+  - сервери онлайн з активних (неактивні — окремою приміткою);
+  - «не звітують» = офлайн + без першого звіту;
+  - PM2-процеси зараз (лише live);
+  - проблемні сервіси;
+  - неактуальні дані.
+- «Потребують уваги»: сервери з причиною словами й сервіси з проблемним статусом, без дублювання; «Показано N з M».
+- Таблиця серверів:
+  - стан, останній сигнал, uptime;
+  - load average 1/5/15 з поясненням «не відсоток CPU»;
+  - пам'ять ОС зі смужкою знімка (не історія);
+  - сервіси PM2 зі свіжістю.
+
+  Метрики офлайн-сервера — «—»; `totalBytes = 0` → пам'ять невідома.
+- «Останні керуючі дії» для operator/admin.
+- Polling 15 с, лише коли вкладка видима. Хук polling тепер дає `refreshing` і локальний `receivedAt`. Після помилки показуються останні відомі дані з явною позначкою; дані, старші за online-вікно, приглушуються й позначаються як неактуальні.
+- Колір не єдиний носій статусу (текстові бейджі). Скриншоти з синтетичними даними: `dashboard.spec.ts` за `NC_E2E_SCREENSHOT_DIR`; за замовчуванням вимкнено.
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 89/89, backend 387/387 (нові `dashboard-api` 7), smoke 10/10, agent 164/164 (+3 opt-in), frontend 165/165 (нові `dashboard` 8), typecheck, lint, збірки, `check:secrets` OK |
+| Real-DB (`test:backend:db`) | 78/78, зокрема нові `db/dashboard` 6: порожня система; статуси, стани inventory, live/notLive, неактивні виключено, без множення рахунків; межі свіжості 85/95 с і 175/185 с; 60+ серверів і 30 проблемних процесів — точні `total`, обмежені списки, детермінований порядок; дії лише за запитом, `requestedByMe`, `overdue`, GET нічого не змінює; READ ONLY транзакція |
+| UI Playwright (1440/390) | 2/2 |
+| E2E (`test:e2e`, тестова БД) | 15/15 (+1 opt-in), нові `dashboard.spec.ts` 2: operator бачить синтетичні сервери, метрики, «Потребують уваги», останні дії й переходи; viewer — без деталей дій в UI та API (`recentActions: null`), 390 px без горизонтального скролу |
+| Real-PM2 E2E | 1/1 (керування й логи без регресій) |
+| Залишки | 0 схем `nc_test_*`; PM2 daemon і `~/.pm2` відсутні |
+
+Під час розробки один прогін E2E упав на `pg` «timeout expired» у global-setup: SSH-тунель до тестової БД завис. Після перепідключення тунелю — зелено. Це проблема середовища, не коду.
+
+Обмеження:
+- `recentActions` сортує `control_commands` без окремого індексу: таблиця мала; за зростання додати `(requested_at DESC, id DESC)`.
+- Таблиця серверів показує ≤ 50 активних за назвою; повний список — «Сервери».
+- Історії метрик немає (наступні задачі).
 
 ## Task 011.2 — оновлення актуальної сторінки після створення користувача (2026-10-14)
 
@@ -863,9 +919,9 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 011.2 — виправлено P2 review Codex (оновлення актуальної сторінки після створення користувача); очікує review Codex. Після успішного review — Dashboard. Completed: Task 010.1 — повторний review Codex підтвердив виправлення обох P2 у ресурсних лімітах логів (див. нижче). Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 012 — Dashboard поточного стану (ADR-020); очікує review Codex. Completed: Task 011.2 (review Codex пройдено).
 
-Next Task: узгоджений користувачем порядок: Dashboard → Slack/alerts → історія метрик → фінальна production-підготовка. Jenkins redeploy перенесений користувачем у далекий backlog після іншої автоматизації; у поточний план запуску не входить. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
+Next Task: узгоджений користувачем порядок: Slack/alerts → історія метрик → фінальна production-підготовка. Jenkins redeploy перенесений користувачем у далекий backlog після іншої автоматизації; у поточний план запуску не входить. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.
 
