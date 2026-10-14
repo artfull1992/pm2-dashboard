@@ -205,6 +205,18 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 Межі: гонку «POST затримано, поки користувач гортає сторінки» відтворено детерміновано лише у frontend-тестах з deferred-відповіддю. У справжньому E2E затримку POST не моделювали.
 
+**Деплой (2026-10-14, ~18:07 UTC, лише центральний сервер).** Deployed code revision: **`0b851511612096c05ba7825b15ab6c51f50975e7`** (`fix(users): refresh the current page after user creation`). Цей запис — пізніший docs-commit, на сервер не деплоївся. Agent/broker не передеплоювались.
+
+| Крок | Результат |
+|---|---|
+| Baseline | `control-server`; current `ac4d967` (ціль rollback), previous `20896dd`; API active, ready 200; Nginx/PostgreSQL active, failed 0; `api.env` без змін |
+| Артефакт і активація | 49 файлів, SHA-256 `ee0fa434…bc196a` OK, manifest `0b85151`; unit без змін; міграції applied=6, pending=0; `backend/dist` ідентичний попередньому релізу (лише frontend). `current` → `0b85151`, `previous` → `ac4d967`; restart лише `node-control-api` (старий процес завершився штатно за ~1 с) |
+| Після деплою | API active (`nodecontrol`, лише `127.0.0.1:3100`); live/ready 200 локально й HTTPS; HTTPS `/`, `/users` 200; бандл = `current/frontend/dist`. Анонімні `GET/POST /api/users`, `PATCH /api/users/:id`, `POST /api/auth/change-password` → 401. Журнал із restart: 0 error/fatal, 0 warn; `pm2ControlEnabled:true` без змін; `nginx -t` OK (конфіг не змінювався). Heartbeat Agent — 20 с |
+| Production-дані | Користувачі й паролі не змінювались (2 користувачі, 1 активний admin — як до деплою) |
+| Rollback | не застосовувався. `server-release.js rollback` → `ac4d967` + restart лише API; БД, паролі й сесії не відкочуються |
+
+Відкрите з Task 011.1: graceful shutdown API чекає на long-poll Agent (`LogHub.close()` в `onClose`). Пропозиція — окрема задача із закриттям у `preClose`.
+
 ## Task 011.1 — запізнілі відповіді між сесіями та пагінація користувачів (2026-10-14)
 
 Стан на початок: `main` = `2ce89c7`; у робочому дереві — незакомічений запис review Codex (Task 011, угорі документа), збережено й закомічено разом із виправленням. Backend і схема не змінювались.
