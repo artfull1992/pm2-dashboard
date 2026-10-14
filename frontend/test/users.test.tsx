@@ -268,3 +268,89 @@ describe('user administration', () => {
     expect(await screen.findByText('Сесія завершилась. Увійдіть знову.')).toBeTruthy();
   });
 });
+
+// Task 011.1: a response that belongs to an earlier form/session must never change the current session. The test
+// transport (deferred) completes AFTER the abort, exactly the case the UI has to ignore.
+describe('stale responses across sessions', () => {
+  async function relogin(u: ReturnType<typeof userEvent.setup>) {
+    await u.click(screen.getByRole('button', { name: 'Вийти' }));
+    await u.type(await screen.findByLabelText('Email'), 'viewer@example.test');
+    await u.type(screen.getByLabelText('Пароль'), CURRENT);
+    await u.click(screen.getByRole('button', { name: 'Увійти' }));
+    await u.click(await screen.findByRole('link', { name: 'Огляд' }));
+    expect(await screen.findByRole('heading', { name: 'Огляд' })).toBeTruthy();
+  }
+  function lateBackend(reply: Promise<Response>) {
+    return backend('viewer', (req) => {
+      if (req.url === '/api/auth/change-password') return reply;
+      if (req.url === '/api/auth/logout') return noContent();
+      if (req.url === '/api/auth/login') return json(200, session('viewer'));
+      return undefined;
+    });
+  }
+
+  it('pending change → leave the page → late success: the session is kept', async () => {
+    const answer = deferred<Response>();
+    lateBackend(answer.promise);
+    renderApp('/account');
+    const u = await fillPassword(CURRENT, NEXT);
+    await u.click(screen.getByRole('button', { name: 'Змінити пароль' }));
+    await u.click(screen.getByRole('link', { name: 'Огляд' }));
+    await act(async () => { answer.resolve(noContent()); await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.getByRole('heading', { name: 'Огляд' })).toBeTruthy();
+    expect(screen.queryByText(/Пароль змінено/)).toBeNull();
+  });
+
+  it('pending change → logout → new login → late success of the OLD form does not end the NEW session', async () => {
+    const answer = deferred<Response>();
+    lateBackend(answer.promise);
+    renderApp('/account');
+    const u = await fillPassword(CURRENT, NEXT);
+    await u.click(screen.getByRole('button', { name: 'Змінити пароль' }));
+    await relogin(u);
+    await act(async () => { answer.resolve(noContent()); await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.getByRole('heading', { name: 'Огляд' })).toBeTruthy();
+    expect(screen.queryByText(/Пароль змінено/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Вийти' })).toBeTruthy();
+  });
+
+  it('a late ERROR (409) of the old form does not end the new session either', async () => {
+    const answer = deferred<Response>();
+    lateBackend(answer.promise);
+    renderApp('/account');
+    const u = await fillPassword(CURRENT, NEXT);
+    await u.click(screen.getByRole('button', { name: 'Змінити пароль' }));
+    await relogin(u);
+    await act(async () => { answer.resolve(json(409, {})); await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.getByRole('heading', { name: 'Огляд' })).toBeTruthy();
+    expect(screen.queryByText('Сесія завершилась. Увійдіть знову.')).toBeNull();
+  });
+
+  it('create / update user answered after leaving the page: no stale callback, no reload', async () => {
+    const created = deferred<Response>();
+    const updated = deferred<Response>();
+    const calls = backend('admin', (req) => {
+      if (req.url === '/api/users' && req.method === 'POST') return created.promise;
+      if (req.method === 'PATCH') return updated.promise;
+      return undefined;
+    });
+    renderApp('/users');
+    const u = userEvent.setup();
+    const form = await screen.findByRole('form', { name: 'Новий користувач' });
+    await u.type(within(form).getByLabelText('Email'), 'late@example.test');
+    await u.type(within(form).getByLabelText('Початковий пароль'), NEXT);
+    await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
+    await u.click(screen.getByRole('button', { name: 'Дії: other@example.test' }));
+    await u.click(screen.getByRole('button', { name: 'Деактивувати' }));
+    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Деактивувати' }));
+    await u.click(screen.getByRole('link', { name: 'Огляд' }));
+    const lists = calls.filter((c) => c.url.startsWith('/api/users?')).length;
+    await act(async () => {
+      created.resolve(json(201, user('33333333-3333-4333-8333-333333333333', 'late@example.test', 'viewer')));
+      updated.resolve(json(200, user(OTHER_ID, 'other@example.test', 'viewer', false)));
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(calls.filter((c) => c.url.startsWith('/api/users?')).length).toBe(lists);
+    expect(screen.getByRole('heading', { name: 'Огляд' })).toBeTruthy();
+  });
+});

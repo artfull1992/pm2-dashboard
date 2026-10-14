@@ -108,3 +108,39 @@ describe('runtime validation', () => {
     expect(() => parseAuditPage({ items: Array.from({ length: 101 }, () => ({})), nextBeforeId: null })).toThrow();
   });
 });
+
+// Task 011.1: a transport that completes AFTER cancellation must not yield a result — the caller has moved on.
+describe('cancellation on the success path', () => {
+  function lateTransport(response: () => Response) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    vi.stubGlobal('fetch', vi.fn(async () => { await gate; return response(); }));
+    return release;
+  }
+
+  it('a 204 that arrives after the caller aborted → aborted, not success', async () => {
+    const release = lateTransport(() => noContent());
+    const controller = new AbortController();
+    const pending = errorOf(authApi.changePassword('synthetic-Current-1', 'synthetic-Next-Pass-2', CSRF, controller.signal));
+    controller.abort();
+    release();
+    expect((await pending).kind).toBe('aborted');
+  });
+
+  it('a valid JSON body that arrives after the caller aborted → aborted, not parsed data', async () => {
+    const release = lateTransport(() => json(200, session()));
+    const controller = new AbortController();
+    const pending = errorOf(authApi.me(controller.signal));
+    controller.abort();
+    release();
+    expect((await pending).kind).toBe('aborted');
+  });
+
+  it('a success that arrives after the timeout → timeout', async () => {
+    const release = lateTransport(() => noContent());
+    const pending = errorOf(apiRequest('/api/auth/logout', { method: 'POST', csrfToken: CSRF, timeoutMs: 10 }));
+    await new Promise((r) => setTimeout(r, 30));
+    release();
+    expect((await pending).kind).toBe('timeout');
+  });
+});

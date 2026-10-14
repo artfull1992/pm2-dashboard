@@ -1,5 +1,5 @@
 import { type SyntheticEvent, useCallback, useEffect, useId, useRef, useState } from 'react';
-import { ApiError, usersApi } from '../api/client';
+import { ApiError, USERS_PAGE_SIZE, usersApi } from '../api/client';
 import { KNOWN_ROLES, type Role, type UserView } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
@@ -31,7 +31,7 @@ function userError(error: unknown, kind: 'create' | 'update'): string {
 }
 
 function CreateUserForm({ onCreated }: { onCreated: (user: UserView) => void }) {
-  const { state, sessionExpired } = useAuth();
+  const { state, sessionExpired, bindSession } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<Role>('viewer');
@@ -58,12 +58,15 @@ function CreateUserForm({ onCreated }: { onCreated: (user: UserView) => void }) 
     setPending(true);
     const controller = new AbortController();
     inflight.current = controller;
+    const binding = bindSession();
+    const stale = () => controller.signal.aborted || !binding.current();
     try {
       const user = await usersApi.create({ email: email.trim(), password, role }, csrfToken, controller.signal);
+      if (stale()) return; // left the page or the session: no callback, no reload
       setEmail(''); setPassword(''); setRole('viewer'); setVisible(false);
       onCreated(user);
     } catch (error) {
-      if (controller.signal.aborted) return;
+      if (stale()) return;
       setPassword('');
       if (error instanceof ApiError && error.kind === 'unauthorized') { sessionExpired(); return; }
       setFormError(userError(error, 'create'));
@@ -109,15 +112,24 @@ function CreateUserForm({ onCreated }: { onCreated: (user: UserView) => void }) 
 }
 
 type Pending = { kind: 'role'; user: UserView; role: Role } | { kind: 'active'; user: UserView; isActive: boolean };
+interface Status { text: string; find?: UserView }
+
+/** Bound for "Показати": at most this many pages are walked to reach a newly created user (5 000 users). */
+export const MAX_SEEK_PAGES = 50;
 
 export function UsersPage() {
-  const { state: auth, sessionExpired } = useAuth();
-  const load = useCallback((signal: AbortSignal) => usersApi.list(signal), []);
-  const { state, reload } = usePolledResource(load, 'users');
+  const { state: auth, sessionExpired, bindSession } = useAuth();
+  // Keyset pages: the cursor of each visited page (null = first). "Назад" pops, "Далі" pushes nextAfter. The resource
+  // is keyed by the cursor, so another page's data is never shown and a late answer for a page we left is dropped.
+  const [cursors, setCursors] = useState<(string | null)[]>([null]);
+  const cursor = cursors.at(-1) ?? null;
+  const load = useCallback((signal: AbortSignal) => usersApi.list(cursor, signal), [cursor]);
+  const { state, reload } = usePolledResource(load, `users:${cursor ?? 'first'}`);
   const [dialog, setDialog] = useState<Pending | null>(null);
   const [pending, setPending] = useState(false);
+  const [seeking, setSeeking] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<Status | null>(null);
   const inflight = useRef<AbortController | null>(null);
   const roleId = useId();
   useEffect(() => () => { inflight.current?.abort(); }, []);
@@ -129,6 +141,9 @@ export function UsersPage() {
   const { csrfToken } = auth.session;
   const data = state.status === 'ready' ? state.data : state.status === 'error' ? state.data : null;
 
+  const busy = pending || seeking;
+  const go = (next: (string | null)[]) => { setStatus(null); setCursors(next); };
+
   const submit = async () => {
     if (!dialog || pending) return;
     const target = dialog;
@@ -136,16 +151,19 @@ export function UsersPage() {
     setDialogError(null);
     const controller = new AbortController();
     inflight.current = controller;
+    const binding = bindSession();
+    const stale = () => controller.signal.aborted || !binding.current();
     try {
       const change = target.kind === 'role' ? { role: target.role } : { isActive: target.isActive };
       const updated = await usersApi.update(target.user.id, change, csrfToken, controller.signal);
+      if (stale()) return; // left the page or the session: nothing to update, no reload
       setDialog(null);
-      setStatus(target.kind === 'role'
+      setStatus({ text: target.kind === 'role'
         ? `Роль ${updated.email} змінено на «${ROLE_LABELS[updated.role]}». Усі його сесії завершено.`
-        : updated.isActive ? `${updated.email} знову активний. Попередні сесії не відновлюються.` : `${updated.email} деактивовано. Усі його сесії завершено.`);
-      reload();
+        : updated.isActive ? `${updated.email} знову активний. Попередні сесії не відновлюються.` : `${updated.email} деактивовано. Усі його сесії завершено.` });
+      reload(); // the same page (same cursor)
     } catch (error) {
-      if (controller.signal.aborted) return;
+      if (stale()) return;
       if (error instanceof ApiError && error.kind === 'unauthorized') { sessionExpired(); return; }
       setDialogError(userError(error, 'update'));
     } finally {
@@ -153,13 +171,58 @@ export function UsersPage() {
     }
   };
 
+  /** Created users sort last: walk the pages from here (bounded) until the page that holds `user`, then show it. */
+  const seek = async (user: UserView) => {
+    if (busy) return;
+    setSeeking(true);
+    const controller = new AbortController();
+    inflight.current = controller;
+    const binding = bindSession();
+    const stale = () => controller.signal.aborted || !binding.current();
+    const path: string[] = [];
+    let at = cursor;
+    try {
+      for (let i = 0; i < MAX_SEEK_PAGES; i++) {
+        const found = await usersApi.list(at, controller.signal);
+        if (stale()) return;
+        if (found.items.some((u) => u.id === user.id)) { setStatus(null); setCursors((prev) => [...prev, ...path]); return; }
+        if (found.nextAfter === null) break;
+        path.push(found.nextAfter);
+        at = found.nextAfter;
+      }
+      setStatus({ text: `Не вдалося знайти ${user.email} у списку. Оновіть сторінку й перегляньте останні сторінки.` });
+    } catch (error) {
+      if (stale()) return;
+      if (error instanceof ApiError && error.kind === 'unauthorized') { sessionExpired(); return; }
+      setStatus({ text: userError(error, 'update'), find: user });
+    } finally {
+      if (!stale()) setSeeking(false);
+    }
+  };
+
+  const onCreated = (user: UserView) => {
+    // Visible here only if this is the last page and it has room; otherwise say where it is and offer to open it.
+    const here = data !== null && data.nextAfter === null && data.items.length < USERS_PAGE_SIZE;
+    const text = `Користувача ${user.email} створено (${ROLE_LABELS[user.role]}).`;
+    setStatus(here ? { text } : { text: `${text} Нові користувачі — наприкінці списку.`, find: user });
+    reload();
+  };
+
   const dialogTitle = dialog?.kind === 'role' ? `Змінити роль: ${dialog.user.email}` : dialog?.kind === 'active' && dialog.isActive ? `Активувати: ${dialog.user.email}` : `Деактивувати: ${dialog?.user.email ?? ''}`;
 
   return (
     <section className="page" aria-labelledby="users-title">
       <h1 id="users-title" className="page__title">Користувачі</h1>
-      <CreateUserForm onCreated={(user) => { setStatus(`Користувача ${user.email} створено (${ROLE_LABELS[user.role]}).`); reload(); }} />
-      {status ? <p className="notice" role="status">{status}</p> : null}
+      <CreateUserForm onCreated={onCreated} />
+      {status ? (
+        <div className="notice user-status" role="status">
+          <span>{status.text}</span>
+          {status.find ? (
+            <button type="button" className="button button--secondary" disabled={busy} aria-label={`Показати ${status.find.email}`}
+              onClick={() => { if (status.find) void seek(status.find); }}>{seeking ? 'Пошук…' : 'Показати'}</button>
+          ) : null}
+        </div>
+      ) : null}
       {state.status === 'loading' ? <LoadingState /> : null}
       {state.status === 'error' ? (
         <ErrorState title="Не вдалося оновити список" onRetry={reload}>{`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}`}</ErrorState>
@@ -180,10 +243,10 @@ export function UsersPage() {
                   <td>
                     {u.id === me ? <span className="hint">Власний обліковий запис: роль і активність змінює інший адміністратор.</span> : (
                       <ActionMenu name={u.email} items={[
-                        { key: 'role', label: 'Змінити роль', disabled: pending, onSelect: () => { setStatus(null); setDialogError(null); setDialog({ kind: 'role', user: u, role: u.role }); } },
+                        { key: 'role', label: 'Змінити роль', disabled: busy, onSelect: () => { setStatus(null); setDialogError(null); setDialog({ kind: 'role', user: u, role: u.role }); } },
                         u.isActive
-                          ? { key: 'active', label: 'Деактивувати', danger: true, disabled: pending, onSelect: () => { setStatus(null); setDialogError(null); setDialog({ kind: 'active', user: u, isActive: false }); } }
-                          : { key: 'active', label: 'Активувати', disabled: pending, onSelect: () => { setStatus(null); setDialogError(null); setDialog({ kind: 'active', user: u, isActive: true }); } },
+                          ? { key: 'active', label: 'Деактивувати', danger: true, disabled: busy, onSelect: () => { setStatus(null); setDialogError(null); setDialog({ kind: 'active', user: u, isActive: false }); } }
+                          : { key: 'active', label: 'Активувати', disabled: busy, onSelect: () => { setStatus(null); setDialogError(null); setDialog({ kind: 'active', user: u, isActive: true }); } },
                       ]} />
                     )}
                   </td>
@@ -191,9 +254,14 @@ export function UsersPage() {
               ))}
             </tbody>
           </table>
-          {data.nextAfter ? <p className="hint">Показано перших 100 користувачів.</p> : null}
         </div>
       ) : null}
+      <nav className="pager" aria-label="Сторінки користувачів">
+        <button type="button" className="button button--secondary" disabled={busy || cursors.length === 1} onClick={() => { go(cursors.slice(0, -1)); }}>Назад</button>
+        <span className="pager__page" aria-live="polite">{`Сторінка ${String(cursors.length)}`}</span>
+        <button type="button" className="button button--secondary" disabled={busy || state.status !== 'ready' || !data?.nextAfter}
+          onClick={() => { if (data?.nextAfter) go([...cursors, data.nextAfter]); }}>Далі</button>
+      </nav>
       {dialog ? (
         <Dialog title={dialogTitle} onClose={close} actions={(
           <>

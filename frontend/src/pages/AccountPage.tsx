@@ -28,7 +28,7 @@ export function passwordChangeError(error: unknown): string {
 interface Errors { current?: string; next?: string; confirm?: string }
 
 export function AccountPage() {
-  const { state, sessionExpired, passwordChanged } = useAuth();
+  const { state, sessionExpired, bindSession, passwordChanged } = useAuth();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -68,12 +68,17 @@ export function AccountPage() {
     setPending(true);
     const controller = new AbortController();
     inflight.current = controller;
+    // Session-bound: an answer arriving after unmount, logout or a new login changes nothing here. (The server-side
+    // change may still have happened — abort only stops waiting for it.)
+    const binding = bindSession();
+    const stale = () => controller.signal.aborted || !binding.current();
     try {
       await authApi.changePassword(current, next, csrfToken, controller.signal);
+      if (stale()) return;
       setCurrent(''); setNext(''); setConfirm('');
-      passwordChanged(); // every session is gone: private area unmounts, login shows the notice
+      passwordChanged(binding); // every session is gone: private area unmounts, login shows the notice
     } catch (error) {
-      if (controller.signal.aborted) return;
+      if (stale()) return;
       setCurrent(''); setNext(''); setConfirm('');
       if (error instanceof ApiError && (error.kind === 'unauthorized' || error.kind === 'conflict')) { sessionExpired(); return; }
       setFormError(passwordChangeError(error));

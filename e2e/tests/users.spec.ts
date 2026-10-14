@@ -132,3 +132,49 @@ test('mobile 390 px: users table and account form fit, keyboard menu, Escape clo
   expect(await noHorizontalScroll(page)).toBe(true);
   await page.context().close();
 });
+
+test('more than 100 users: keyset pages ("Далі"/"Назад"), a user on page 2 is managed there, a new user is found via "Показати"', async ({ browser }) => {
+  // Synthetic users in THIS run's schema only; one shared hash (they never sign in).
+  const hash = await hashPassword(pw());
+  await inRunSchema((q) => q(
+    `INSERT INTO users (email, password_hash, role, created_at)
+     SELECT 'bulk-' || lpad(n::text, 3, '0') || '@example.test', $1, 'viewer', now() + n * interval '1 millisecond' FROM generate_series(1, 105) AS n`, [hash]));
+  for (const width of [1440, 390]) {
+    const page = await newPage(browser, width);
+    await signIn(page, ADMIN.email, ADMIN.password);
+    await expect(page.getByRole('heading', { name: 'Огляд' })).toBeVisible(); // login finished before navigating
+    await page.goto('/users');
+    const pager = page.getByRole('navigation', { name: 'Сторінки користувачів' });
+    await expect(pager.getByText('Сторінка 1')).toBeVisible();
+    await expect(page.getByRole('table').getByRole('rowheader')).toHaveCount(100);
+    await expect(pager.getByRole('button', { name: 'Назад' })).toBeDisabled();
+    await pager.getByRole('button', { name: 'Далі' }).click();
+    await expect(pager.getByText('Сторінка 2')).toBeVisible();
+    await expect(page.getByRole('row').filter({ hasText: 'bulk-105@example.test' })).toBeVisible();
+    await expect(pager.getByRole('button', { name: 'Далі' })).toBeDisabled();
+    expect(await noHorizontalScroll(page)).toBe(true);
+    if (width === 1440) {
+      await page.getByRole('button', { name: 'Дії: bulk-104@example.test' }).click();
+      await page.getByRole('button', { name: 'Деактивувати' }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Деактивувати' }).click();
+      await expect(page.getByText('bulk-104@example.test деактивовано. Усі його сесії завершено.')).toBeVisible();
+      await expect(page.getByRole('row').filter({ hasText: 'bulk-104@example.test' })).toContainText('Деактивований');
+      await expect(pager.getByText('Сторінка 2')).toBeVisible();
+      await pager.getByRole('button', { name: 'Назад' }).click();
+      await expect(pager.getByText('Сторінка 1')).toBeVisible();
+      const form = page.getByRole('form', { name: 'Новий користувач' });
+      await form.getByLabel('Email').fill('after-bulk@example.test');
+      await form.getByLabel('Початковий пароль').fill(pw());
+      await form.getByRole('button', { name: 'Створити користувача' }).click();
+      await expect(page.getByText(/after-bulk@example\.test створено.*наприкінці списку/)).toBeVisible();
+      await page.getByRole('button', { name: 'Показати after-bulk@example.test' }).click();
+      await expect(page.getByRole('row').filter({ hasText: 'after-bulk@example.test' })).toBeVisible();
+      await expect(pager.getByText('Сторінка 2')).toBeVisible();
+    } else {
+      await pager.getByRole('button', { name: 'Назад' }).focus();
+      await page.keyboard.press('Enter');
+      await expect(pager.getByText('Сторінка 1')).toBeVisible();
+    }
+    await page.context().close();
+  }
+});

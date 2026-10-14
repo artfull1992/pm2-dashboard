@@ -24,10 +24,17 @@ export interface AuthContextValue {
   logout: () => Promise<{ ok: boolean }>;
   /** Called by pages when any API call returns 401: the session is over, drop private state. */
   sessionExpired: () => void;
-  /** The own password was changed: every session is revoked server-side; drop private state, back to login. */
-  passwordChanged: () => void;
+  /**
+   * Binds an async operation to the current session (auth epoch). `current()` is false once that session ended —
+   * logout, expiry or a new login — so a late answer of an earlier session never changes the present one.
+   */
+  bindSession: () => SessionBinding;
+  /** The own password was changed in `binding`'s session: drop private state, back to login. No-op if stale. */
+  passwordChanged: (binding: SessionBinding) => void;
   can: (permission: Permission) => boolean;
 }
+
+export interface SessionBinding { current: () => boolean }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -91,7 +98,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState({ status: 'anonymous', reason: 'expired' });
   }, [nextEpoch]);
 
-  const passwordChanged = useCallback(() => {
+  const bindSession = useCallback((): SessionBinding => {
+    const mine = epoch.current;
+    return { current: () => epoch.current === mine };
+  }, []);
+
+  const passwordChanged = useCallback((binding: SessionBinding) => {
+    if (!binding.current()) return;
     nextEpoch();
     setState({ status: 'anonymous', reason: 'password_changed' });
   }, [nextEpoch]);
@@ -136,9 +149,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     logout,
     sessionExpired,
+    bindSession,
     passwordChanged,
     can: (permission) => state.status === 'authenticated' && state.session.permissions.includes(permission),
-  }), [state, checkSession, login, logout, sessionExpired, passwordChanged]);
+  }), [state, checkSession, login, logout, sessionExpired, bindSession, passwordChanged]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

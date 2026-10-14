@@ -218,3 +218,6 @@ h1, h2, p { margin: 0; }
 @media (max-width: 760px) {
   .user-create__fields { grid-template-columns: 1fr; }
 }
+.pager { align-items: center; flex-wrap: wrap; }
+.pager__page { color: var(--text-muted); font-size: .9rem; font-variant-numeric: tabular-nums; }
+.user-status { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }

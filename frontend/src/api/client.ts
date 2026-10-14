@@ -99,21 +99,32 @@ export async function apiRequest<T = undefined>(path: `/api/${string}`, options:
     if (timeout.aborted) throw new ApiError('timeout');
     throw new ApiError('network');
   }
+  // A transport may still complete after cancellation: a result nobody waits for any more is never returned
+  // (checked after the response, after the body, and right before returning).
+  const settled = () => {
+    if (options.signal?.aborted) throw new ApiError('aborted');
+    if (timeout.aborted) throw new ApiError('timeout');
+  };
+  settled();
 
   if (!response.ok) {
     throw new ApiError(kindForStatus(response.status), response.status, parseRetryAfter(response.headers.get('retry-after')));
   }
   if (!options.parse) {
     if (response.status !== 204) throw new ApiError('unexpected', response.status);
+    settled();
     return undefined as T;
   }
+  let result: T;
   try {
-    return options.parse(await response.json());
+    result = options.parse(await response.json());
   } catch (error) {
-    if (options.signal?.aborted) throw new ApiError('aborted');
+    settled();
     if (error instanceof ContractError || error instanceof SyntaxError) throw new ApiError('unexpected', response.status);
     throw new ApiError('unexpected', response.status);
   }
+  settled();
+  return result;
 }
 
 export const authApi = {
@@ -131,8 +142,15 @@ export const authApi = {
 export const USERS_PAGE_SIZE = 100;
 
 export const usersApi = {
-  list: (signal?: AbortSignal): Promise<UserPage> =>
-    apiRequest(`/api/users?limit=${String(USERS_PAGE_SIZE)}`, { parse: parseUserPage, ...(signal ? { signal } : {}) }),
+  /** One keyset page; `after` is the opaque user-id cursor from the previous page's `nextAfter` (never an email). */
+  list: (after: string | null, signal?: AbortSignal): Promise<UserPage> => {
+    const query = new URLSearchParams({ limit: String(USERS_PAGE_SIZE) });
+    if (after !== null) {
+      if (!UUID_RE.test(after)) throw new ApiError('invalid_request');
+      query.set('after', after);
+    }
+    return apiRequest(`/api/users?${query.toString()}`, { parse: parseUserPage, ...(signal ? { signal } : {}) });
+  },
   create: (input: { email: string; password: string; role: Role }, csrfToken: string, signal?: AbortSignal): Promise<UserView> =>
     apiRequest('/api/users', { method: 'POST', body: input, csrfToken, parse: parseUserView, ...(signal ? { signal } : {}) }),
   /** The reply must describe the user that was changed. */
