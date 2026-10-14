@@ -65,7 +65,12 @@ export function LoginPage() {
     setFailureSeq((n) => n + 1);
   };
 
-  const notice = navState?.reason === 'expired' ? 'Сесія завершилась. Увійдіть знову.' : navState?.reason === 'logged_out' ? 'Ви вийшли з системи.' : null;
+  const NOTICES: Record<string, string> = {
+    expired: 'Сесія завершилась. Увійдіть знову.',
+    logged_out: 'Ви вийшли з системи.',
+    password_changed: 'Пароль змінено. Усі сесії завершено — увійдіть з новим паролем.',
+  };
+  const notice = typeof navState?.reason === 'string' ? NOTICES[navState.reason] ?? null : null;
 
   return (
     <main className="login" id="main">

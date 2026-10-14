@@ -319,6 +319,12 @@ install -m 644 -o root -g root "$A.new" "$A" && rm "$A.new"
 
 Перевірка: UI → сервер → «Сервіси сервера» → «Дії» → «Переглянути логи» (operator/admin). Rollback логів: повернути allowlist із backup (діє без restart). **Rollback broker на реліз до Task 010:** спершу повернути allowlist без поля `logs` (старий broker вважає його невалідним і відхилятиме всі дії), потім `server-release.js rollback --base /opt/goit-node-control-agent` і restart broker та Agent.
 
+### Користувачі та паролі (Task 011, ADR-019)
+
+Міграція `1791900000005_user-credential-version`: лише additive (колонка `credential_version` з default 1 та індекс). Порядок — штатний для API: backup лише `node_control_db` → `pg_restore --list` → `migrate.js status` → `up` → `status` (pending=0) → activate → restart лише `node-control-api`. Agent/broker не змінюються. Production-користувачів і паролі деплой не змінює; перевірка мутацій — лише в тестовому середовищі.
+
+Rollback: `server-release.js rollback` на попередній реліз + restart API. Колонка лишається (старий реліз її не читає й створює сесії без перевірки версії). Паролі, змінені новим релізом, не повертаються; відкликані сесії не відновлюються.
+
 ### Міграції: backup, recovery, rollback
 
 - Перед кожним production `up` — `pg_dump -Fc` лише `node_control_db` у `/root/node-control-backups/` (каталог `700`, файл `600`), перевірка `pg_restore --list`. Не дамп усього кластера.

@@ -2,7 +2,7 @@ import {
   type ApplicationPage, type AuditPage, type CommandView, ContractError, type ControlAction, type ControlView, type IssuedCredential,
   parseApplicationPage, parseAuditPage, parseCommandList, parseCommandView, parseControlView, parseIssuedCredential,
   type LogRequestView, type LogTargetsView, parseLogRequestCreated, parseLogRequestView, parseLogTargets,
-  parseRevokeResult, parseServerApplications, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
+  parseRevokeResult, parseServerApplications, parseUserPage, parseUserView, type Role, type UserPage, type UserView, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
   type ProcessStatus, type ServerApplications, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
 } from './types';
 
@@ -22,6 +22,7 @@ export type ApiErrorKind =
   | 'invalid_request' // 400
   | 'not_found' // 404
   | 'conflict' // 409
+  | 'unprocessable' // 422 (e.g. wrong current password)
   | 'too_large' // 413
   | 'network' // fetch rejected (offline, DNS, refused)
   | 'timeout'
@@ -49,6 +50,7 @@ function kindForStatus(status: number): ApiErrorKind {
     case 403: return 'forbidden';
     case 404: return 'not_found';
     case 409: return 'conflict';
+    case 422: return 'unprocessable';
     case 413: return 'too_large';
     case 429: return 'rate_limited';
     case 502: case 503: case 504: return 'unavailable';
@@ -65,7 +67,7 @@ export function parseRetryAfter(header: string | null, now = Date.now()): number
 }
 
 export interface RequestOptions<T> {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PATCH';
   body?: unknown;
   csrfToken?: string;
   signal?: AbortSignal;
@@ -120,6 +122,28 @@ export const authApi = {
     apiRequest('/api/auth/login', { method: 'POST', body: { email, password }, parse: parseSessionInfo, ...(signal ? { signal } : {}) }),
   logout: (csrfToken: string, signal?: AbortSignal) =>
     apiRequest('/api/auth/logout', { method: 'POST', csrfToken, ...(signal ? { signal } : {}) }),
+  /** 204 on success; every session (this one included) is gone afterwards. Never retried automatically. */
+  changePassword: (currentPassword: string, newPassword: string, csrfToken: string, signal?: AbortSignal) =>
+    apiRequest('/api/auth/change-password', { method: 'POST', body: { currentPassword, newPassword }, csrfToken, ...(signal ? { signal } : {}) }),
+};
+
+// --- Users (Task 011, ADR-019) -----------------------------------------------------------------------------------
+export const USERS_PAGE_SIZE = 100;
+
+export const usersApi = {
+  list: (signal?: AbortSignal): Promise<UserPage> =>
+    apiRequest(`/api/users?limit=${String(USERS_PAGE_SIZE)}`, { parse: parseUserPage, ...(signal ? { signal } : {}) }),
+  create: (input: { email: string; password: string; role: Role }, csrfToken: string, signal?: AbortSignal): Promise<UserView> =>
+    apiRequest('/api/users', { method: 'POST', body: input, csrfToken, parse: parseUserView, ...(signal ? { signal } : {}) }),
+  /** The reply must describe the user that was changed. */
+  update: (id: string, change: { role?: Role; isActive?: boolean }, csrfToken: string, signal?: AbortSignal): Promise<UserView> => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) throw new ApiError('invalid_request');
+    return apiRequest(`/api/users/${id}`, {
+      method: 'PATCH', body: change, csrfToken,
+      parse: (v) => { const u = parseUserView(v); if (u.id !== id) throw new ContractError(); return u; },
+      ...(signal ? { signal } : {}),
+    });
+  },
 };
 
 export const AUDIT_PAGE_SIZE = 25;

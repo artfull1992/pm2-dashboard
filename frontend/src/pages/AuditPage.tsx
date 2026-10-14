@@ -10,9 +10,20 @@ const EVENT_LABELS: Record<string, string> = {
   'auth.login': 'Вхід',
   'auth.logout': 'Вихід',
   'authz.denied': 'Відмова в доступі',
+  'auth.password_change': 'Зміна власного пароля',
+  'user.created': 'Створення користувача',
+  'user.create_rejected': 'Створення користувача відхилено',
+  'user.role_changed': 'Зміна ролі',
+  'user.deactivated': 'Деактивація користувача',
+  'user.activated': 'Активація користувача',
+  'user.update_rejected': 'Зміну користувача відхилено',
 };
 const OUTCOME_LABELS: Record<AuditItem['outcome'], string> = { success: 'Успіх', failure: 'Невдача', denied: 'Відмовлено' };
-const REASON_LABELS: Record<string, string> = { invalid_credentials: 'невірні облікові дані', inactive_user: 'неактивний користувач' };
+const REASON_LABELS: Record<string, string> = {
+  invalid_credentials: 'невірні облікові дані', inactive_user: 'неактивний користувач', stale_credentials: 'облікові дані змінено паралельно',
+  invalid_current_password: 'невірний поточний пароль', email_taken: 'email уже зайнятий', self_change: 'зміна власного облікового запису',
+  last_admin: 'останній активний адміністратор',
+};
 const dateFormat = new Intl.DateTimeFormat('uk-UA', { dateStyle: 'short', timeStyle: 'medium' });
 
 /** Details are rendered as plain text from an allowlist of keys — never as HTML. */
@@ -23,6 +34,10 @@ function describeDetails(details: AuditItem['details']): string {
   if (details.route) parts.push(`маршрут: ${details.route}`);
   if (details.targetKey) parts.push(`сервіс: ${details.targetKey}`);
   if (details.action) parts.push(`дія: ${details.action}`);
+  if (details.targetUserId) parts.push(`користувач: ${details.targetUserId.slice(0, 8)}`);
+  if (details.role) parts.push(`роль: ${details.role}`);
+  if (details.fromRole && details.toRole) parts.push(`роль: ${details.fromRole} → ${details.toRole}`);
+  if (details.sessionsRevoked !== undefined) parts.push(`завершено сесій: ${String(details.sessionsRevoked)}`);
   return parts.join('; ') || '—';
 }
 

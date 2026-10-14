@@ -2,12 +2,14 @@ import { BrowserRouter, Route, Routes } from 'react-router';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import { RequireAuth, RequirePermission } from './auth/guards';
 import { Layout } from './components/Layout';
+import { AccountPage } from './pages/AccountPage';
 import { AuditPage } from './pages/AuditPage';
 import { LoginPage } from './pages/LoginPage';
 import { ServerDetailPage } from './pages/ServerDetailPage';
 import { ServersPage } from './pages/ServersPage';
 import { ApplicationsPage } from './pages/ApplicationsPage';
 import { DashboardPage, NotFoundPage } from './pages/SimplePages';
+import { UsersPage } from './pages/UsersPage';
 
 /** Remounts the private area per session, so no component state of one session survives into another. */
 function PrivateArea() {
@@ -30,6 +32,8 @@ export function AppRoutes() {
         <Route path="servers/:id" element={<RequirePermission permission="monitoring:read"><ServerDetailPage /></RequirePermission>} />
         <Route path="applications" element={<RequirePermission permission="monitoring:read"><ApplicationsPage /></RequirePermission>} />
         <Route path="audit" element={<RequirePermission permission="audit:read"><AuditPage /></RequirePermission>} />
+        <Route path="users" element={<RequirePermission permission="users:manage"><UsersPage /></RequirePermission>} />
+        <Route path="account" element={<AccountPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

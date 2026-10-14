@@ -237,3 +237,41 @@
 - **Що передається.** Лише текст, кількість рядків, ознака обрізання, розмір і mtime файлу, час читання, стан (`ok|empty|missing|unavailable`) і server-defined причини. Без шляхів, env, raw помилок.
 - **Збереження й аудит.** Текст не пишеться в PostgreSQL, audit, journal, error/access logs (Fastify не логує тіла). Audit: `logs.view_opened` (не частіше ніж раз на 10 хв на актора+сервер+ціль — автооновлення не спамить) і `logs.view_denied` (ціль без дозволу/непідтримувано); `authz.denied` для viewer — як і раніше. Details: `serverId`, `targetKey`, `reason`.
 - **Сумісність.** Старий Agent не опитує логи → API: «Перегляд логів не підтримується агентом» (409). Новий Agent зі старим broker: broker закриває з'єднання на невідому операцію → `broker: 'unsupported'` → та сама відповідь. Старий API → Agent отримує 404 на long-poll → довга пауза. Порядок rollout: API → Agent+broker (один артефакт) → (окремо, з погодження) `logs: true` в allowlist.
+
+## ADR-019: Адміністрування користувачів і зміна власного пароля
+
+Статус: прийнято (Task 011). Admin: список, створення (email + початковий пароль + роль), зміна ролі, деактивація/активація. Кожен користувач: зміна власного пароля. Без фізичного видалення, зміни email, admin-reset пароля, листів, self-registration, forgot-password, MFA, зовнішніх IdP і нового bootstrap.
+
+- **Контракти.**
+  - `GET /api/users?limit=1..100&after=<uuid>` (`users:manage`) → `200 {items: UserView[], nextAfter: uuid|null}`. Keyset за `(created_at, id)`; курсор — id останнього рядка (не email: URL потрапляє в журнали проксі).
+  - `POST /api/users` `{email, password, role}` (`users:manage` + Origin + CSRF) → `201 UserView`; 400 (email/пароль за чинною політикою `normalizeEmail`/`checkPasswordPolicy`, роль), 409 email зайнятий, 429, 503 + `Retry-After`.
+  - `PATCH /api/users/:id` `{role?, isActive?}` (`users:manage` + Origin + CSRF; порожнє тіло — 400; відсутнє поле зберігає значення) → `200 UserView`; 403 власний обліковий запис, 404, 409 останній активний admin, 401 якщо повноваження актора відкликано до commit.
+  - `POST /api/auth/change-password` `{currentPassword, newPassword}` (будь-яка чинна сесія + Origin + CSRF) → `204` + очищений cookie; 400 політика або новий = поточний, 422 невірний поточний пароль, 409 credentials змінились паралельно, 429 (5 спроб / 15 хв на користувача), 503 + `Retry-After: 1` (перевантаження hashing).
+  - `UserView = {id, email, role, isActive, createdAt, updatedAt}`. Hash, паролі, токени сесій і CSRF інших користувачів не повертаються ніколи (строгі response-схеми).
+- **Версія credentials.** Нова колонка `users.credential_version` (bigint, default 1). Кожна безпекова зміна користувача — пароль, роль, активність — в одній транзакції збільшує версію, відкликає **всі** сесії користувача і пише audit; будь-який збій (зокрема audit) відкочує все.
+  - Зміна пароля: hash читається разом із версією, scrypt (перевірка поточного й hash нового) виконується **поза** транзакцією через спільний bounded limiter; потім compare-and-set `UPDATE … WHERE id AND credential_version = <прочитана> AND is_active`. Із двох одночасних змін зі старим паролем проходить одна, друга отримує 409. Транзакція коротка; row lock під час scrypt не тримається.
+  - Вхід: пароль перевіряється поза транзакцією; у транзакції створення сесії рядок користувача блокується `FOR SHARE` і перевіряється `is_active` та незмінна версія. Запізнілий вхід після зміни пароля, ролі чи деактивації не створює сесії (401, audit `stale_credentials`). Якщо вхід встиг закомітитись раніше, конкуруючий `UPDATE` чекає на нього й відкликає нову сесію разом з іншими.
+- **Адмінські мутації й останній admin.** Створення і PATCH виконуються в транзакції з `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE` (той самий режим, що й bootstrap). Це серіалізує всі записи в `users` (адмінські мутації, зміни пароля, bootstrap), але не блокує читання й вхід (`FOR SHARE`).
+  - Порядок блокувань: таблиця `users` → рядки `users` → `sessions`. Вхід і зміна пароля беруть рядок `users` до `sessions`, тому циклів немає.
+  - Під блокуванням повторно перевіряється актор: його сесія не відкликана й не прострочена, він активний admin. Якщо інший admin щойно зняв із нього права — 401, пізнього commit немає.
+  - Власну роль/активність змінювати заборонено (403). Пониження або деактивація активного admin відхиляються, якщо після зміни не лишиться інших активних admin (409). Через самозаборону інваріант виконується й конструктивно (актор — активний admin ≠ ціль); перевірка — додатковий захист.
+  - Два admin, що одночасно знімають права один з одного: другий бачить себе вже не admin → 401; лишається один активний admin.
+  - Порожня зміна (no-op) — 200 без audit і без відкликання сесій. Повторна активація не відновлює відкликані сесії.
+- **Audit.** Успіх — у тій самій транзакції:
+  - `user.created` `{targetUserId, role}`;
+  - `user.role_changed` `{targetUserId, fromRole, toRole, sessionsRevoked}`;
+  - `user.deactivated` / `user.activated` `{targetUserId, sessionsRevoked}`;
+  - `auth.password_change` success `{sessionsRevoked}`.
+
+  Відмови — best-effort, як `authz.denied` і невдалий вхід:
+  - `user.create_rejected` (failure, `email_taken`);
+  - `user.update_rejected` (denied, `self_change` | `last_admin`);
+  - `auth.password_change` failure (`invalid_current_password` | `stale_credentials`).
+
+  Без email, паролів, hashes, токенів і тіла запиту.
+- **Ліміти.** Перевірка й hash пароля — спільний `DEFAULT_HASH_LIMITER` (4 одночасно, черга 32, надлишок → 503). Зміна пароля — 5 спроб / 15 хв на користувача (до hashing). Адмінські мутації — 30/хв на актора.
+- **Міграція** `1791900000005_user-credential-version`: лише additive, тобто колонка з default (існуючий admin отримує 1) та індекс `(created_at, id)`. Попередній реліз її не читає й лишається робочим (rollback коду без відкату схеми; версійний захист від гонок тоді не діє). API міграції не запускає.
+- **Frontend.**
+  - «Обліковий запис» — для всіх ролей. Після успішної зміни пароля — вихід на login із повідомленням.
+  - «Користувачі» — лише `users:manage`, одна таблиця з меню «Дії».
+  - Мутації не повторюються автоматично. Паролі живуть лише в стані форми й очищаються після запиту, виходу та unmount.

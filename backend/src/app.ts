@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import type { Limiter } from './auth/password.js';
+import type { RateLimiter } from './auth/rate-limit.js';
 import { registerAuth } from './auth/plugin.js';
 import { type AuthStore, createPgAuthStore } from './auth/store.js';
+import { registerUserRoutes } from './auth/users-routes.js';
+import { createPgUserStore, type UserStore } from './auth/users-store.js';
 import { createPgControlStore, type ControlStore } from './servers/control-store.js';
 import { registerControlRoutes } from './servers/control-routes.js';
 import { LogHub } from './servers/logs.js';
@@ -52,6 +55,10 @@ export interface BuildAppOptions {
     controlLimiter?: Limiter;
     /** Test seam: in-memory log hub (ADR-018). */
     logHub?: LogHub;
+    /** Test seam for user administration (ADR-019). */
+    createUserStore?: (database: Database) => UserStore;
+    /** Test seam: user administration rate limit per actor. */
+    userAdminLimiter?: RateLimiter;
     extra?: Omit<Parameters<typeof registerAuth>[1], 'config' | 'store'>;
   };
 }
@@ -134,6 +141,12 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const store = (options.auth.createStore ?? createPgAuthStore)(database);
     const serverStore = (options.auth.createServerStore ?? createPgServerStore)(database);
     registerAuth(app, { agentResolver: serverStore, ...options.auth.extra, config: options.auth.config, store });
+    registerUserRoutes(app, {
+      store: (options.auth.createUserStore ?? createPgUserStore)(database),
+      audit: (entry, context) => store.recordAudit(entry, context),
+      ...(options.auth.extra?.hashLimiter ? { hashLimiter: options.auth.extra.hashLimiter } : {}),
+      ...(options.auth.userAdminLimiter ? { limiter: options.auth.userAdminLimiter } : {}),
+    });
     registerServerRoutes(app, { store: serverStore, ...(options.auth.heartbeatLimiter ? { heartbeatLimiter: options.auth.heartbeatLimiter } : {}) });
     const inventoryStore = (options.auth.createInventoryStore ?? createPgInventoryStore)(database);
     registerInventoryRoutes(app, { store: inventoryStore, ...(options.auth.inventoryLimiter ? { inventoryLimiter: options.auth.inventoryLimiter } : {}) });

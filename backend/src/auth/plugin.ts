@@ -4,8 +4,10 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AuthConfig } from '../config.js';
 import { describeError, PublicHttpError } from '../errors.js';
 import { normalizeEmail } from './email.js';
-import { BusyError, checkPasswordPolicy, DEFAULT_HASH_LIMITER, type Limiter, PasswordHashFormatError, verifyDummy, verifyPassword } from './password.js';
-import { createRateLimiter, LOGIN_LIMITS, type RateLimiter } from './rate-limit.js';
+import {
+  BusyError, checkPasswordPolicy, DEFAULT_HASH_LIMITER, hashPassword, type Limiter, PasswordHashFormatError, verifyDummy, verifyPassword,
+} from './password.js';
+import { createRateLimiter, LOGIN_LIMITS, PASSWORD_CHANGE_LIMITS, type RateLimiter } from './rate-limit.js';
 import { hasPermission, type Permission, permissionsFor, type Role } from './rbac.js';
 import type { AuditContext, AuditEvent, AuthStore } from './store.js';
 import {
@@ -66,6 +68,8 @@ export interface AuthPluginOptions {
   agentResolver?: AgentResolver;
   agentAddressLimiter?: RateLimiter;
   agentTokenLimiter?: RateLimiter;
+  /** Self-service password change attempts per user (ADR-019). */
+  passwordChangeLimiter?: RateLimiter;
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -83,6 +87,10 @@ export const AUTH_MESSAGES = Object.freeze({
   agentUnauthenticated: 'Agent credential missing or invalid',
   agentRateLimited: 'Too many requests',
   bearerNotAccepted: 'Bearer credentials are not accepted on this endpoint',
+  passwordPolicy: 'The new password does not meet the password policy or equals the current one',
+  wrongCurrentPassword: 'The current password is incorrect',
+  credentialsChanged: 'Credentials changed concurrently; sign in again',
+  passwordRateLimited: 'Too many password change attempts, try again later',
   unavailable: 'Service temporarily unavailable',
 });
 
@@ -114,6 +122,8 @@ const auditItemSchema = {
         reason: { type: 'string' }, permission: { type: 'string' }, route: { type: 'string' },
         serverId: { type: 'string' }, rotated: { type: 'boolean' }, revoked: { type: 'boolean' },
         commandId: { type: 'string' }, targetKey: { type: 'string' }, action: { type: 'string' },
+        targetUserId: { type: 'string' }, role: { type: 'string' }, fromRole: { type: 'string' }, toRole: { type: 'string' },
+        sessionsRevoked: { type: 'integer' },
       },
     },
   },
@@ -133,6 +143,7 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
   const hashLimiter = options.hashLimiter ?? DEFAULT_HASH_LIMITER;
   const accountLimiter = options.accountLimiter ?? createRateLimiter(LOGIN_LIMITS.perAccount);
   const addressLimiter = options.addressLimiter ?? createRateLimiter(LOGIN_LIMITS.perAddress);
+  const passwordChangeLimiter = options.passwordChangeLimiter ?? createRateLimiter(PASSWORD_CHANGE_LIMITS.perUser);
   const cookieName = sessionCookieName(config.cookieSecure);
   const allowedOrigins = new Set(config.allowedOrigins);
 
@@ -276,7 +287,7 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
     const retryAfter = Math.max(addressLimiter.hit(addressKey), accountLimiter.hit(accountKey));
     if (retryAfter > 0) throw new PublicHttpError(429, AUTH_MESSAGES.rateLimited, { 'retry-after': String(retryAfter) });
 
-    const fail = async (actorUserId: string | null, reason: 'invalid_credentials' | 'inactive_user'): Promise<never> => {
+    const fail = async (actorUserId: string | null, reason: 'invalid_credentials' | 'inactive_user' | 'stale_credentials'): Promise<never> => {
       await auditBestEffort(request, { event: 'auth.login', outcome: 'failure', details: { reason } }, { actorUserId, requestId: request.id });
       throw new PublicHttpError(401, AUTH_MESSAGES.badCredentials);
     };
@@ -310,6 +321,7 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
     try {
       created = await store.createSession({
         userId: user.id,
+        credentialVersion: user.credentialVersion,
         tokenHash: sessionTokenDigest(token),
         ttlSeconds: config.sessionTtlSeconds,
         previousTokenHash: isWellFormedToken(presented) ? sessionTokenDigest(presented) : null,
@@ -319,6 +331,8 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
       request.log.error({ error: describeError(error) }, 'Session creation failed');
       throw unavailable();
     }
+    // The password/role/activity changed after the password was verified (ADR-019): no session from stale credentials.
+    if (!created) return fail(user.id, 'stale_credentials');
     reply.header('set-cookie', sessionCookie(token, { secure: config.cookieSecure, ttlSeconds: config.sessionTtlSeconds }));
     return sessionInfo({ userId: user.id, email: user.email, role: user.role, expiresAt: created.expiresAt, token });
   });
@@ -331,6 +345,72 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
     } catch (error) {
       request.log.error({ error: describeError(error) }, 'Logout failed');
       throw unavailable();
+    }
+    reply.header('set-cookie', clearedSessionCookie(config.cookieSecure));
+    return reply.code(204).send();
+  });
+
+  /**
+   * Self-service password change (ADR-019). Hashing happens outside any transaction; the commit is a compare-and-set
+   * on the credential version that was read with the verified hash. Success revokes ALL of the user's sessions
+   * (including this one) and clears the cookie. Passwords never reach logs, audit or responses.
+   */
+  app.post('/api/auth/change-password', {
+    config: { access: 'authenticated' },
+    schema: {
+      body: {
+        type: 'object', additionalProperties: false, required: ['currentPassword', 'newPassword'],
+        properties: { currentPassword: { type: 'string', minLength: 1, maxLength: 1024 }, newPassword: { type: 'string', minLength: 1, maxLength: 1024 } },
+      },
+    },
+  }, async (request, reply) => {
+    const auth = request.auth;
+    if (!auth) throw new PublicHttpError(401, AUTH_MESSAGES.unauthenticated);
+    const { currentPassword, newPassword } = request.body as { currentPassword: string; newPassword: string };
+    const context = { actorUserId: auth.userId, requestId: request.id };
+
+    // Every attempt counts, before any hashing or database work.
+    const retryAfter = passwordChangeLimiter.hit(auth.userId);
+    if (retryAfter > 0) throw new PublicHttpError(429, AUTH_MESSAGES.passwordRateLimited, { 'retry-after': String(retryAfter) });
+    if (checkPasswordPolicy(newPassword) !== null || newPassword === currentPassword) throw new PublicHttpError(400, AUTH_MESSAGES.passwordPolicy);
+
+    const wrongCurrent = async (): Promise<never> => {
+      await auditBestEffort(request, { event: 'auth.password_change', outcome: 'failure', details: { reason: 'invalid_current_password' } }, context);
+      throw new PublicHttpError(422, AUTH_MESSAGES.wrongCurrentPassword);
+    };
+    // A current password outside the policy cannot match the stored one: refused without hashing.
+    if (checkPasswordPolicy(currentPassword) !== null) return wrongCurrent();
+
+    let credentials;
+    try {
+      credentials = await store.getCredentials(auth.userId);
+    } catch (error) {
+      request.log.error({ error: describeError(error) }, 'Credential lookup failed');
+      throw unavailable();
+    }
+    if (!credentials) throw new PublicHttpError(401, AUTH_MESSAGES.unauthenticated);
+
+    let passwordHash;
+    try {
+      if (!(await verifyPassword(currentPassword, credentials.passwordHash, hashLimiter))) return await wrongCurrent();
+      passwordHash = await hashPassword(newPassword, hashLimiter);
+    } catch (error) {
+      if (error instanceof PublicHttpError) throw error;
+      if (error instanceof BusyError) throw new PublicHttpError(503, AUTH_MESSAGES.unavailable, { 'retry-after': '1' });
+      request.log.error({ error: describeError(error) }, 'Password change hashing failed');
+      throw unavailable();
+    }
+
+    let result;
+    try {
+      result = await store.changePassword({ userId: auth.userId, expectedVersion: credentials.credentialVersion, passwordHash, requestId: request.id });
+    } catch (error) {
+      request.log.error({ error: describeError(error) }, 'Password change failed');
+      throw unavailable();
+    }
+    if (result.status === 'stale') {
+      await auditBestEffort(request, { event: 'auth.password_change', outcome: 'failure', details: { reason: 'stale_credentials' } }, context);
+      throw new PublicHttpError(409, AUTH_MESSAGES.credentialsChanged);
     }
     reply.header('set-cookie', clearedSessionCookie(config.cookieSecure));
     return reply.code(204).send();

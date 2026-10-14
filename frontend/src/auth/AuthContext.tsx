@@ -8,7 +8,7 @@ import type { Permission } from '../api/types';
 
 export type AuthState =
   | { status: 'checking' }
-  | { status: 'anonymous'; reason: 'initial' | 'logged_out' | 'expired' }
+  | { status: 'anonymous'; reason: 'initial' | 'logged_out' | 'expired' | 'password_changed' }
   | { status: 'authenticated'; session: SessionInfo }
   | { status: 'unavailable'; retryAfterSeconds: number | null };
 
@@ -24,6 +24,8 @@ export interface AuthContextValue {
   logout: () => Promise<{ ok: boolean }>;
   /** Called by pages when any API call returns 401: the session is over, drop private state. */
   sessionExpired: () => void;
+  /** The own password was changed: every session is revoked server-side; drop private state, back to login. */
+  passwordChanged: () => void;
   can: (permission: Permission) => boolean;
 }
 
@@ -89,6 +91,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState({ status: 'anonymous', reason: 'expired' });
   }, [nextEpoch]);
 
+  const passwordChanged = useCallback(() => {
+    nextEpoch();
+    setState({ status: 'anonymous', reason: 'password_changed' });
+  }, [nextEpoch]);
+
   const logout = useCallback(async (): Promise<{ ok: boolean }> => {
     if (state.status !== 'authenticated') return { ok: true };
     const { csrfToken } = state.session;
@@ -129,8 +136,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     logout,
     sessionExpired,
+    passwordChanged,
     can: (permission) => state.status === 'authenticated' && state.session.permissions.includes(permission),
-  }), [state, checkSession, login, logout, sessionExpired]);
+  }), [state, checkSession, login, logout, sessionExpired, passwordChanged]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

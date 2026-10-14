@@ -41,3 +41,13 @@ export const LOGIN_LIMITS = Object.freeze({
   // Per client address (socket peer; trustProxy is off). Behind a future reverse proxy this becomes global.
   perAddress: { max: 30, windowMs: 15 * 60_000 },
 });
+
+export const PASSWORD_CHANGE_LIMITS = Object.freeze({
+  // Per user id (ADR-019): every attempt counts, before any hashing — the same budget as a login per account.
+  perUser: { max: 5, windowMs: 15 * 60_000 },
+});
+
+export const USER_ADMIN_LIMITS = Object.freeze({
+  // Per acting admin: creating users hashes a password; the cap keeps admin mutations from monopolizing hashing.
+  perActor: { max: 30, windowMs: 60_000 },
+});

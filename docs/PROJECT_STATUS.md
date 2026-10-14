@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-14 (Task 010.1). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-14 (Task 011). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Завершено за фактичними файлами
 
@@ -142,6 +142,45 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Task 011 — користувачі, ролі та зміна власного пароля (2026-10-14)
+
+Стан на початок: `main` = `f0b320c`; у робочому дереві — незакомічений запис повторного review Codex (Task 010.1), збережено й закомічено разом із задачею. Рішення — ADR-019.
+
+**Реалізовано:**
+- **API.**
+  - `GET/POST /api/users`, `PATCH /api/users/:id` (`users:manage`, Origin + CSRF).
+  - `POST /api/auth/change-password` (будь-яка сесія, Origin + CSRF).
+  - Строгі схеми; UUID у params; whitelist ролі й полів PATCH; порожній PATCH → 400. `isActive` — лише справжній JSON boolean: Ajv-коерсію `"false"` відсікає `preValidation`.
+  - Keyset-пагінація `(created_at, id)`. Чинна політика email/пароля. Відповідь — лише `{id,email,role,isActive,createdAt,updatedAt}`.
+- **Гонки.** Нова колонка `users.credential_version`; зміна пароля, ролі чи активності в одній транзакції збільшує версію, відкликає всі сесії користувача й пише audit.
+  - Зміна пароля: scrypt поза транзакцією через спільний limiter, потім compare-and-set на прочитаній версії. Із двох одночасних змін проходить одна, друга отримує 409.
+  - Вхід: створення сесії під `FOR SHARE` перевіряє активність і версію. Запізнілий вхід після зміни пароля, ролі чи деактивації → 401 `stale_credentials`.
+  - Адмінські мутації — під `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`, з повторною перевіркою актора (сесія + активний admin) під блокуванням. Взаємне пониження двох admin: один отримує 401, лишається один активний admin. Власну роль чи активність змінити не можна (403). Останнього активного admin зняти не можна (409). No-op нічого не пише.
+- **Audit.**
+  - Успіх — у тій самій транзакції: `user.created`, `user.role_changed`, `user.deactivated`/`user.activated`, `auth.password_change` (success).
+  - Відмови — best-effort: `user.create_rejected`, `user.update_rejected`, `auth.password_change` (failure), `auth.login` failure `stale_credentials`.
+  - Лише id, ролі, лічильник `sessionsRevoked` і server-defined reason; без email, паролів і hash.
+- **Ліміти.** Зміна пароля — 5 спроб / 15 хв на користувача; адмінські мутації — 30/хв на актора; hashing — спільний bounded limiter (переповнення → 503 + `Retry-After: 1`).
+- **UI.**
+  - «Обліковий запис» для всіх ролей: email, роль, форма з трьох полів, autocomplete, кнопка показу (`aria-pressed`), inline-валідація, попередження про завершення сесій. Після успіху — login з повідомленням «Пароль змінено…».
+  - «Користувачі» лише з `users:manage` (прямий route — «Недостатньо прав»): одна таблиця в стилі сервісів, створення, меню «Дії» → зміна ролі або деактивація/активація з підтвердженням. Власний рядок позначено «Ви», без дій, з поясненням.
+  - Мутації не повторюються; pending блокує повтор і закриття діалогу; запізнілі відповіді після unmount ігноруються.
+  - Спільний `ActionMenu` винесено з `ProcessControl`. Журнал аудиту показує нові події.
+- **Міграція** `1791900000005_user-credential-version` — additive (колонка з default 1 + індекс). Сумісна з попереднім релізом.
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 89/89, backend 380/380 (нові `users-api` 22), smoke 10/10, agent 164/164 (+3 opt-in), frontend 136/136 (нові `users` 21), typecheck, lint, збірки, `check:secrets` OK |
+| Real-DB (`test:backend:db`) | 72/72, зокрема нові `db/users` 12: міграція й default, атомарність і rollback через тригер, що ламає audit; гонка дублікатів; взаємне пониження й деактивація двох admin; цикл трьох admin; дві одночасні зміни пароля (CAS); вхід проти закомітченої та **незакомітченої** зміни (утримання row lock); вхід, що закомітився раніше, відкликається; деактивація проти запізнілого входу; HTTP-гонка змін пароля |
+| UI Playwright (1440/390) | 2/2 |
+| E2E (`test:e2e`) | 12/12 (+1 opt-in), нові 2: admin створює користувача → вхід у двох сесіях → зміна пароля → обидві сесії завершено → старий пароль відхилено, новий працює → зміна ролі та деактивація завершують сесії → audit без паролів і email; mobile 390 px, клавіатура, Escape, фокус |
+| Real-PM2 E2E | 1/1 (керування й логи без регресій) |
+| Залишки | PM2 daemon і `~/.pm2` відсутні; 4 схеми `nc_test_*` від перерваного прогону видалено (лише тестова БД, за шаблоном), лишилось 0 |
+
+Аномалія: в одному з проміжних прогонів real-DB три тести `db/control` впали з тайм-аутами 15 с, а хуки `db/auth` і `db/users` не відпрацювали — звідси 4 залишкові схеми. Зависших транзакцій у тестовій БД не було. У двох наступних повних прогонах — 72/72; причину (ймовірно, мережа SSH-тунелю) не встановлено.
+
+Обмеження: UI показує перші 100 користувачів (API підтримує keyset-курсор, «показати ще» не реалізовано). Admin-reset пароля, MFA, зміна email і фізичне видалення — поза scope.
 
 ## Task 010.1 — ресурсні ліміти перегляду логів (2026-10-14)
 
@@ -683,9 +722,9 @@ Review відтворив P2: відхилений Promise першої ініц
 
 ## Активне та заплановане
 
-In Progress: Task 010.1 — ресурсні ліміти перегляду логів виправлено за review Codex; production-читання ввімкнене для 5 процесів `app-server` (`logs: true`). Очікує повторного review Codex. Підтвердження серверної частини Task 001 — відкрите.
+In Progress: Task 011 — адміністрування користувачів і зміна власного пароля (ADR-019); очікує review Codex. Completed: Task 010.1 — повторний review Codex підтвердив виправлення обох P2 у ресурсних лімітах логів (див. нижче). Підтвердження серверної частини Task 001 — відкрите.
 
-Next Task: виправити Task 010 за review, потім узгоджений користувачем порядок: користувачі/паролі → Dashboard → Slack/alerts → історія метрик → фінальна production-підготовка. Jenkins redeploy перенесений користувачем у далекий backlog після іншої автоматизації; у поточний план запуску не входить. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
+Next Task: узгоджений користувачем порядок: Dashboard → Slack/alerts → історія метрик → фінальна production-підготовка. Jenkins redeploy перенесений користувачем у далекий backlog після іншої автоматизації; у поточний план запуску не входить. Перед production-запуском — release blockers (5432, NC-SEC-001, hardening публічного сайту).
 
 Planned: узгодити вузьку мережеву політику/TLS і усунути setup-ризики окремим завданням; окремий користувач сервісу й systemd; Fastify API та версійні міграції; агент; React/Vite + Nginx/TLS; авторизація й аудит для кожної адміністративної операції; Jenkins, менеджер секретів, Slack. Після стабілізації MVP — окрема оцінка контейнеризації API/Agents. Це план, а не реалізовані компоненти.
 
@@ -713,3 +752,12 @@ Read-only SSH: hostname `control-server`, current і RELEASE.json revision `3ff4
 Тимчасові локальні reproduction-тести 2/2 підтвердили поведінку й видалені; функціональний код не змінено. На Node.js 22 `check:local` exit 0: 89 node:test, 352 backend, 10 smoke, 163 agent +3 opt-in пропущені, 115 frontend; lint/typecheck/secrets і збірки успішні. UI Playwright із synthetic API: 2/2 desktop/mobile. Real-DB і real-PM2 E2E незалежно не повторювалися.
 
 Read-only SSH підтвердив current `401667e653ed80f395a17a2ffa1c12657b9c9079` на центральному та керованому серверах; API/Nginx active, ready 200; Agent/broker/exporter timer active. **Allowlist ноди зараз: 5 targets, 5 з logs=true.** Початковий звіт деплою повідомляв 0, тому його стан не є поточним; хто й коли ввімкнув читання, цей review не встановлював. Production-текст не читався; конфігурації, служби і PM2-процеси reviewer не змінював. Рекомендація: обмежити використання production-читання до виправлення ресурсних лімітів. Запис review підготовлено локально, без commit/push/deploy.
+
+
+## Незалежний review Codex — Task 010.1 (2026-10-14)
+
+Переглянуто `2fe4d95` і docs-звіт `f0b320c`; початкове робоче дерево чисте. Обидва попередні P2 закриті в межах перевіреної реалізації: broker звільняє слот лише після завершення underlying read; API обмежує очікувачів (2 на запит, 3 на actor, 100 загалом) і прибирає їх при HTTP disconnect. Нових блокувальних дефектів у переглянутому diff не знайдено.
+
+Незалежний `check:local` на Node.js 22: exit 0, 89 node:test, 358 backend (включно з waiter regression і реальним HTTP abort), 10 smoke, 164 agent (включно з повторними timeout та late resolve/reject) +3 opt-in пропущені, 115 frontend; typecheck/lint/secrets/збірки успішні. UI Playwright із синтетичними API-даними: 2/2 desktop/mobile. Real-DB, загальні E2E і real-PM2 E2E незалежно не повторювалися; результати Claude вище лишаються історичними. Перевірку нових regression на старому коді Codex цього разу не повторював.
+
+Read-only SSH підтвердив current `2fe4d953f69bcf901bfaa73cc3d715a28264d446` на обох серверах; API/Nginx active, ready 200; Agent/broker/exporter timer active. Production-логи не читалися, конфігурації/служби/PM2-процеси reviewer не змінював. Функціональний код не змінено; запис review підготовлено локально без commit/push/deploy. Наступна задача — користувачі й паролі за погодженим roadmap.

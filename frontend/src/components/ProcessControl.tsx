@@ -1,8 +1,9 @@
-import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, controlApi, logsApi } from '../api/client';
 import { type ApplicationItem, type CommandView, type ControlAction, type ControlTarget, FINAL_COMMAND_STATUSES } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { formatDate } from '../pages/ServersPage';
+import { ActionMenu, type MenuItem } from './ActionMenu';
 import { Dialog } from './Dialog';
 import { LogViewer } from './LogViewer';
 import { ErrorState, formatRetry, LoadingState } from './StatusMessage';
@@ -60,42 +61,7 @@ const newKey = () => crypto.randomUUID();
 
 export type RowActions = (app: ApplicationItem) => ReactNode;
 
-export interface MenuItem { key: string; label: string; danger?: boolean; disabled: boolean; onSelect: () => void }
-
-function ActionMenu({ name, items }: { name: string; items: MenuItem[] }) {
-  // The trigger is usable as long as at least one item is; each item carries its own availability.
-  const disabled = items.every((i) => i.disabled);
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const id = useId();
-  useEffect(() => {
-    if (!open) return;
-    const closeOutside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { setOpen(false); trigger.current?.focus(); }
-    };
-    document.addEventListener('pointerdown', closeOutside);
-    document.addEventListener('keydown', escape);
-    return () => { document.removeEventListener('pointerdown', closeOutside); document.removeEventListener('keydown', escape); };
-  }, [open]);
-  return (
-    <div className="action-menu" ref={root} onBlur={(event) => {
-      if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
-    }}>
-      <button ref={trigger} type="button" className="button action-menu__trigger" disabled={disabled}
-        aria-label={`Дії: ${name}`} aria-expanded={open && !disabled} aria-controls={id}
-        onClick={() => { setOpen(!open); }}>Дії <span aria-hidden="true">⌄</span></button>
-      {open && !disabled ? <div id={id} className="action-menu__list" role="group" aria-label={`Дії для ${name}`}>
-        {items.map((item) => <button key={item.key} type="button" disabled={item.disabled}
-          className={`action-menu__item ${item.danger ? 'action-menu__item--danger' : ''}`}
-          onClick={() => { trigger.current?.focus(); setOpen(false); item.onSelect(); }}>{item.label}</button>)}
-      </div> : null}
-    </div>
-  );
-}
+export type { MenuItem } from './ActionMenu';
 
 export function ProcessControl({ serverId, serverName, onFinished, children }: {
   serverId: string; serverName: string; onFinished: () => void;

@@ -12,6 +12,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { to: '/servers', label: 'Сервери', permission: 'monitoring:read' },
   { to: '/applications', label: 'Застосунки', permission: 'monitoring:read' },
   { to: '/audit', label: 'Журнал аудиту', permission: 'audit:read' },
+  { to: '/users', label: 'Користувачі', permission: 'users:manage' },
+  { to: '/account', label: 'Обліковий запис' },
 ];
 
 export function Layout() {

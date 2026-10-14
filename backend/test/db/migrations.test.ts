@@ -12,7 +12,7 @@ import {
 const FAILING_DIR = join(import.meta.dirname, '..', 'fixtures', 'migrations-failing');
 const USERS_MIGRATION = '1791900000000_create-users';
 const AUTH_MIGRATION = '1791900000001_auth-foundation';
-const ALL = [USERS_MIGRATION, AUTH_MIGRATION, '1791900000002_server-registry', '1791900000003_pm2-inventory', '1791900000004_process-control'];
+const ALL = [USERS_MIGRATION, AUTH_MIGRATION, '1791900000002_server-registry', '1791900000003_pm2-inventory', '1791900000004_process-control', '1791900000005_user-credential-version'];
 
 let config: DbConfig;
 let admin: pg.Client;
@@ -113,6 +113,7 @@ describe('migrations on a clean schema', () => {
       { column_name: 'created_at', data_type: 'timestamp with time zone', is_nullable: 'NO', column_default: 'now()' },
       { column_name: 'updated_at', data_type: 'timestamp with time zone', is_nullable: 'NO', column_default: 'now()' },
       { column_name: 'role', data_type: 'text', is_nullable: 'NO', column_default: "'viewer'::text" },
+      { column_name: 'credential_version', data_type: 'bigint', is_nullable: 'NO', column_default: '1' },
     ]);
     const { rows: constraints } = await admin.query(
       // PostgreSQL 18 also records NOT NULL as pg_constraint rows (contype 'n'); those are covered by the column check above.
@@ -120,6 +121,7 @@ describe('migrations on a clean schema', () => {
         WHERE conrelid = format('%I.users', $1::text)::regclass AND contype <> 'n' ORDER BY conname`, [schema],
     );
     expect(constraints).toEqual([
+      { conname: 'users_credential_version_positive', contype: 'c' },
       { conname: 'users_email_format', contype: 'c' },
       { conname: 'users_email_key', contype: 'u' },
       { conname: 'users_email_normalized', contype: 'c' },

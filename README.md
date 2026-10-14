@@ -147,6 +147,17 @@ npm run backend:start     # node backend/dist/main.js
 | `POST /api/auth/logout` (без тіла) | сесія + Origin + `x-csrf-token` | `204`, cookie очищено | 401, 403 (Origin/CSRF), 503 |
 | `GET /api/audit?limit=1..100&beforeId=<id>` | `audit:read` (admin) | `200 {items:[{id,occurredAt,event,outcome,actorUserId,requestId,details}], nextBeforeId}` — `id DESC`, keyset | 400, 401, 403 `Insufficient permissions`, 503 |
 
+### Користувачі та зміна власного пароля (Task 011, ADR-019)
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `POST /api/auth/change-password` `{"currentPassword","newPassword"}` | сесія + Origin + `x-csrf-token` (усі ролі) | `204`, cookie очищено, **усі** сесії користувача завершено | 400 (політика або новий = поточний), 401, 403 (Origin/CSRF), 409 (credentials змінились паралельно), 422 (невірний поточний пароль), 429 + `Retry-After` (5/15 хв), 503 + `Retry-After` |
+| `GET /api/users?limit=1..100&after=<uuid>` | `users:manage` (admin) | `200 {items:[{id,email,role,isActive,createdAt,updatedAt}], nextAfter}` — `(created_at, id)`, keyset | 400, 401, 403, 503 |
+| `POST /api/users` `{"email","password","role"}` | `users:manage` + Origin + CSRF | `201 {id,email,role,isActive,createdAt,updatedAt}` | 400, 401, 403, 409 email зайнятий, 429, 503 + `Retry-After` |
+| `PATCH /api/users/:id` `{"role"?, "isActive"?}` (не порожнє) | `users:manage` + Origin + CSRF | `200` — той самий об'єкт; зміна відкликає всі сесії цілі, no-op нічого не пише | 400, 401 (права актора відкликано), 403 (власний обліковий запис), 404, 409 (останній активний admin), 429, 503 |
+
+Hash, паролі й токени не повертаються ніколи. Фізичного видалення, зміни email, admin-reset пароля, листів і self-registration немає.
+
 Frontend flow: при старті `GET /api/auth/me` (401 → сторінка login) → `POST /api/auth/login` з `credentials: 'same-origin'` → зберегти `csrfToken` **у пам'яті** (не localStorage) → кожен POST/PUT/PATCH/DELETE з `x-csrf-token`. Після reload — знову `me`.
 
 | Роль | Дозволи |
@@ -356,7 +367,7 @@ Production-деплой — лише артефактом із запушено�
 
 ## Наступні етапи
 
-1. Production-увімкнення керування PM2 для погоджених цілей (allowlist від оператора), далі — логи/redeploy окремими задачами. Окремий backlog: керування користувачами, зміна пароля.
+1. Узгоджений roadmap: Dashboard → Slack/alerts → історія метрик → фінальна production-підготовка. Jenkins redeploy — далекий backlog.
 2. Перед публічним запуском — release blockers (PROJECT_STATUS): обмеження 5432, NC-SEC-001, рішення щодо публічного HTTPS-сайту та `AUTH_ALLOWED_ORIGINS`, bootstrap адміністратора.
 3. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики.
 

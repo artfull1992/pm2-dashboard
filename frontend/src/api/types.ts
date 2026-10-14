@@ -20,7 +20,10 @@ export interface AuditItem {
   outcome: 'success' | 'failure' | 'denied';
   actorUserId: string | null;
   requestId: string | null;
-  details: { reason?: string; permission?: string; route?: string; serverId?: string; targetKey?: string; commandId?: string; action?: string; rotated?: boolean; revoked?: boolean };
+  details: {
+    reason?: string; permission?: string; route?: string; serverId?: string; targetKey?: string; commandId?: string; action?: string;
+    targetUserId?: string; role?: string; fromRole?: string; toRole?: string; rotated?: boolean; revoked?: boolean; sessionsRevoked?: number;
+  };
 }
 
 export interface AuditPage {
@@ -60,7 +63,7 @@ export function parseSessionInfo(value: unknown): SessionInfo {
   };
 }
 
-const DETAIL_KEYS = ['reason', 'permission', 'route', 'serverId', 'targetKey', 'commandId', 'action'] as const;
+const DETAIL_KEYS = ['reason', 'permission', 'route', 'serverId', 'targetKey', 'commandId', 'action', 'targetUserId', 'role', 'fromRole', 'toRole'] as const;
 const DETAIL_FLAGS = ['rotated', 'revoked'] as const;
 
 function parseAuditItem(value: unknown): AuditItem {
@@ -83,6 +86,10 @@ function parseAuditItem(value: unknown): AuditItem {
     if (flag === undefined) continue;
     expect(typeof flag === 'boolean');
     safeDetails[key] = flag;
+  }
+  if (details.sessionsRevoked !== undefined) {
+    expect(typeof details.sessionsRevoked === 'number' && Number.isInteger(details.sessionsRevoked) && details.sessionsRevoked >= 0);
+    safeDetails.sessionsRevoked = details.sessionsRevoked;
   }
   return { id, occurredAt, event, outcome, actorUserId, requestId, details: safeDetails };
 }
@@ -392,4 +399,27 @@ export function parseLogRequestView(value: unknown): LogRequestView {
     result = { outcome: r.outcome, reason: r.reason, readAt: r.readAt, stdout: parseLogStream(r.stdout), stderr: parseLogStream(r.stderr) };
   }
   return { requestId: value.requestId, serverId: value.serverId, targetKey: value.targetKey, status: value.status, deadlineAt: value.deadlineAt, result };
+}
+
+// --- Users (Task 011, ADR-019) -----------------------------------------------------------------------------------
+
+export interface UserView { id: string; email: string; role: Role; isActive: boolean; createdAt: string; updatedAt: string }
+export interface UserPage { items: UserView[]; nextAfter: string | null }
+
+const USER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Exactly the public fields — a response carrying anything else (e.g. a hash) is a contract violation. */
+export function parseUserView(value: unknown): UserView {
+  expect(isObject(value));
+  expect(Object.keys(value).sort().join(',') === 'createdAt,email,id,isActive,role,updatedAt');
+  const { id, email, role, isActive, createdAt, updatedAt } = value;
+  expect(isString(id, 36) && USER_ID_RE.test(id) && isString(email, 254) && (KNOWN_ROLES as readonly unknown[]).includes(role));
+  expect(typeof isActive === 'boolean' && isDate(createdAt) && isDate(updatedAt));
+  return { id, email, role: role as Role, isActive, createdAt, updatedAt };
+}
+
+export function parseUserPage(value: unknown): UserPage {
+  expect(isObject(value) && Array.isArray(value.items) && value.items.length <= 100);
+  expect(value.nextAfter === null || (isString(value.nextAfter, 36) && USER_ID_RE.test(value.nextAfter)));
+  return { items: value.items.map(parseUserView), nextAfter: value.nextAfter };
 }
