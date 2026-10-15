@@ -26,7 +26,7 @@ const proc = (pmId: number, name: string, status: string) => ({
 });
 
 function writeSnapshot(file: string, body: Record<string, unknown>) {
-  writeFileSync(file, `${JSON.stringify({ format: 'goit-node-control/pm2-inventory', version: 1, source: 'pm2', capturedAt: new Date().toISOString(), ...body })}\n`, { mode: 0o640 });
+  writeFileSync(file, `${JSON.stringify({ format: 'node-control/pm2-inventory', version: 1, source: 'pm2', capturedAt: new Date().toISOString(), ...body })}\n`, { mode: 0o640 });
   chmodSync(file, 0o640);
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Idempotent creation of the ISOLATED test database and role on the PostgreSQL host. Run as root:
-//   node scripts/setup-test-db.js [--credentials /root/.config/goit-node-control/test-db.env] [--rotate-password]
+//   node scripts/setup-test-db.js [--credentials /root/.config/node-control/test-db.env] [--rotate-password]
+//                                 [--previous-comment '<exact marker of resources created by an earlier version>']
 // Creates only node_control_test_db / node_control_test_user. Never touches production roles, databases,
 // HBA or server settings. The password is generated here, stored in a 600 file and sent to PostgreSQL
 // only as a SCRAM verifier through psql stdin.
@@ -19,8 +20,9 @@ import { formatTestCreds, MANAGED_COMMENT, planTestDbSetup, TEST_DB } from './li
 
 const { values: options } = parseArgs({
   options: {
-    credentials: { type: 'string', default: '/root/.config/goit-node-control/test-db.env' },
+    credentials: { type: 'string', default: '/root/.config/node-control/test-db.env' },
     'rotate-password': { type: 'boolean', default: false },
+    'previous-comment': { type: 'string' },
     host: { type: 'string', default: '127.0.0.1' },
     port: { type: 'string', default: '5432' },
   },
@@ -49,7 +51,7 @@ function main() {
   const [dbOwner, dbComment] = dbRow === '' ? [] : dbRow.split('|');
   const database = { exists: dbRow !== '', owner: dbOwner, comment: dbComment || null };
 
-  const plan = planTestDbSetup({ role, database, creds, rotatePassword: options['rotate-password'] });
+  const plan = planTestDbSetup({ role, database, creds, rotatePassword: options['rotate-password'], previousComment: options['previous-comment'] ?? null });
   log(`role ${role.exists ? 'exists' : 'missing'}, database ${database.exists ? 'exists' : 'missing'}; actions: ${plan.actions.join(', ')}`);
   const password = plan.password === 'generate' ? generatePassword() : creds.TEST_DB_PASS;
 
@@ -72,6 +74,8 @@ function main() {
         psql(createDatabaseSql(TEST_DB.database, TEST_DB.user));
         psql(`COMMENT ON DATABASE ${quoteIdent(TEST_DB.database)} IS ${managed};`);
         break;
+      case 'relabel-role': psql(`COMMENT ON ROLE ${quoteIdent(TEST_DB.user)} IS ${managed};`); break;
+      case 'relabel-database': psql(`COMMENT ON DATABASE ${quoteIdent(TEST_DB.database)} IS ${managed};`); break;
       case 'restrict-database': psql(restrictDatabaseSql(TEST_DB.database, TEST_DB.user)); break;
       default: throw new Error(`unknown action ${action}`);
     }

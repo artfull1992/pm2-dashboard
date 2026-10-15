@@ -2,7 +2,7 @@
 // Builds a release artifact from a committed, pushed revision — never from the working directory.
 //   node scripts/deploy/build-release.js [--revision HEAD] [--out <dir>] [--remote-branch origin/main]
 // Output: <out>/node-control-api-<sha>.tar.gz (API + frontend/dist + systemd unit), .sha256,
-// and server-bundle/ (server-release.js + lib) for transfer. Backend and UI are activated together via `current`.
+// and server-bundle/ (server-release.js, migrate-paths.js + lib) for transfer. Backend and UI are activated together via `current`.
 
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -21,6 +21,7 @@ export const ARTIFACT_PATHS = Object.freeze([
   'frontend/dist',
   'deploy/systemd/node-control-api.service',
   'scripts/deploy/server-release.js',
+  'scripts/deploy/migrate-paths.js',
   'scripts/deploy/lib',
 ]);
 
@@ -39,6 +40,7 @@ export const AGENT_ARTIFACT_PATHS = Object.freeze([
   'deploy/systemd/node-control-pm2-exporter@.timer',
   'deploy/systemd/node-control-pm2-broker@.service',
   'scripts/deploy/server-release.js',
+  'scripts/deploy/migrate-paths.js',
   'scripts/deploy/lib',
 ]);
 
@@ -49,7 +51,7 @@ const BUNDLE_FORBIDDEN = Object.freeze([
   /postgres(ql)?:\/\//,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /SCRAM-SHA-256\$/,
-  /\/etc\/goit-node-control|\/root\//,
+  /\/etc\/node-control|\/root\//,
 ]);
 
 /** Fails if the frontend bundle contains source maps or anything that looks like server configuration. */

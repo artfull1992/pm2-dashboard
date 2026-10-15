@@ -44,3 +44,18 @@ test('formatTestCreds writes exactly the TEST_DB_* keys and rejects unsafe value
   });
   assert.throws(() => formatTestCreds({ host: '127.0.0.1', port: 5432, password: 'a b' }), /TEST_DB_PASS/);
 });
+
+test('resources with an earlier marker are refused unless the operator names that exact marker; then they are re-labelled', () => {
+  const earlier = 'Earlier project marker (managed by scripts/setup-test-db.js)';
+  const role = { exists: true, comment: earlier, memberships: 0 };
+  const database = { exists: true, owner: TEST_DB.user, comment: earlier };
+  const creds = { TEST_DB_PASS: 'x'.repeat(48) };
+  assert.throws(() => planTestDbSetup({ role, database, creds }), /not managed by this project/);
+  assert.throws(() => planTestDbSetup({ role, database, creds, previousComment: 'something else' }), /not managed by this project/);
+  assert.throws(() => planTestDbSetup({ role, database, creds, previousComment: '' }), /not managed by this project/);
+  assert.throws(() => planTestDbSetup({ role: managedRole, database: { ...database, owner: 'postgres' }, creds, previousComment: earlier }), /refusing/);
+  const plan = planTestDbSetup({ role, database, creds, previousComment: earlier });
+  assert.deepEqual(plan.actions, ['enforce-role-attributes', 'relabel-role', 'relabel-database', 'restrict-database']);
+  // Already current marker: nothing to re-label.
+  assert.ok(!planTestDbSetup({ role: managedRole, database: managedDb, creds, previousComment: earlier }).actions.some((a) => a.startsWith('relabel')));
+});

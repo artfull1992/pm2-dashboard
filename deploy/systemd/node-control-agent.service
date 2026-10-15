@@ -1,10 +1,10 @@
-# GOIT Node Control — Agent (outbound HTTPS heartbeat only; ADR-015).
+# Node Control — Agent (outbound HTTPS heartbeat only; ADR-015).
 # Installed as /etc/systemd/system/node-control-agent.service. Not PM2-managed; no inbound listener.
 # Config: ENV_FILE (600, owned by nodecontrol-agent) with NC_AGENT_API_URL and NC_AGENT_TOKEN.
 # Exit code 2 = invalid/missing configuration (e.g. no token yet): not restarted in a loop.
 
 [Unit]
-Description=GOIT Node Control Agent (heartbeat)
+Description=Node Control Agent (heartbeat)
 Documentation=https://github.com/artfull1992/pm2-dashboard/blob/main/docs/DEPLOYMENT.md
 After=network-online.target
 Wants=network-online.target
@@ -15,9 +15,9 @@ StartLimitBurst=5
 Type=exec
 User=nodecontrol-agent
 Group=nodecontrol-agent
-WorkingDirectory=/opt/goit-node-control-agent/current
-Environment=ENV_FILE=/etc/goit-node-control-agent/agent.env
-ExecStart=/usr/bin/node /opt/goit-node-control-agent/current/agent/dist/main.js
+WorkingDirectory=/opt/node-control-agent/current
+Environment=ENV_FILE=/etc/node-control-agent/agent.env
+ExecStart=/usr/bin/node /opt/node-control-agent/current/agent/dist/main.js
 Restart=on-failure
 RestartSec=30
 RestartPreventExitStatus=2

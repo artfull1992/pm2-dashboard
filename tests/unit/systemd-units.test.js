@@ -16,14 +16,14 @@ test('exporter service: runs as the instance user, no manager-level ConditionUse
   assert.equal(lines.some((l) => l.startsWith('Condition')), false);
   assert.ok(lines.includes('User=%i'));
   assert.ok(lines.includes('Type=oneshot'));
-  assert.ok(lines.includes('ExecStart=/usr/bin/node /opt/goit-node-control-agent/current/agent/dist/pm2-exporter.js'));
+  assert.ok(lines.includes('ExecStart=/usr/bin/node /opt/node-control-agent/current/agent/dist/pm2-exporter.js'));
 });
 
 test('exporter service keeps its hardening: no network, no privileges, writes only the snapshot directory', () => {
   const lines = directives(unit('node-control-pm2-exporter@.service'));
   for (const required of [
     'RestrictAddressFamilies=AF_UNIX', 'IPAddressDeny=any', 'NoNewPrivileges=yes', 'CapabilityBoundingSet=',
-    'ProtectSystem=strict', 'ProtectHome=read-only', 'ReadWritePaths=/var/lib/goit-node-control-pm2',
+    'ProtectSystem=strict', 'ProtectHome=read-only', 'ReadWritePaths=/var/lib/node-control-pm2',
   ]) assert.ok(lines.includes(required), required);
   assert.equal(lines.some((l) => /^(AmbientCapabilities|CapabilityBoundingSet)=\S/.test(l)), false);
 });
@@ -38,11 +38,11 @@ test('broker service: instance user, dedicated group, socket/state dirs, no cond
   const lines = directives(unit('node-control-pm2-broker@.service'));
   assert.equal(lines.some((l) => l.startsWith('Condition')), false);
   for (const required of [
-    'User=%i', 'Group=nc-pm2-control', 'RuntimeDirectory=goit-node-control-pm2-broker', 'RuntimeDirectoryMode=0750',
-    'StateDirectory=goit-node-control-pm2-broker', 'StateDirectoryMode=0700', 'RestartPreventExitStatus=2',
+    'User=%i', 'Group=nc-pm2-control', 'RuntimeDirectory=node-control-pm2-broker', 'RuntimeDirectoryMode=0750',
+    'StateDirectory=node-control-pm2-broker', 'StateDirectoryMode=0700', 'RestartPreventExitStatus=2',
     'RestrictAddressFamilies=AF_UNIX', 'IPAddressDeny=any', 'NoNewPrivileges=yes', 'CapabilityBoundingSet=',
     'ProtectSystem=strict', 'ProtectHome=read-only', 'MemoryMax=128M', 'TasksMax=32',
-    'ExecStart=/usr/bin/node /opt/goit-node-control-agent/current/agent/dist/pm2-broker.js serve',
+    'ExecStart=/usr/bin/node /opt/node-control-agent/current/agent/dist/pm2-broker.js serve',
   ]) assert.ok(lines.includes(required), required);
   assert.equal(lines.some((l) => /^(ReadWritePaths|AmbientCapabilities=\S|SupplementaryGroups)/.test(l)), false);
 });

@@ -1,11 +1,11 @@
-# GOIT Node Control — PM2 inventory exporter (ADR-016). One run = one read of an ALREADY RUNNING PM2 daemon +
+# Node Control — PM2 inventory exporter (ADR-016). One run = one read of an ALREADY RUNNING PM2 daemon +
 # one atomic snapshot write. Instance name = the Linux user that owns PM2 (never root), e.g.
 #   node-control-pm2-exporter@deploy.service  (started by node-control-pm2-exporter@deploy.timer)
-# Config (no secrets): /etc/goit-node-control-pm2-exporter/%i.env — NC_PM2_HOME, NC_PM2_SNAPSHOT_FILE, NC_PM2_SOURCE.
+# Config (no secrets): /etc/node-control-pm2-exporter/%i.env — NC_PM2_HOME, NC_PM2_SNAPSHOT_FILE, NC_PM2_SOURCE.
 # The exporter never starts/stops/restarts PM2 or its processes; a missing daemon is reported as unavailable.
 
 [Unit]
-Description=GOIT Node Control PM2 inventory exporter (%i)
+Description=Node Control PM2 inventory exporter (%i)
 Documentation=https://github.com/artfull1992/pm2-dashboard/blob/main/docs/DEPLOYMENT.md
 
 [Service]
@@ -14,8 +14,8 @@ Type=oneshot
 # it tests the manager's own user (root), not User=, and would skip every instance. Root is refused by the exporter
 # itself (loadExporterConfig checks the real UID before touching PM2_HOME), so @root fails with exit code 2.
 User=%i
-EnvironmentFile=/etc/goit-node-control-pm2-exporter/%i.env
-ExecStart=/usr/bin/node /opt/goit-node-control-agent/current/agent/dist/pm2-exporter.js
+EnvironmentFile=/etc/node-control-pm2-exporter/%i.env
+ExecStart=/usr/bin/node /opt/node-control-agent/current/agent/dist/pm2-exporter.js
 TimeoutStartSec=30
 StandardOutput=journal
 StandardError=journal
@@ -24,7 +24,7 @@ UMask=0027
 
 # Hardening. Needs: read access to PM2_HOME and connect() to its rpc.sock (works on a read-only mount), write access
 # only to the snapshot directory, no network (AF_UNIX only). PM2_HOME under /home stays visible read-only.
-ReadWritePaths=/var/lib/goit-node-control-pm2
+ReadWritePaths=/var/lib/node-control-pm2
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=yes

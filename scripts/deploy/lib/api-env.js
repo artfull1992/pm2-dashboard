@@ -1,4 +1,4 @@
-// API config (/etc/goit-node-control/api.env): created once from the legacy DB .env, never overwritten.
+// API config (/etc/node-control/api.env): created once from the legacy DB .env, never overwritten.
 // Format is Node's util.parseEnv (what backend/src/config.ts reads via ENV_FILE) — simple KEY=VALUE lines.
 
 import { parseEnv } from 'node:util';
@@ -22,7 +22,7 @@ export function buildApiEnv(legacyEnv, overrides = {}) {
   if (missing.length > 0) throw new Error(`legacy env is missing: ${missing.join(', ')}`);
   const values = { ...API_DEFAULTS, ...overrides };
   const lines = [
-    '# GOIT Node Control API — managed by scripts/deploy/server-release.js (created once, never overwritten).',
+    '# Node Control API — managed by scripts/deploy/server-release.js (created once, never overwritten).',
     ...Object.keys(API_DEFAULTS).map((key) => [key, values[key]]),
     ...DB_KEYS.map((key) => [key, legacyEnv[key]]),
   ].map((entry) => {

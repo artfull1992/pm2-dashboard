@@ -1,8 +1,8 @@
-# GOIT Node Control — runs the PM2 inventory exporter for PM2 owner %i every 30 s (ADR-016).
+# Node Control — runs the PM2 inventory exporter for PM2 owner %i every 30 s (ADR-016).
 # Enable: systemctl enable --now node-control-pm2-exporter@<pm2-owner>.timer
 
 [Unit]
-Description=GOIT Node Control PM2 inventory exporter timer (%i)
+Description=Node Control PM2 inventory exporter timer (%i)
 
 [Timer]
 OnBootSec=30s

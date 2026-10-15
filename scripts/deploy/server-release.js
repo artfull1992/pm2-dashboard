@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Server-side release tool for GOIT Node Control API. Run as root on the server, from the transferred release bundle.
+// Server-side release tool for Node Control API. Run as root on the server, from the transferred release bundle.
 //
 //   server-release.js prepare  --artifact <tgz> --sha256 <hex> --revision <sha> [--no-install]   (--no-install: agent artifact, no npm deps)
 //   server-release.js config   [--legacy-env /etc/pm2-dashboard/.env] [--owner nodecontrol]
 //   server-release.js activate --revision <sha>
 //   server-release.js rollback
 //   server-release.js status
-// Common: [--base /opt/goit-node-control] [--config /etc/goit-node-control/api.env]
+// Common: [--base /opt/node-control] [--config /etc/node-control/api.env]
 // Never prints configuration values.
 
 import { spawnSync } from 'node:child_process';
@@ -18,8 +18,8 @@ import {
 } from './lib/release-dir.js';
 
 export const DEFAULTS = Object.freeze({
-  base: '/opt/goit-node-control',
-  config: '/etc/goit-node-control/api.env',
+  base: '/opt/node-control',
+  config: '/etc/node-control/api.env',
   legacyEnv: '/etc/pm2-dashboard/.env',
   owner: 'nodecontrol',
 });

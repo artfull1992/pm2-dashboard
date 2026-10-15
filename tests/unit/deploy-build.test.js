@@ -48,7 +48,7 @@ test('stageArtifact copies only runtime files: no sources, tests, maps, .env or 
     'package.json': '{}', 'package-lock.json': '{}', '.env': 'DB_PASS=x', '.env.example': 'x',
     'backend/dist/main.js': '', 'backend/dist/main.js.map': '', 'backend/dist/migrate.js': '', 'backend/src/main.ts': '', 'backend/test/a.test.ts': '',
     'backend/migrations/1791900000000_create-users.sql': '', 'backend/test/fixtures/migrations-failing/1791900000001_broken.sql': '',
-    'deploy/systemd/node-control-api.service': '', 'scripts/deploy/server-release.js': '',
+    'deploy/systemd/node-control-api.service': '', 'scripts/deploy/server-release.js': '', 'scripts/deploy/migrate-paths.js': '',
     'deploy/nginx/site.conf': '', 'frontend/dist/index.html': '<html>', 'frontend/dist/assets/index-abc.js': '',
     'frontend/dist/assets/index-abc.js.map': '', 'frontend/src/main.tsx': '', 'frontend/test/app.test.tsx': '', 'e2e/tests/auth.spec.ts': '',
     'scripts/deploy/lib/manifest.js': '', 'scripts/setup-postgres.js': '', 'node_modules/pg/index.js': '',
@@ -68,6 +68,7 @@ test('stageArtifact copies only runtime files: no sources, tests, maps, .env or 
     'package-lock.json',
     'package.json',
     'scripts/deploy/lib/manifest.js',
+    'scripts/deploy/migrate-paths.js',
     'scripts/deploy/server-release.js',
   ]);
 });
@@ -100,7 +101,7 @@ test('assertBundleClean rejects source maps, server config names and secret shap
     ['assets/a.js', 'postgres' + '://u:p@h/db'],
     ['assets/a.js', 'node_control_' + 'user'],
     ['assets/a.js', 'SCRAM-SHA-256' + '$4096:abc'],
-    ['assets/a.js', '/etc/goit-node-control/api.env'],
+    ['assets/a.js', '/etc/node-control/api.env'],
   ]) {
     assert.throws(() => assertBundleClean(bundle({ [file]: content })), /frontend bundle rejected/, file + content);
   }
@@ -118,7 +119,7 @@ test('agent artifact contains only the compiled agent, its package.json, unit an
     'agent/.env': 'NC_AGENT_TOKEN=x', 'deploy/systemd/node-control-agent.service': '', 'deploy/systemd/node-control-api.service': '',
     'deploy/systemd/node-control-pm2-exporter@.service': '', 'deploy/systemd/node-control-pm2-exporter@.timer': '',
     'deploy/systemd/node-control-pm2-broker@.service': '',
-    'scripts/deploy/server-release.js': '', 'scripts/deploy/lib/manifest.js': '', 'backend/dist/main.js': '', 'frontend/dist/index.html': '',
+    'scripts/deploy/server-release.js': '', 'scripts/deploy/migrate-paths.js': '', 'scripts/deploy/lib/manifest.js': '', 'backend/dist/main.js': '', 'frontend/dist/index.html': '',
   };
   for (const [file, content] of Object.entries(files)) {
     mkdirSync(join(src, file, '..'), { recursive: true });
@@ -133,6 +134,7 @@ test('agent artifact contains only the compiled agent, its package.json, unit an
     'deploy/systemd/node-control-pm2-exporter@.service',
     'deploy/systemd/node-control-pm2-exporter@.timer',
     'scripts/deploy/lib/manifest.js',
+    'scripts/deploy/migrate-paths.js',
     'scripts/deploy/server-release.js',
   ]);
 });

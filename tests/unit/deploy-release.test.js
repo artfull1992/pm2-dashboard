@@ -165,12 +165,12 @@ test('ensureApiConfig creates 600 config in a 750 dir atomically, then never ove
   const root = tmp('nc-etc-');
   const legacyFile = join(root, 'legacy.env');
   writeFileSync(legacyFile, legacy(), { mode: 0o600 });
-  const configFile = join(root, 'goit-node-control', 'api.env');
+  const configFile = join(root, 'node-control', 'api.env');
 
   assert.deepEqual(ensureApiConfig({ configFile, legacyEnvFile: legacyFile, ...owner }), { status: 'created', errors: [] });
   assert.equal(statSync(configFile).mode & 0o777, 0o600);
-  assert.equal(statSync(join(root, 'goit-node-control')).mode & 0o777, 0o750);
-  assert.ok(!readdirSync(join(root, 'goit-node-control')).some((f) => f.includes('.tmp-')));
+  assert.equal(statSync(join(root, 'node-control')).mode & 0o777, 0o750);
+  assert.ok(!readdirSync(join(root, 'node-control')).some((f) => f.includes('.tmp-')));
 
   // Operator customisation and a later change of the legacy file must both survive a redeploy.
   const customised = readFileSync(configFile, 'utf8').replace('LOG_LEVEL=info', 'LOG_LEVEL=warn');

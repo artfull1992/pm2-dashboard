@@ -318,8 +318,8 @@ const agentConfig = (file: string, extra: Record<string, string> = {}): AgentCon
 describe('agent inventory configuration', () => {
   it('disabled without NC_AGENT_INVENTORY_FILE; bounded settings; same-owner only in loopback test mode', () => {
     expect(loadAgentConfig({ NC_AGENT_API_URL: 'https://x.example.test', NC_AGENT_TOKEN: TOKEN }).inventory).toBeNull();
-    expect(agentConfig('/var/lib/goit-node-control-pm2/inventory.json').inventory).toEqual({
-      file: '/var/lib/goit-node-control-pm2/inventory.json', intervalSeconds: 60, maxAgeSeconds: 120, allowSameOwner: false,
+    expect(agentConfig('/var/lib/node-control-pm2/inventory.json').inventory).toEqual({
+      file: '/var/lib/node-control-pm2/inventory.json', intervalSeconds: 60, maxAgeSeconds: 120, allowSameOwner: false,
     });
     expect(() => agentConfig('relative.json')).toThrow(/NC_AGENT_INVENTORY_FILE/);
     expect(() => agentConfig('/a/i.json', { NC_AGENT_INVENTORY_INTERVAL_SECONDS: '5' })).toThrow(/INTERVAL/);

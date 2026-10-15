@@ -345,7 +345,7 @@ describe('broker socket', () => {
     expect(() => loadBrokerConfig({ NC_PM2_HOME: '/home/u/.pm2', NC_BROKER_ALLOWLIST: '/etc/x.json', NC_BROKER_SOCKET: '/home/u/.pm2/b.sock' }, 1000)).toThrow();
     expect(() => loadBrokerConfig({ NC_PM2_HOME: '/home/u/.pm2' }, 1000)).toThrow();
     expect(loadBrokerConfig({ NC_PM2_HOME: '/home/u/.pm2', NC_BROKER_ALLOWLIST: '/etc/x.json' }, 1000)).toMatchObject({
-      socketPath: '/run/goit-node-control-pm2-broker/broker.sock', journalDir: '/var/lib/goit-node-control-pm2-broker', allowSelfOwnedAllowlist: false,
+      socketPath: '/run/node-control-pm2-broker/broker.sock', journalDir: '/var/lib/node-control-pm2-broker', allowSelfOwnedAllowlist: false,
     });
   });
 });

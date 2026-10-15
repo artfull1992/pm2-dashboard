@@ -42,9 +42,9 @@ export function loadBrokerConfig(env: Record<string, string | undefined>, uid: n
   const issues: string[] = [];
   if (uid === 0) issues.push('the broker must not run as root: run it as the PM2 owner');
   const pm2Home = absolute(env.NC_PM2_HOME, 'NC_PM2_HOME', issues);
-  const socketPath = absolute(env.NC_BROKER_SOCKET, 'NC_BROKER_SOCKET', issues, '/run/goit-node-control-pm2-broker/broker.sock');
+  const socketPath = absolute(env.NC_BROKER_SOCKET, 'NC_BROKER_SOCKET', issues, '/run/node-control-pm2-broker/broker.sock');
   const allowlistPath = absolute(env.NC_BROKER_ALLOWLIST, 'NC_BROKER_ALLOWLIST', issues);
-  const journalDir = absolute(env.NC_BROKER_JOURNAL_DIR, 'NC_BROKER_JOURNAL_DIR', issues, '/var/lib/goit-node-control-pm2-broker');
+  const journalDir = absolute(env.NC_BROKER_JOURNAL_DIR, 'NC_BROKER_JOURNAL_DIR', issues, '/var/lib/node-control-pm2-broker');
   if (pm2Home && socketPath && !relative(pm2Home, socketPath).startsWith('..')) issues.push('NC_BROKER_SOCKET must not be inside NC_PM2_HOME');
   const rawTimeout = env.NC_PM2_TIMEOUT_SECONDS ?? '20';
   if (!/^\d+$/.test(rawTimeout) || Number(rawTimeout) < 1 || Number(rawTimeout) > 60) issues.push('NC_PM2_TIMEOUT_SECONDS must be an integer 1..60');

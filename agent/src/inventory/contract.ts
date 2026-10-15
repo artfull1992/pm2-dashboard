@@ -2,7 +2,7 @@
 // reports it to the API). Only the allowlisted fields below ever leave the exporter process: no env, args, paths,
 // log files or other pm2_env content. Missing metrics are null — never a fabricated 0.
 
-export const INVENTORY_FORMAT = 'goit-node-control/pm2-inventory';
+export const INVENTORY_FORMAT = 'node-control/pm2-inventory';
 export const INVENTORY_VERSION = 1;
 
 export const INVENTORY_LIMITS = Object.freeze({
