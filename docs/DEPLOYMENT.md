@@ -5,7 +5,7 @@
 ## Факти та межі наявного процесу
 
 - Реалізовані: PostgreSQL setup/check scripts, Central API (health, auth, RBAC, audit, реєстр серверів, Agent heartbeat, PM2 inventory, керування процесами, логи, користувачі, Dashboard, сповіщення), міграції, frontend (React/Vite), Agent, PM2 exporter і broker, deployment scripts (`scripts/deploy/`), units `deploy/systemd/` (API, Agent, exporter, broker). Інсталяторів і Jenkins redeploy немає.
-- Затверджені: user `nodecontrol`, unit `node-control-api.service`, `/opt/goit-node-control`, `/etc/goit-node-control/api.env`, API `127.0.0.1:3100`; frontend — `current/frontend/dist`, публічний сайт `https://control.example.com` (нижче).
+- Затверджені: user `nodecontrol`, unit `node-control-api.service`, `/opt/node-control`, `/etc/node-control/api.env`, API `127.0.0.1:3100`; frontend — `current/frontend/dist`, публічний сайт `https://control.example.com` (нижче).
 - Історичний rsync у `/etc/pm2-dashboard/` (Task 001/002) **не використовується**; там лишаються стара збірка й legacy `.env` (джерело `DB_*` для одноразового створення `api.env`).
 - За історичним серверним звітом кластер PostgreSQL — `18/main`, unit `postgresql@18-main`; конфігурації — `/etc/postgresql/18/main/`. Поточний серверний стан у цій сесії не перевірявся через SSH.
 - `db:setup` потребує root і змінює роль, БД, ACL та HBA; його не запускати для read-only аудиту. Node.js-сервіси в майбутньому повинні працювати з мінімальними правами без root, якщо необхідність не доведено.
@@ -36,9 +36,9 @@ Central API та Agents — Node.js 22, systemd. PM2 керує лише зас�
 | Runtime | `/usr/bin/node` — Node.js 22 (пакет `nodejs` nodesource); глобальний Node не оновлюється в межах деплою |
 | Сервісний користувач | `nodecontrol` — системний, `/usr/sbin/nologin`, без home, без sudo, власна група |
 | systemd unit | `node-control-api.service` ← `deploy/systemd/node-control-api.service` |
-| Релізи | `/opt/goit-node-control/releases/<git-sha>` — `root:root`, без запису для group/other |
-| Поточний / попередній | symlinks `/opt/goit-node-control/current`, `/opt/goit-node-control/previous` |
-| Конфігурація | `/etc/goit-node-control/api.env` — `600 nodecontrol:nodecontrol`; каталог `750 root:nodecontrol`; єдине джерело — `ENV_FILE` у unit |
+| Релізи | `/opt/node-control/releases/<git-sha>` — `root:root`, без запису для group/other |
+| Поточний / попередній | symlinks `/opt/node-control/current`, `/opt/node-control/previous` |
+| Конфігурація | `/etc/node-control/api.env` — `600 nodecontrol:nodecontrol`; каталог `750 root:nodecontrol`; єдине джерело — `ENV_FILE` у unit |
 | Listener | `127.0.0.1:3100` (лише loopback, `API_HOST` валідується). Egress-фільтра `IPAddressDeny` немає з Task 013.2: потрібен вихідний HTTPS до Slack; призначення обмежує код (лише `hooks.slack.com/services/…`) |
 | Логи | journal, `SyslogIdentifier=node-control-api` (операційні логи, **не** Audit Log) |
 
@@ -69,8 +69,8 @@ node $D/server-bundle/server-release.js prepare --artifact $D/node-control-api-$
 node $D/server-bundle/server-release.js config          # створює api.env лише якщо його немає; інакше тільки валідує
 
 # 2a. Міграції (якщо реліз їх містить) — ДО активації, з підготовленого релізу, як nodecontrol (не superuser)
-R=/opt/goit-node-control/releases/$SHA
-run_migrate() { (cd / && runuser -u nodecontrol -- env ENV_FILE=/etc/goit-node-control/api.env /usr/bin/node $R/backend/dist/migrate.js "$1"); }
+R=/opt/node-control/releases/$SHA
+run_migrate() { (cd / && runuser -u nodecontrol -- env ENV_FILE=/etc/node-control/api.env /usr/bin/node $R/backend/dist/migrate.js "$1"); }
 run_migrate status                                         # read-only: що pending
 install -d -m 700 /root/node-control-backups
 (umask 077 && runuser -u postgres -- pg_dump -Fc node_control_db > /root/node-control-backups/node_control_db-$(date -u +%Y%m%dT%H%M%SZ)-pre-$SHA.dump)
@@ -79,7 +79,7 @@ run_migrate up                                             # одна транз
 run_migrate status                                         # pending=0
 
 # 3. Unit (із підготовленого релізу) + verify — ДО активації
-install -m 644 /opt/goit-node-control/releases/$SHA/deploy/systemd/node-control-api.service /etc/systemd/system/
+install -m 644 /opt/node-control/releases/$SHA/deploy/systemd/node-control-api.service /etc/systemd/system/
 systemd-analyze verify /etc/systemd/system/node-control-api.service
 systemctl daemon-reload
 
@@ -99,14 +99,14 @@ curl -si http://127.0.0.1:3100/health/live                 # 200 {"status":"ok"}
 curl -si http://127.0.0.1:3100/health/ready                # 200 {"status":"ready"}
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/nope   # 404
 journalctl -u node-control-api --since "-10 min" -o cat -p warning    # нових помилок немає
-node /opt/goit-node-control/current/scripts/deploy/server-release.js status   # current=<SHA>
+node /opt/node-control/current/scripts/deploy/server-release.js status   # current=<SHA>
 ```
 
 Не друкувати `systemctl show`/`/proc/<pid>/environ` і вміст `api.env`. Сторонні служби: `systemctl is-active postgresql@18-main nginx docker`, `docker ps`, `systemctl --failed`.
 
 ### Auth-конфігурація (Task 005)
 
-`/etc/goit-node-control/api.env` лише доповнюється non-secret ключами, яких бракує; DB credentials, власник (`nodecontrol`) і права `600` зберігаються. Перед зміною — копія `api.env.bak-<ts>` (`600`), атомарний запис через тимчасовий файл у тому ж каталозі:
+`/etc/node-control/api.env` лише доповнюється non-secret ключами, яких бракує; DB credentials, власник (`nodecontrol`) і права `600` зберігаються. Перед зміною — копія `api.env.bak-<ts>` (`600`), атомарний запис через тимчасовий файл у тому ж каталозі:
 
 ```text
 AUTH_COOKIE_SECURE=true          # production: завжди true
@@ -121,8 +121,8 @@ AUTH_ALLOWED_ORIGINS=            # порожньо → login вимкнено, 
 Виконує оператор, коли визначено email; пароль вводиться приховано двічі, в argv/історію shell не потрапляє. Потрібні застосовані міграції (`status` pending=0).
 
 ```bash
-cd / && runuser -u nodecontrol -- env ENV_FILE=/etc/goit-node-control/api.env \
-  /usr/bin/node /opt/goit-node-control/current/backend/dist/bootstrap-admin.js --email <admin-email>
+cd / && runuser -u nodecontrol -- env ENV_FILE=/etc/node-control/api.env \
+  /usr/bin/node /opt/node-control/current/backend/dist/bootstrap-admin.js --email <admin-email>
 # exit 0 — створено (друкується id); 3 — адміністратор уже існує або email зайнятий (нічого не змінено);
 # 2 — ввід/параметри; 1 — помилка БД (нічого не закомічено).
 ```
@@ -144,7 +144,7 @@ DELETE FROM sessions WHERE expires_at < now() - interval '1 day' OR revoked_at <
 | Параметр | Значення |
 |---|---|
 | Збірка | `build-release.js`: `npm run frontend:build` з того самого `git archive`; `frontend/dist` у артефакті й manifest; перевірка bundle (немає `.map`, серверних імен конфігурації, секретних шаблонів) |
-| Статика | `/opt/goit-node-control/current/frontend/dist` (`root:root`, читання для `www-data`); UI і API перемикаються одним `current` |
+| Статика | `/opt/node-control/current/frontend/dist` (`root:root`, читання для `www-data`); UI і API перемикаються одним `current` |
 | Сайт | `https://control.example.com` — `/etc/nginx/conf.d/control.example.com.conf`, **керує власник сервера** (Certbot), скрипти Node Control його не встановлюють і не змінюють |
 | TLS | Let's Encrypt, `CN=control.example.com`; оновлення — `snap.certbot.renew.timer`; HTTP → 301 на HTTPS |
 | `/api/` | `proxy_pass http://127.0.0.1:3100` без URI (шлях і query без змін); невідомий `/api/*` → JSON 404 API; Origin передається як є; заголовки — нижче (ADR-014) |
@@ -176,20 +176,20 @@ Rollback: `server-release.js rollback` повертає узгоджену па�
 | Параметр | Значення |
 |---|---|
 | Користувач | `nodecontrol-agent` — системний, `/usr/sbin/nologin`, без home/sudo, без доступу до PM2 |
-| Релізи | `/opt/goit-node-control-agent/releases/<sha>`, `current`/`previous` |
-| Конфіг | `/etc/goit-node-control-agent/agent.env` — `600 nodecontrol-agent`, каталог `750 root:nodecontrol-agent` |
+| Релізи | `/opt/node-control-agent/releases/<sha>`, `current`/`previous` |
+| Конфіг | `/etc/node-control-agent/agent.env` — `600 nodecontrol-agent`, каталог `750 root:nodecontrol-agent` |
 | Unit | `node-control-agent.service` (`deploy/systemd/`), `Restart=on-failure`, `RestartPreventExitStatus=2` (немає/некоректний токен → не перезапускати по колу) |
 | Мережа | лише вихідний HTTPS до `NC_AGENT_API_URL`; inbound-порту немає; `IPAddressAllow=localhost` **не** застосовується (потрібен вихід) |
 
 ```bash
 # на кожній керованій ноді (root); артефакт і server-bundle передано як для API
 id nodecontrol-agent || useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin nodecontrol-agent
-install -d -m 755 /opt/goit-node-control-agent
-node server-bundle/server-release.js prepare --base /opt/goit-node-control-agent --no-install \
+install -d -m 755 /opt/node-control-agent
+node server-bundle/server-release.js prepare --base /opt/node-control-agent --no-install \
   --artifact node-control-agent-$SHA.tar.gz --sha256 "$(cut -d' ' -f1 node-control-agent-$SHA.tar.gz.sha256)" --revision $SHA
-node server-bundle/server-release.js activate --base /opt/goit-node-control-agent --revision $SHA
-install -d -m 750 -o root -g nodecontrol-agent /etc/goit-node-control-agent
-install -m 644 /opt/goit-node-control-agent/current/deploy/systemd/node-control-agent.service /etc/systemd/system/
+node server-bundle/server-release.js activate --base /opt/node-control-agent --revision $SHA
+install -d -m 750 -o root -g nodecontrol-agent /etc/node-control-agent
+install -m 644 /opt/node-control-agent/current/deploy/systemd/node-control-agent.service /etc/systemd/system/
 systemd-analyze verify /etc/systemd/system/node-control-agent.service && systemctl daemon-reload
 ```
 
@@ -200,7 +200,7 @@ systemd-analyze verify /etc/systemd/system/node-control-agent.service && systemc
 ```bash
 umask 077; read -rs NC_AGENT_TOKEN   # вставити ключ, Enter (не відображається)
 printf 'NC_AGENT_API_URL=https://control.example.com\nNC_AGENT_TOKEN=%s\n' "$NC_AGENT_TOKEN" \
-  | install -m 600 -o nodecontrol-agent -g nodecontrol-agent /dev/stdin /etc/goit-node-control-agent/agent.env
+  | install -m 600 -o nodecontrol-agent -g nodecontrol-agent /dev/stdin /etc/node-control-agent/agent.env
 unset NC_AGENT_TOKEN
 systemctl enable --now node-control-agent
 journalctl -u node-control-agent -n 5 -o cat      # "outcome":"accepted"
@@ -208,11 +208,11 @@ journalctl -u node-control-agent -n 5 -o cat      # "outcome":"accepted"
 
 Ротація: «Видати новий ключ» у UI → перезаписати `agent.env` → `systemctl restart node-control-agent`. Відкликання: «Відкликати ключ» у UI (агент отримає 401 і перейде на рідкі повтори; `systemctl disable --now node-control-agent`). Credentials не видаляються SQL — лише відкликаються через UI (audit).
 
-Rollback Agent: `server-release.js rollback --base /opt/goit-node-control-agent` + restart, або `systemctl disable --now node-control-agent`. Rollback API на реліз до Task 007: endpoint heartbeat зникне (404) — агенти перейдуть у backoff; дані реєстру (additive-таблиці) лишаються.
+Rollback Agent: `server-release.js rollback --base /opt/node-control-agent` + restart, або `systemctl disable --now node-control-agent`. Rollback API на реліз до Task 007: endpoint heartbeat зникне (404) — агенти перейдуть у backoff; дані реєстру (additive-таблиці) лишаються.
 
 ### PM2 inventory exporter (Task 008, ADR-016)
 
-Лише читання. Exporter постачається в артефакті Agent (`agent/dist/pm2-exporter.js`, `deploy/systemd/node-control-pm2-exporter@.service|.timer`). Він працює від **власника PM2** (не root), раз на 30 с читає існуючий daemon (`getMonitorData`) і атомарно пише `/var/lib/goit-node-control-pm2/inventory.json`. PM2 і проєкти не перезапускаються, глобальний PM2 і системний Node.js не змінюються. Немає daemon → snapshot `unavailable/daemon_not_running`, daemon не запускається.
+Лише читання. Exporter постачається в артефакті Agent (`agent/dist/pm2-exporter.js`, `deploy/systemd/node-control-pm2-exporter@.service|.timer`). Він працює від **власника PM2** (не root), раз на 30 с читає існуючий daemon (`getMonitorData`) і атомарно пише `/var/lib/node-control-pm2/inventory.json`. PM2 і проєкти не перезапускаються, глобальний PM2 і системний Node.js не змінюються. Немає daemon → snapshot `unavailable/daemon_not_running`, daemon не запускається.
 
 Потрібні параметри від оператора: Linux-користувач, від якого працює PM2 (`PM2_OWNER`), і абсолютний `PM2_HOME` (зазвичай `/home/<user>/.pm2`). Не вгадувати й не сканувати чужі home-каталоги. PM2 від root — не підтримується.
 
@@ -228,25 +228,25 @@ id -nG nodecontrol-agent         # Agent НЕ має бути в основні�
 getent group nc-pm2-inventory || groupadd --system nc-pm2-inventory
 usermod -aG nc-pm2-inventory nodecontrol-agent
 # 2. Каталог snapshot: власник — PM2 owner, група читання, setgid, без запису для групи/інших
-install -d -o "$PM2_OWNER" -g nc-pm2-inventory -m 2750 /var/lib/goit-node-control-pm2
+install -d -o "$PM2_OWNER" -g nc-pm2-inventory -m 2750 /var/lib/node-control-pm2
 # 3. Конфіг exporter (без секретів)
-install -d -m 755 /etc/goit-node-control-pm2-exporter
-printf 'NC_PM2_HOME=%s\nNC_PM2_SNAPSHOT_FILE=/var/lib/goit-node-control-pm2/inventory.json\nNC_PM2_SOURCE=pm2\n' "$PM2_HOME" \
-  | install -m 644 /dev/stdin "/etc/goit-node-control-pm2-exporter/$PM2_OWNER.env"
+install -d -m 755 /etc/node-control-pm2-exporter
+printf 'NC_PM2_HOME=%s\nNC_PM2_SNAPSHOT_FILE=/var/lib/node-control-pm2/inventory.json\nNC_PM2_SOURCE=pm2\n' "$PM2_HOME" \
+  | install -m 644 /dev/stdin "/etc/node-control-pm2-exporter/$PM2_OWNER.env"
 # 4. Unit-шаблони з активного релізу Agent
-install -m 644 /opt/goit-node-control-agent/current/deploy/systemd/node-control-pm2-exporter@.service \
-               /opt/goit-node-control-agent/current/deploy/systemd/node-control-pm2-exporter@.timer /etc/systemd/system/
+install -m 644 /opt/node-control-agent/current/deploy/systemd/node-control-pm2-exporter@.service \
+               /opt/node-control-agent/current/deploy/systemd/node-control-pm2-exporter@.timer /etc/systemd/system/
 systemd-analyze verify "/etc/systemd/system/node-control-pm2-exporter@$PM2_OWNER.service" && systemctl daemon-reload
 # 5. Один пробний запуск і перевірка (state ok або причина unavailable; без імен процесів у журналі)
 systemctl start "node-control-pm2-exporter@$PM2_OWNER.service"
 journalctl -u "node-control-pm2-exporter@$PM2_OWNER" -n 3 -o cat     # "Finished …" і "inventory exported"; НЕ "skipped, unmet condition"
-stat -c '%U:%G %a' /var/lib/goit-node-control-pm2/inventory.json      # <owner>:nc-pm2-inventory 640
+stat -c '%U:%G %a' /var/lib/node-control-pm2/inventory.json      # <owner>:nc-pm2-inventory 640
 # 6. Таймер
 systemctl enable --now "node-control-pm2-exporter@$PM2_OWNER.timer"
 # 7. Agent: увімкнути inventory (токен у файлі не змінюється) і перезапустити
-grep -q '^NC_AGENT_INVENTORY_FILE=' /etc/goit-node-control-agent/agent.env \
-  || printf 'NC_AGENT_INVENTORY_FILE=/var/lib/goit-node-control-pm2/inventory.json\n' >> /etc/goit-node-control-agent/agent.env
-stat -c '%U %a' /etc/goit-node-control-agent/agent.env                # nodecontrol-agent 600
+grep -q '^NC_AGENT_INVENTORY_FILE=' /etc/node-control-agent/agent.env \
+  || printf 'NC_AGENT_INVENTORY_FILE=/var/lib/node-control-pm2/inventory.json\n' >> /etc/node-control-agent/agent.env
+stat -c '%U %a' /etc/node-control-agent/agent.env                # nodecontrol-agent 600
 systemctl restart node-control-agent
 journalctl -u node-control-agent -n 5 -o cat                            # "msg":"inventory","outcome":"accepted","state":"ok"
 ```
@@ -265,37 +265,37 @@ Rollback inventory (PM2 і проєкти не зачіпаються): `systemc
 # --- Крок 1. Broker на керованій ноді (root). PM2_OWNER/PM2_HOME — ті самі, що для exporter.
 PM2_OWNER=<user>; PM2_HOME=/home/<user>/.pm2
 getent group nc-pm2-control || groupadd --system nc-pm2-control
-install -d -m 755 /etc/goit-node-control-pm2-broker
-printf 'NC_PM2_HOME=%s\nNC_BROKER_ALLOWLIST=/etc/goit-node-control-pm2-broker/%s.allowlist.json\n' "$PM2_HOME" "$PM2_OWNER" \
-  | install -m 644 /dev/stdin "/etc/goit-node-control-pm2-broker/$PM2_OWNER.env"
+install -d -m 755 /etc/node-control-pm2-broker
+printf 'NC_PM2_HOME=%s\nNC_BROKER_ALLOWLIST=/etc/node-control-pm2-broker/%s.allowlist.json\n' "$PM2_HOME" "$PM2_OWNER" \
+  | install -m 644 /dev/stdin "/etc/node-control-pm2-broker/$PM2_OWNER.env"
 # Порожня allowlist (root:root 644): broker відхиляє все, доки оператор не додасть цілі.
-printf '{"version":1,"targets":[]}\n' | install -m 644 -o root -g root /dev/stdin "/etc/goit-node-control-pm2-broker/$PM2_OWNER.allowlist.json"
-install -m 644 /opt/goit-node-control-agent/current/deploy/systemd/node-control-pm2-broker@.service /etc/systemd/system/
+printf '{"version":1,"targets":[]}\n' | install -m 644 -o root -g root /dev/stdin "/etc/node-control-pm2-broker/$PM2_OWNER.allowlist.json"
+install -m 644 /opt/node-control-agent/current/deploy/systemd/node-control-pm2-broker@.service /etc/systemd/system/
 systemd-analyze verify "/etc/systemd/system/node-control-pm2-broker@$PM2_OWNER.service" && systemctl daemon-reload
 # Fingerprint потрібних процесів (виводить pm_id, name, exec_mode, fingerprint — без шляхів/env; лише існуючий daemon):
-runuser -u "$PM2_OWNER" -- env NC_PM2_HOME="$PM2_HOME" NC_BROKER_ALLOWLIST=/etc/goit-node-control-pm2-broker/$PM2_OWNER.allowlist.json \
-  /usr/bin/node /opt/goit-node-control-agent/current/agent/dist/pm2-broker.js fingerprint
+runuser -u "$PM2_OWNER" -- env NC_PM2_HOME="$PM2_HOME" NC_BROKER_ALLOWLIST=/etc/node-control-pm2-broker/$PM2_OWNER.allowlist.json \
+  /usr/bin/node /opt/node-control-agent/current/agent/dist/pm2-broker.js fingerprint
 # Заповнити allowlist (root), наприклад:
 # {"version":1,"targets":[{"id":"api-prod","name":"api","actions":["restart"],"fingerprint":"sha256:…"}]}
 systemctl enable --now "node-control-pm2-broker@$PM2_OWNER.service"
 journalctl -u "node-control-pm2-broker@$PM2_OWNER" -n 3 -o cat       # "broker started"
-stat -c '%U:%G %a' /run/goit-node-control-pm2-broker /run/goit-node-control-pm2-broker/broker.sock   # <owner>:nc-pm2-control 750 / 660
+stat -c '%U:%G %a' /run/node-control-pm2-broker /run/node-control-pm2-broker/broker.sock   # <owner>:nc-pm2-control 750 / 660
 
 # --- Крок 2. Agent: доступ лише до сокета broker (НЕ до rpc.sock), backup конфігу, restart лише Agent.
 usermod -aG nc-pm2-control nodecontrol-agent
-cp -p /etc/goit-node-control-agent/agent.env /etc/goit-node-control-agent/agent.env.bak-$(date -u +%Y%m%dT%H%M%SZ)
-grep -q '^NC_AGENT_CONTROL_SOCKET=' /etc/goit-node-control-agent/agent.env \
-  || printf 'NC_AGENT_CONTROL_SOCKET=/run/goit-node-control-pm2-broker/broker.sock\n' >> /etc/goit-node-control-agent/agent.env
+cp -p /etc/node-control-agent/agent.env /etc/node-control-agent/agent.env.bak-$(date -u +%Y%m%dT%H%M%SZ)
+grep -q '^NC_AGENT_CONTROL_SOCKET=' /etc/node-control-agent/agent.env \
+  || printf 'NC_AGENT_CONTROL_SOCKET=/run/node-control-pm2-broker/broker.sock\n' >> /etc/node-control-agent/agent.env
 systemctl restart node-control-agent
 journalctl -u node-control-agent -n 5 -o cat                             # "control poll", broker ok
 
 # --- Крок 3. API (центральний сервер): увімкнути керування глобально (backup api.env, restart лише API).
-#   PM2_CONTROL_ENABLED=true  у /etc/goit-node-control/api.env  (600 nodecontrol)
+#   PM2_CONTROL_ENABLED=true  у /etc/node-control/api.env  (600 nodecontrol)
 ```
 
 Перевірка: UI → сервер → «Сервіси сервера» (або «Застосунки», ADR-024) → колонка «Дії»: дозволені процеси мають активне меню; operator/admin виконує дію з підтвердженням; статус «Виконано й підтверджено»; audit `process.command_*`.
 
-**Rollback / аварійне вимкнення** (у будь-якому порядку, PM2-процеси не зупиняються): `PM2_CONTROL_ENABLED=false` + restart API (нові команди → 409, черга не видається й експірує); прибрати `NC_AGENT_CONTROL_SOCKET` з `agent.env` + restart Agent; `systemctl disable --now node-control-pm2-broker@<owner>`; спорожнити allowlist. Журнал broker (`/var/lib/goit-node-control-pm2-broker`) не видаляти: він захищає від повторного виконання. Таблиці керування лишаються (additive).
+**Rollback / аварійне вимкнення** (у будь-якому порядку, PM2-процеси не зупиняються): `PM2_CONTROL_ENABLED=false` + restart API (нові команди → 409, черга не видається й експірує); прибрати `NC_AGENT_CONTROL_SOCKET` з `agent.env` + restart Agent; `systemctl disable --now node-control-pm2-broker@<owner>`; спорожнити allowlist. Журнал broker (`/var/lib/node-control-pm2-broker`) не видаляти: він захищає від повторного виконання. Таблиці керування лишаються (additive).
 
 ### Автозапуск PM2 після reboot (окремо від Agent)
 
@@ -375,7 +375,7 @@ systemctl enable pm2-$OWNER.service      # БЕЗ --now і без start, якщ�
 
 ```bash
 # Увімкнути логи для погодженого сервісу (root на керованій ноді). Backup → правка → перевірка; broker перечитує allowlist сам.
-A=/etc/goit-node-control-pm2-broker/<owner>.allowlist.json
+A=/etc/node-control-pm2-broker/<owner>.allowlist.json
 cp -p "$A" "$A.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 python3 - "$A" <<'PY'
 import json, sys
@@ -386,10 +386,10 @@ for t in d["targets"]:
 json.dump(d, open(p + ".new", "w"), indent=1)
 PY
 install -m 644 -o root -g root "$A.new" "$A" && rm "$A.new"
-# Каталоги логів: типово <PM2_HOME>/logs. Інший каталог — лише явно: NC_BROKER_LOG_DIRS=... у /etc/goit-node-control-pm2-broker/<owner>.env + restart broker.
+# Каталоги логів: типово <PM2_HOME>/logs. Інший каталог — лише явно: NC_BROKER_LOG_DIRS=... у /etc/node-control-pm2-broker/<owner>.env + restart broker.
 ```
 
-Перевірка: UI → сервер → «Сервіси сервера» → «Дії» → «Переглянути логи» (operator/admin). Rollback логів: повернути allowlist із backup (діє без restart). **Rollback broker на реліз до Task 010:** спершу повернути allowlist без поля `logs` (старий broker вважає його невалідним і відхилятиме всі дії), потім `server-release.js rollback --base /opt/goit-node-control-agent` і restart broker та Agent.
+Перевірка: UI → сервер → «Сервіси сервера» → «Дії» → «Переглянути логи» (operator/admin). Rollback логів: повернути allowlist із backup (діє без restart). **Rollback broker на реліз до Task 010:** спершу повернути allowlist без поля `logs` (старий broker вважає його невалідним і відхилятиме всі дії), потім `server-release.js rollback --base /opt/node-control-agent` і restart broker та Agent.
 
 ### Користувачі та паролі (Task 011, ADR-019)
 
@@ -405,7 +405,7 @@ Rollback: `server-release.js rollback` на попередній реліз + re
 
 ```bash
 # Один раз: ключ шифрування webhook (root на центральному сервері). Значення не виводиться і не потрапляє в історію shell.
-E=/etc/goit-node-control/api.env
+E=/etc/node-control/api.env
 cp -p "$E" "$E.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 umask 077; K=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))")
 printf 'ALERTS_SECRET_KEY=%s\nALERTS_SECRET_KEY_VERSION=1\nALERTS_PUBLIC_URL=https://control.example.com\n' "$K" >> "$E"; unset K
@@ -454,10 +454,11 @@ git fetch origin && git worktree add ../nc-rollback 70ddd1f40b205306f0d61eb278cc
 npx -y node@22 scripts/deploy/build-release.js --revision 70ddd1f40b205306f0d61eb278cca9646c7e7d87   --remote-branch origin/release/monitoring-rollback-compat --out <out>
 # передати артефакт + .sha256 + server-bundle як для звичайного деплою; на сервері (root):
 sha256sum -c node-control-api-<sha>.tar.gz.sha256
-node server-bundle/server-release.js prepare --artifact … --sha256 … --revision 70ddd1f40b205306f0d61eb278cca9646c7e7d87
+# Типові шляхи server-bundle цього артефакту — попередньої інсталяції (до перейменування шляхів): завжди явні --base/--config.
+node server-bundle/server-release.js prepare --base /opt/node-control --config /etc/node-control/api.env --artifact … --sha256 … --revision 70ddd1f40b205306f0d61eb278cca9646c7e7d87
 # RELEASE.json: revision = 70ddd1f…, 63 файли; migrate.js status з нового релізу: applied=9 pending=0 unknown=0
-node server-bundle/server-release.js activate --revision 70ddd1f40b205306f0d61eb278cca9646c7e7d87
-systemctl restart node-control-api
+node server-bundle/server-release.js activate --base /opt/node-control --config /etc/node-control/api.env --revision 70ddd1f40b205306f0d61eb278cca9646c7e7d87
+systemctl restart node-control-api    # unit-файл НЕ замінювати unit-файлом із цього артефакту (там попередні шляхи); чинний unit підходить
 ```
 
 Перевірки після: live/ready 200, сторінки сервера (онлайн/офлайн) і Dashboard без 500/503, `GET /api/alerts?state=resolved` 200, у журналі API немає `Alerts evaluation failed`, heartbeat обох версій Agent приймається.
@@ -465,6 +466,96 @@ systemctl restart node-control-api
 Повернення на поточний робочий реліз: `server-release.js activate --revision <поточний ADR-023 реліз>` (він лишається підготовленим) + restart API — без міграцій. Записи, які compat зробить за час відкату (повні snapshot від Agent 0.4.x), ADR-023 API читає через `normalizeSnapshot`.
 
 Обмеження: tar.gz не відтворюється побайтово (час файлів) — ідентичність задає revision + `RELEASE.json` (хеші файлів однакові між збірками, перевірено); compat-реліз не показує пороги пам'яті ОС, але й не дає їх змінити через UI; Agent 0.4.x за compat знову надсилає (і compat зберігає) повні snapshot. Схема не відкочується; backup БД поверх нових даних не відновлюється.
+
+### Перейменування шляхів встановлення (нейтральні назви, 2026-10-16)
+
+Продукт — **Node Control**, технічний slug — `node-control`. Назви units, користувачів (`nodecontrol`, `nodecontrol-agent`), груп (`nc-pm2-inventory`, `nc-pm2-control`) і ключів `NC_*` не змінились. Змінились шляхи, які задають units, `server-release.js` і типові значення коду:
+
+| Компонент | Шлях (чинний) | Звідки береться |
+|---|---|---|
+| Релізи API/UI | `/opt/node-control/{releases,current,previous}` | `server-release.js --base` (типово), unit `WorkingDirectory`/`ExecStart`, Nginx `root …/current/frontend/dist` |
+| Конфіг API | `/etc/node-control/api.env` (`600 nodecontrol`, каталог `750 root:nodecontrol`) | unit `Environment=ENV_FILE=…`, `server-release.js --config` |
+| Релізи Agent (Agent, exporter, broker) | `/opt/node-control-agent/{releases,current,previous}` | `server-release.js --base` (явно), units |
+| Конфіг Agent | `/etc/node-control-agent/agent.env` (`600`) | unit `ENV_FILE` |
+| Конфіг exporter | `/etc/node-control-pm2-exporter/<owner>.env` | unit `EnvironmentFile` |
+| Snapshot inventory | `/var/lib/node-control-pm2/inventory.json` (каталог `2750 <owner>:nc-pm2-inventory`) | exporter `ReadWritePaths`, `NC_PM2_SNAPSHOT_FILE`, `NC_AGENT_INVENTORY_FILE` |
+| Конфіг і allowlist broker | `/etc/node-control-pm2-broker/<owner>.env`, `<owner>.allowlist.json` (`root:root 644`) | unit `EnvironmentFile`, `NC_BROKER_ALLOWLIST` |
+| Журнал broker (dedup) | `/var/lib/node-control-pm2-broker` (`0700 <owner>`) | unit `StateDirectory`, типове `NC_BROKER_JOURNAL_DIR` |
+| Сокет broker | `/run/node-control-pm2-broker/broker.sock` (`0660 <owner>:nc-pm2-control`) | unit `RuntimeDirectory`, типове `NC_BROKER_SOCKET`, `NC_AGENT_CONTROL_SOCKET` |
+| Credentials тестової БД | `/root/.config/node-control/test-db.env` (`600 root`) | `setup-test-db.js --credentials` (типово) |
+
+Формат snapshot inventory: `node-control/pm2-inventory`, версія 1. Exporter і Agent постачаються одним артефактом; після оновлення exporter одразу запускається один раз, щоб Agent не читав snapshot попереднього формату.
+
+**Наявні інсталяції** переводяться інструментом `migrate-paths.js` (в обох артефактах і `server-bundle`). Він не знає жодних назв: **старі шляхи оператор бере з фактичних units** (`systemctl cat …`: `WorkingDirectory`, `ENV_FILE`, `EnvironmentFile`, `ReadWritePaths`, `StateDirectory`, `RuntimeDirectory`) і передає явно:
+
+- `plan` — read-only preflight: кожен `--move OLD=NEW` має бути «pending» (OLD є, NEW немає) або «done»; **існуючий NEW, відсутність обох, symlink-джерело, різні файлові системи — зупинка до будь-якої зміни** (нічого не перезаписується);
+- `apply … --backup-dir DIR --state FILE` — `rename(2)` на тій самій файловій системі (власник, права, inode, вміст, журнал зберігаються; нічого не копіюється), переписування посилань у `--rewrite` файлах (оригінал — у `DIR`, `0600`; значення не виводяться, лише назви ключів), `--map OLD=NEW` — лише посилання без переміщення (каталог під `/run`), `--alias OLD` — тимчасовий symlink OLD → NEW. Кожен крок журналюється в `FILE` до й після виконання; повторний `apply` пропускає виконане;
+- `rollback --state FILE` — у зворотному порядку: прибрати aliases, відновити переписані файли з backup, перейменувати назад; повторюваний; після часткового збою відновлює рівно виконані кроки;
+- `finalize --state FILE` — прибрати тимчасові aliases, коли вони більше не потрібні (лише якщо це досі symlink на новий шлях).
+
+Нових токенів, ключів (сесії, `ALERTS_SECRET_KEY`), DB credentials не створюється; allowlist і його fingerprints, журнал broker, права й власники — ті самі файли. PM2-застосунки, `PM2_HOME`, власник PM2 і PM2 startup не змінюються й не перезапускаються; зупинка broker/exporter/Agent не зупиняє PM2-процеси.
+
+**Центральний сервер (API/UI; Agent там установлений, але вимкнений).** Нижче `OLD_*` — значення з `systemctl cat`, `D` — каталог переданого релізу нової ревізії `SHA`.
+
+```bash
+# 0. Preflight (read-only) + backups
+systemctl cat node-control-api | grep -E '^(WorkingDirectory|Environment=ENV_FILE|ExecStart)'
+OLD_API=<WorkingDirectory без /current>; OLD_API_CONF=<каталог ENV_FILE>; OLD_AG=<база Agent>; OLD_AG_CONF=<каталог agent.env>; OLD_TESTDB=<каталог test-db.env>
+B=/root/node-control-backups/paths-$(date -u +%Y%m%dT%H%M%SZ); install -d -m 700 $B
+cp -a /etc/systemd/system/node-control-api.service /etc/systemd/system/node-control-agent.service <vhost Node Control у /etc/nginx/conf.d> $B/
+MOVES="--move $OLD_API=/opt/node-control --move $OLD_API_CONF=/etc/node-control --move $OLD_AG=/opt/node-control-agent --move $OLD_AG_CONF=/etc/node-control-agent --move $OLD_TESTDB=/root/.config/node-control"
+node $D/server-bundle/migrate-paths.js plan $MOVES --alias $OLD_API          # зупинитися, якщо preflight failed
+# 1. Підготувати реліз у ПОТОЧНУ базу, поки API працює
+node $D/server-bundle/server-release.js prepare --base $OLD_API --config $OLD_API_CONF/api.env --artifact … --sha256 … --revision $SHA
+# 2. Перемикання (коротка зупинка API)
+systemctl stop node-control-api
+node $D/server-bundle/migrate-paths.js apply $MOVES --alias $OLD_API --backup-dir $B --state $B/state.json
+install -m 644 /opt/node-control/releases/$SHA/deploy/systemd/node-control-api.service /etc/systemd/system/
+systemd-analyze verify /etc/systemd/system/node-control-api.service && systemctl daemon-reload
+node $D/server-bundle/server-release.js config                     # лише валідує /etc/node-control/api.env
+node $D/server-bundle/server-release.js activate --revision $SHA
+systemctl start node-control-api                                     # перевірки: is-active, live/ready, журнал
+# 3. Nginx (alias $OLD_API тримає старий root робочим до цього кроку): лише vhost Node Control
+nginx -t && sed -i 's#root '"$OLD_API"'/current/frontend/dist;#root /opt/node-control/current/frontend/dist;#' <vhost> && nginx -t && systemctl reload nginx
+# 4. Після перевірки сайту — прибрати alias
+node $D/server-bundle/migrate-paths.js finalize --state $B/state.json
+```
+
+Unit Agent (вимкненого) замінити так само (`install` з `/opt/node-control-agent/current/deploy/systemd/`), не вмикаючи його.
+
+**Керована нода (Agent, exporter, broker).** Порядок: підготувати реліз → зупинити timer exporter, Agent і broker → перенести стан → нові units → broker → exporter (один запуск) → Agent → timer. Простій heartbeat — секунди (онлайн-вікно 90 с).
+
+```bash
+# 0. Preflight + PM2 baseline (без виклику pm2): ps -u <owner> -o pid=,lstart=,args=
+systemctl cat node-control-agent node-control-pm2-broker@<owner> node-control-pm2-exporter@<owner>.service
+B=/root/node-control-backups/paths-$(date -u +%Y%m%dT%H%M%SZ); install -d -m 700 $B
+cp -a /etc/systemd/system/node-control-agent.service /etc/systemd/system/node-control-pm2-broker@.service \
+      /etc/systemd/system/node-control-pm2-exporter@.service /etc/systemd/system/node-control-pm2-exporter@.timer $B/
+SPEC="--move $OLD_AG=/opt/node-control-agent --move $OLD_AG_CONF=/etc/node-control-agent \
+  --move $OLD_EXP_CONF=/etc/node-control-pm2-exporter --move $OLD_BRK_CONF=/etc/node-control-pm2-broker \
+  --move $OLD_SNAPSHOT_DIR=/var/lib/node-control-pm2 --move $OLD_BRK_STATE=/var/lib/node-control-pm2-broker \
+  --map $OLD_BRK_RUN=/run/node-control-pm2-broker \
+  --rewrite /etc/node-control-agent/agent.env --rewrite /etc/node-control-pm2-exporter/<owner>.env --rewrite /etc/node-control-pm2-broker/<owner>.env"
+node $D/server-bundle/migrate-paths.js plan $SPEC
+node $D/server-bundle/server-release.js prepare --base $OLD_AG --no-install --artifact … --sha256 … --revision $SHA
+# 1. Контрольована зупинка (PM2-процеси не зупиняються)
+systemctl stop node-control-pm2-exporter@<owner>.timer node-control-agent node-control-pm2-broker@<owner>
+node $D/server-bundle/migrate-paths.js apply $SPEC --backup-dir $B --state $B/state.json
+install -m 644 /opt/node-control-agent/releases/$SHA/deploy/systemd/{node-control-agent.service,node-control-pm2-broker@.service,node-control-pm2-exporter@.service,node-control-pm2-exporter@.timer} /etc/systemd/system/
+systemd-analyze verify /etc/systemd/system/node-control-agent.service /etc/systemd/system/node-control-pm2-broker@.service /etc/systemd/system/node-control-pm2-exporter@.service && systemctl daemon-reload
+node $D/server-bundle/server-release.js activate --base /opt/node-control-agent --revision $SHA
+# 2. Запуск у залежному порядку
+systemctl start node-control-pm2-broker@<owner>    # сокет /run/node-control-pm2-broker/broker.sock
+systemctl start node-control-pm2-exporter@<owner>.service   # snapshot нового формату до старту Agent
+systemctl start node-control-agent node-control-pm2-exporter@<owner>.timer
+```
+
+Перевірки: усі units active, сокет і snapshot з очікуваними власником/правами, журнал broker на місці, `agentVersion` і inventory у UI, «Керування» без помилок broker, нових `error`/`fatal` немає, PM2 PID/час старту/restarts — як у baseline.
+
+**Rollback перейменування.**
+- *Лише код*, шляхи лишаються новими: API — `server-release.js rollback` (поточного релізу) + restart; чинний unit підходить і попереднім релізам (їхній код шляхів не містить). Попередні релізи Agent **несумісні** з новими шляхами (типові шлях сокета broker і формат snapshot) — для Agent лише повний rollback нижче.
+- *Повний*: зупинити компоненти (як у кроці 1) → `migrate-paths.js rollback --state $B/state.json` → повернути unit-файли (і vhost Nginx, якщо змінювався: `nginx -t` до й після, reload) з `$B` → `systemctl daemon-reload` → `server-release.js rollback --base <попередня база>` (server-bundle попереднього релізу має свої типові шляхи) → запуск у тому ж порядку (exporter — один раз до Agent). Стан, секрети й нові дані зберігаються (ті самі файли переміщуються назад); БД не відкочується; PM2-процеси не перезапускаються.
+- Тимчасовий alias і backup-каталог видаляються після стабільної роботи (критерій: усі перевірки пройдені, rollback не потрібен протягом доби); `state.json` залишити разом із backup до їх видалення.
 
 ### Міграції: backup, recovery, rollback
 
@@ -474,7 +565,7 @@ systemctl restart node-control-api
 
 ### Rollback
 
-- **Є попередній реліз:** `node /opt/goit-node-control/current/scripts/deploy/server-release.js rollback` (атомарно міняє `current`↔`previous`) → за потреби відновити unit із попереднього релізу + `systemctl daemon-reload` → `systemctl restart node-control-api` → повторити перевірки. Конфіг не змінюється між релізами.
+- **Є попередній реліз:** `node /opt/node-control/current/scripts/deploy/server-release.js rollback` (атомарно міняє `current`↔`previous`) → за потреби відновити unit із попереднього релізу + `systemctl daemon-reload` → `systemctl restart node-control-api` → повторити перевірки. Конфіг не змінюється між релізами.
 - **Перший деплой:** `systemctl disable --now node-control-api`. Реліз, конфіг, користувач і unit-файл лишаються для діагностики; БД, ролі та сторонні файли не чіпаються.
 - Старі релізи в цій процедурі не видаляються.
 

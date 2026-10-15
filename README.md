@@ -1,4 +1,4 @@
-# GOIT Node Control
+# Node Control
 
 Централізована платформа для моніторингу та керування Node.js-проєктами на декількох серверах.
 
@@ -92,7 +92,7 @@ DB_PASS=<generated_secure_password>
 DB_PORT=5432
 ```
 
-- Цей `.env` — для скриптів PostgreSQL (`db:setup`, `db:check`, `test:integration`, Task 001) і локальної розробки. **Runtime API його не читає:** сервіс `node-control-api` бере конфігурацію лише з `/etc/goit-node-control/api.env` (`600 nodecontrol`, `Environment=ENV_FILE=…` у unit) — див. DEPLOYMENT. Історичний серверний `/etc/pm2-dashboard/.env` (Task 001/002) сервісом не використовується.
+- Цей `.env` — для скриптів PostgreSQL (`db:setup`, `db:check`, `test:integration`, Task 001) і локальної розробки. **Runtime API його не читає:** сервіс `node-control-api` бере конфігурацію лише з `/etc/node-control/api.env` (`600 nodecontrol`, `Environment=ENV_FILE=…` у unit) — див. DEPLOYMENT. Історичний серверний `/etc/pm2-dashboard/.env` (Task 001/002) сервісом не використовується.
 - `.env` і `.env.*` ігноруються Git (крім `.env.example`); `npm run check:secrets` це перевіряє і шукає реальний пароль у всіх файлах, що можуть потрапити в коміт.
 
 ## Central API (backend)
@@ -243,11 +243,11 @@ npm run backend:build && BACKEND_TEST_SUITE=smoke npx -y node@22 node_modules/vi
 
 Конфігурація — тільки `TEST_DB_HOST/PORT/NAME/USER/PASS` або файл, явно вказаний у `TEST_DB_ENV_FILE`; жодного fallback до `DB_*` чи `.env`. Guard (`backend/test/support/test-db.ts`) відхиляє production-імена, вимагає токен `test` в імені БД і ролі, перед DDL перевіряє `current_database()`/`current_user`. Кожен запуск працює у власній схемі `nc_test_<ms>_<hex8>` і видаляє лише її.
 
-Credentials: на сервері `/root/.config/goit-node-control/test-db.env` (`600 root`, каталог `700`), локально — копія `.env.test` (`600`, ігнорується Git). Не копіювати в `api.env`.
+Credentials: на сервері `/root/.config/node-control/test-db.env` (`600 root`, каталог `700`), локально — копія `.env.test` (`600`, ігнорується Git). Не копіювати в `api.env`.
 
 ```bash
 # локально: отримати credentials і відкрити тунель (окремий термінал)
-(umask 077 && scp root@203.0.113.10:/root/.config/goit-node-control/test-db.env .env.test) && chmod 600 .env.test
+(umask 077 && scp root@203.0.113.10:/root/.config/node-control/test-db.env .env.test) && chmod 600 .env.test
 ssh -N -L 15432:127.0.0.1:5432 root@203.0.113.10
 
 TEST_DB_ENV_FILE=.env.test TEST_DB_PORT=15432 npm run test:backend:db   # міграції + readiness, реальна PostgreSQL
@@ -366,7 +366,7 @@ npm run test:e2e            # Playwright: реальний backend + збірк�
 ```bash
 # 1. Тунель до тестової БД (окремий термінал) і credentials тестової ролі
 ssh -N -L 15432:127.0.0.1:5432 root@203.0.113.10
-(umask 077 && scp root@203.0.113.10:/root/.config/goit-node-control/test-db.env .env.test) && chmod 600 .env.test
+(umask 077 && scp root@203.0.113.10:/root/.config/node-control/test-db.env .env.test) && chmod 600 .env.test
 
 # 2. .env.dev (600, ігнорується Git): DB_* = значення TEST_DB_* з .env.test (DB_PORT=15432), плюс
 #    NODE_ENV=development, AUTH_COOKIE_SECURE=false, AUTH_ALLOWED_ORIGINS=http://127.0.0.1:5173
@@ -388,7 +388,7 @@ Production-деплой — лише артефактом із запушено�
 
 - Node-клієнт `pg` у цьому коді не задає `ssl`: API підключається до PostgreSQL лише по loopback. SCRAM не доводить використання TLS.
 - Мережевий доступ до PostgreSQL обмежується на рівні хоста/firewall; 5432 не відкривати назовні.
-- API працює під системним користувачем `nodecontrol` з конфігом `/etc/goit-node-control/api.env` (`600 nodecontrol`); історичний `/etc/pm2-dashboard/.env` (`root`) сервісом не використовується.
+- API працює під системним користувачем `nodecontrol` з конфігом `/etc/node-control/api.env` (`600 nodecontrol`); історичний `/etc/pm2-dashboard/.env` (`root`) сервісом не використовується.
 - Парсер `pg_hba.conf` не підтримує значення в лапках із пробілами (у перевірених конфігураціях таких немає).
 
 ## Наступні етапи

@@ -2,13 +2,15 @@
 
 Оновлено: 2026-10-16 (незалежний review ADR-024 — APPROVED). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
+> **Назви й шляхи в історичних записах (2026-10-16, ADR-025).** Продукт перейменовано на Node Control. У записах нижче шляхи встановлення наведено в чинних нейтральних назвах (`/opt/node-control`, `/etc/node-control/…`, `/opt/node-control-agent`, `/var/lib/node-control-pm2…`, `/run/node-control-pm2-broker`); на момент тих подій каталоги мали попередні назви з префіксом колишнього корпоративного бренду — точні значення є в історії Git і в units відповідних релізів. Revisions, результати й факти операцій не змінювались.
+
 ## Незалежний review Codex — ADR-024: APPROVED (2026-10-16)
 
 Перевірено фінальні `0833249` (тести) і `54e8348` (документація) поверх tracking-фікса `32b29f1`; початкове дерево чисте. Зауваження попередніх проходів ADR-024 закриті: прийняті активні команди не витісняються, ліміт блокує новий POST до фінального результату; README/DEPLOYMENT та опис capabilities актуалізовані; AGENTS узгоджено з охопленням typecheck/lint; regression дійсно моделює HTTP 503 і rejected fetch, збереження busy/ліміту, відновлення polling і звільнення слота. Локальні таймаути jsdom-тестів обґрунтовані задокументованими вимірами; assertions, workers і retries не послаблені. Нової функціональності чи runtime-змін у фінальному diff немає.
 
 Незалежно на Node.js 22: check:local exit 0 — 89 unit, 446 backend, 10 smoke, 165 Agent (+3 opt-in пропущені), 233 frontend; typecheck, lint, secrets і збірки успішні. Перевірено Code → Docs / Docs → Code для виправлених тем, локальні файлові посилання у восьми головних документах (0 відсутніх цілей; anchors не перевірялись). Браузерні 19/19 з попереднього review належать незміненому runtime; заново UI/E2E, stress-серію Claude, real-DB, real-PM2 і production у цьому проході не перевіряли. Виміри старої/нової ревізії та stress-прогони у звіті Claude залишаються його результатами, не незалежно повтореними.
 
-APPROVED стосується ADR-024 і його review-фіксів, не загальної production-готовності. Відомі окремі дефекти FormDialog та release blockers лишаються відкритими. Прибирання бренду GoIT погоджене як окремий наступний scope, ще не виконане; розгорнуті панелі й пошук Applications не реалізовані. Reviewer змінює лише цей запис; код, конфігурації й production не змінювались.
+APPROVED стосується ADR-024 і його review-фіксів, не загальної production-готовності. Відомі окремі дефекти FormDialog та release blockers лишаються відкритими. Прибирання корпоративного бренду погоджене як окремий наступний scope, ще не виконане; розгорнуті панелі й пошук Applications не реалізовані. Reviewer змінює лише цей запис; код, конфігурації й production не змінювались.
 
 ## ADR-024: залишкові зауваження review (2026-10-16) — готово до повторного review Codex
 
@@ -38,7 +40,7 @@ APPROVED стосується ADR-024 і його review-фіксів, не за
 Статус: **готово до повторного review Codex** (APPROVED не виставлявся). Нова функціональність не розроблялась.
 
 1. **P2 — втрата незавершених команд — виправлено.** Причина: `useProcessCommands` обрізав увесь список `slice(0, 5)` без розрізнення активних і завершених. Тепер (`frontend/src/components/processActions.tsx`): до `MAX_ACTIVE_COMMANDS = 5` незавершених команд відстежуються одночасно й ніколи не витісняються; обрізається лише завершена історія (`MAX_FINISHED_COMMANDS = 5`, найновіші); поки активних 5 — пункти керування в меню недоступні з поясненням «Уже виконується 5 команд — нова стане доступною, коли одна з них завершиться», а в уже відкритому діалозі POST не надсилається (помилка, той самий idempotency key лишається для пізнішого явного повтору); слот звільняє лише фінальний статус від сервера (помилка polling команду не завершує); синхронний guard від подвійного натискання. Busy — за `serverId + targetKey`. Однаково для сторінки сервера й «Застосунків».
-2. **P2 — документація суперечила продукту — виправлено.** README (стан можливостей, `.env` скриптів vs `/etc/goit-node-control/api.env` API — звірено з `deploy/systemd/node-control-api.service`, ролі за `backend/src/auth/rbac.ts`, міграції 0…8, inventory/керування, UI-сторінки, дії з процесами й ліміт команд, lint-охоплення, `check:local`), вступ і «Факти» DEPLOYMENT (чинна процедура vs історичні розділи, вміст артефакту й прапорці `build-release.js`, health endpoints), ARCHITECTURE (підсумок можливостей, сторінки, спільні модулі дій), DEVELOPMENT_RULES (охоплення typecheck/lint/check:local), ADR-024 (ліміт відстеження). Історичні звіти деплоїв не переписувались.
+2. **P2 — документація суперечила продукту — виправлено.** README (стан можливостей, `.env` скриптів vs `/etc/node-control/api.env` API — звірено з `deploy/systemd/node-control-api.service`, ролі за `backend/src/auth/rbac.ts`, міграції 0…8, inventory/керування, UI-сторінки, дії з процесами й ліміт команд, lint-охоплення, `check:local`), вступ і «Факти» DEPLOYMENT (чинна процедура vs історичні розділи, вміст артефакту й прапорці `build-release.js`, health endpoints), ARCHITECTURE (підсумок можливостей, сторінки, спільні модулі дій), DEVELOPMENT_RULES (охоплення typecheck/lint/check:local), ADR-024 (ліміт відстеження). Історичні звіти деплоїв не переписувались.
 3. **P3 — кількість capabilities-запитів — виправлено в документації** (реалізація без змін): перед POST `ensure(serverId, {fresh: true})` запитує `/control` і за `logs:read` — `/log-targets` (до двох GET) або використовує вже запущене завантаження; рішення — за `control`. ADR-024 уточнено; історичний звіт нижче позначено явним уточненням.
 
 | Перевірка (Node 22) | Результат |
@@ -223,7 +225,7 @@ Production, реальний `.env`, БД, HBA, firewall і служби не з
 
 **Active code revision на сервері: `5e7c11c8f217fc8d8161fdf023f42b593a1196d7`** (`feat: deploy central API with systemd`). Цей звіт додано пізнішим docs-commit, який на сервер не деплоївся.
 
-Read-only аудит перед деплоєм (поточна сесія): hostname `control-server`, Ubuntu 26.04.1 LTS; `/usr/bin/node` v22.23.2 (nodesource), npm 10.9.8; порт 3100 вільний; користувача/групи `nodecontrol`, unit-ів `node-control*`, `/opt/goit-node-control`, `/etc/goit-node-control` не існувало; PM2 не встановлений; `/etc/pm2-dashboard/.env` — `600 root:root`, ключі `DB_*`; `SELECT 1` від `node_control_user` на `127.0.0.1:5432` — успіх. Baseline: `postgresql@18-main`, `nginx`, `docker` active; failed units 0; `secrets-manager`, `secrets-manager-cache` up; менеджер секретів API 200.
+Read-only аудит перед деплоєм (поточна сесія): hostname `control-server`, Ubuntu 26.04.1 LTS; `/usr/bin/node` v22.23.2 (nodesource), npm 10.9.8; порт 3100 вільний; користувача/групи `nodecontrol`, unit-ів `node-control*`, `/opt/node-control`, `/etc/node-control` не існувало; PM2 не встановлений; `/etc/pm2-dashboard/.env` — `600 root:root`, ключі `DB_*`; `SELECT 1` від `node_control_user` на `127.0.0.1:5432` — успіх. Baseline: `postgresql@18-main`, `nginx`, `docker` active; failed units 0; `secrets-manager`, `secrets-manager-cache` up; менеджер секретів API 200.
 
 | Крок | Результат |
 |---|---|
@@ -233,9 +235,9 @@ Read-only аудит перед деплоєм (поточна сесія): host
 | Передача | `scp` у новий `/root/node-control-deploy/<sha>/` (700); `sha256sum -c` на сервері — OK |
 | Користувач | `nodecontrol` (system, `/usr/sbin/nologin`, home `/nonexistent`, без sudo) |
 | Prepare | checksum → manifest → `npm ci --omit=dev` (61 пакет) → `releases/5e7c11c…` `root:root 755/644`; запис для `nodecontrol` неможливий |
-| Конфіг | `/etc/goit-node-control/api.env` створено з `DB_*` legacy + `NODE_ENV=production`, `API_HOST=127.0.0.1`, `API_PORT=3100`, `LOG_LEVEL=info`; `600 nodecontrol:nodecontrol`, каталог `750 root:nodecontrol`; legacy `.env` не змінено й недоступний `nodecontrol` |
+| Конфіг | `/etc/node-control/api.env` створено з `DB_*` legacy + `NODE_ENV=production`, `API_HOST=127.0.0.1`, `API_PORT=3100`, `LOG_LEVEL=info`; `600 nodecontrol:nodecontrol`, каталог `750 root:nodecontrol`; legacy `.env` не змінено й недоступний `nodecontrol` |
 | Unit | `systemd-analyze verify` — exit 0 (попередження лише від чужих xfs units); `systemd-analyze security` — exposure 1.3 OK |
-| Запуск | `activate` (previous=none) → `enable` → `restart`; `enabled`, `active`; процес `nodecontrol`, `/usr/bin/node /opt/goit-node-control/current/backend/dist/main.js` |
+| Запуск | `activate` (previous=none) → `enable` → `restart`; `enabled`, `active`; процес `nodecontrol`, `/usr/bin/node /opt/node-control/current/backend/dist/main.js` |
 | Health | `/health/live` 200 `{"status":"ok"}`, `/health/ready` 200 `{"status":"ready"}`; обидва `Cache-Control: no-store`, `x-request-id`; `/nope` → 404 |
 | Мережа | listener лише `127.0.0.1:3100` (без `0.0.0.0`/IPv6); з публічної адреси 3100 недоступний; SSH forwarding з Mac → ready 200 |
 | Journal | рівнів warn/error/fatal — 0; входжень DB_PASS — 0 |
@@ -253,7 +255,7 @@ Read-only аудит перед змінами (поточна сесія): host
 
 | Крок | Результат |
 |---|---|
-| Тестові ресурси | `scripts/setup-test-db.js` (root, з тимчасової копії `/root/node-control-tools`, 700): створено `node_control_test_user` (LOGIN, без SUPERUSER/CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS, без членств, `COMMENT`-маркер) і `node_control_test_db` (owner — тестова роль, `REVOKE ALL FROM PUBLIC`). Isolation check: немає `CONNECT` до `node_control_db`. Повторний запуск — без ротації. Credentials: `/root/.config/goit-node-control/test-db.env` `600 root`; локально `.env.test` `600`, ignored |
+| Тестові ресурси | `scripts/setup-test-db.js` (root, з тимчасової копії `/root/node-control-tools`, 700): створено `node_control_test_user` (LOGIN, без SUPERUSER/CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS, без членств, `COMMENT`-маркер) і `node_control_test_db` (owner — тестова роль, `REVOKE ALL FROM PUBLIC`). Isolation check: немає `CONNECT` до `node_control_db`. Повторний запуск — без ротації. Credentials: `/root/.config/node-control/test-db.env` `600 root`; локально `.env.test` `600`, ignored |
 | Unit / regression (Node v22.23.3) | `npm test` 80/80 (node:test; також на Node 24); `test:backend` 121/121; smoke 7/7; typecheck, lint, build, `check:secrets`, `git diff --check` — OK |
 | Real-DB suite | `test:backend:db` 15/15 через SSH-тунель `127.0.0.1:15432`: ізоляція (production DB → 42501, CREATE DATABASE → 42501, атрибути/членства), чистий up → структура, повторний up no-op, status, email-політика, NOT NULL/defaults/trigger, rollback помилкової міграції, 3 конкурентні up → 1 запис, cleanup лише власної схеми. Після прогону в тестовій БД 0 схем `nc_test_*` |
 | Старий `test:integration` | переведено на read-only; 12/12 проти production через тимчасовий тунель (закрито) |
@@ -261,7 +263,7 @@ Read-only аудит перед змінами (поточна сесія): host
 | Prepare | `npm ci --omit=dev` (86 пакетів): є `node-pg-migrate`, `pg`, `fastify`; немає `tsx`/`vitest`/`typescript`; `api.env` — `kept` (не змінено) |
 | Репетиція CLI з артефакту | на `node_control_test_db` (схема `public`, роль тестова): status → up → повторний up (no-op) → status; `down` → usage, exit 2. У тестовій БД лишились `users`/`pgmigrations` у `public` — очікуваний стан репетиції |
 | Backup | `pg_dump -Fc node_control_db` → `/root/node-control-backups/node_control_db-20261012T160501Z-pre-5ec6ece….dump` (`600 root`, каталог 700); `pg_restore --list` читає; 0 об'єктів — БД до міграції була порожня |
-| Production migration | як `nodecontrol` з `releases/5ec6ece…`, `ENV_FILE=/etc/goit-node-control/api.env`: status pending=1 → `up` застосував `1791900000000_create-users` → status applied=1 pending=0 |
+| Production migration | як `nodecontrol` з `releases/5ec6ece…`, `ENV_FILE=/etc/node-control/api.env`: status pending=1 → `up` застосував `1791900000000_create-users` → status applied=1 pending=0 |
 | Read-only перевірка схеми | `users`: 6 колонок/типи/defaults за ADR-010; constraints `users_pkey`, `users_email_key`, `users_email_normalized`, `users_email_format`, `users_password_hash_not_empty`; тригер `users_set_updated_at`; власник об'єктів `node_control_user`; `pgmigrations` — 1 рядок; **`users` — 0 рядків** |
 | Активація | `activate` (previous=`5e7c11c`) → `systemctl restart node-control-api`; enabled/active; процес `nodecontrol`; listener лише `127.0.0.1:3100`; ззовні 3100 недоступний |
 | Health | live 200 `{"status":"ok"}`, ready 200 `{"status":"ready"}`, `no-store`, `x-request-id`; `/nope` 404 |
@@ -894,7 +896,7 @@ Regression: справжній HTTP, Agent long-poll і очікувач рез�
 | Нода `app-server` | Baseline Agent current `401667e` (ціль rollback), previous `b4ada6d`; allowlist 5 targets, 5 з `logs: true`. Артефакт Agent SHA-256 `01d7e5c2…b32c9` OK; `prepare --no-install`, 4 unit-файли без змін; `current` → `2fe4d95`, `previous` → `401667e`; restart broker, потім Agent |
 | Після деплою (нода) | broker active (`logDirs:1`); Agent 0.4.0 active; heartbeat/inventory accepted; control poll ok (broker ok, targets 5); logs poll ok (broker ok, targets 5); 0 warn/error у журналах Agent і broker; exporter timer active |
 | Без змін | SHA-256 allowlist, broker env і `agent.env` збігаються з baseline; God Daemon 3807, PID і час старту 5 PM2-процесів, статуси online і restarts 0 — без змін; `pm2` не запускався; listeners ноди без змін. Production-текст логів не читався |
-| Rollback | не застосовувався. API: `server-release.js rollback --base /opt/goit-node-control` → `401667e` + restart API. Agent/broker: `rollback --base /opt/goit-node-control-agent` → `401667e` + restart broker і Agent (allowlist з `logs` сумісний із `401667e`; журнал дедуплікації broker не видаляти, БД не відкочувати) |
+| Rollback | не застосовувався. API: `server-release.js rollback --base /opt/node-control` → `401667e` + restart API. Agent/broker: `rollback --base /opt/node-control-agent` → `401667e` + restart broker і Agent (allowlist з `logs` сумісний із `401667e`; журнал дедуплікації broker не видаляти, БД не відкочувати) |
 
 ## Task 010 — обмежений авторизований перегляд логів сервісів (2026-10-14)
 
@@ -943,7 +945,7 @@ Regression: справжній HTTP, Agent long-poll і очікувач рез�
 | Нода `app-server` | Baseline Agent `b4ada6d`; backup `agent.env` (600), broker env і allowlist (`*.bak-20261014T123303Z`); allowlist без `logs`. Артефакт Agent SHA-256 `7a95410a…be9b6` OK; `prepare --no-install`, 4 unit-файли без змін; `current` → `401667e`, `previous` → `b4ada6d`; restart broker, потім Agent |
 | Після деплою (нода) | broker active, `broker started` з `logDirs:1`; Agent active, `version 0.4.0`; heartbeat/inventory accepted; control poll ok, broker ok, targets 5; logs poll ok, broker ok, **targets 0**; 0 warn/error у журналах Agent і broker; exporter timer active |
 | PM2 без змін | God Daemon 3807; PID і час старту 5 процесів (6 жовтня) збігаються з baseline; статуси online, restarts 0 — без змін; `pm2` не запускався; listeners ноди без змін |
-| Rollback | не застосовувався. API: `server-release.js rollback --base /opt/goit-node-control` → `3ff4653` + restart API. Agent/broker: якщо в allowlist уже з'явилось `logs` — спершу повернути allowlist із backup, потім `rollback --base /opt/goit-node-control-agent` → `b4ada6d` + restart broker і Agent |
+| Rollback | не застосовувався. API: `server-release.js rollback --base /opt/node-control` → `3ff4653` + restart API. Agent/broker: якщо в allowlist уже з'явилось `logs` — спершу повернути allowlist із backup, потім `rollback --base /opt/node-control-agent` → `b4ada6d` + restart broker і Agent |
 
 **Увімкнення читання логів (2026-10-14, ~12:48 UTC).** Користувач погодив логи для проєктів `app-server` («включи логи для проектів»). Backup `ubuntu.allowlist.json.bak-20261014T124829Z`; усім 5 записам (catalog-api, billing-api, orders-api-v2, orders-api, public-api) додано `"logs": true`, `actions` без змін; файл `root:root 644`. Broker перечитав allowlist без restart: logs poll ok, broker ok, targets 5; 0 warn/error у журналах Agent і broker. Production-текст логів не читався. Rollback: повернути allowlist із backup (без restart).
 
@@ -999,7 +1001,7 @@ Regression: справжній HTTP, Agent long-poll і очікувач рез�
 | Крок | Результат |
 |---|---|
 | Baseline | Agent `b4ada6d` active; God Daemon 3807, 5 PM2-процесів (PID і час старту 6 жовтня); listener-и записані. Fingerprint через `pm2-broker.js fingerprint` від `ubuntu` (лише існуючий daemon, без шляхів/env): усі 5 — `fork_mode`, `instances 1`, імена унікальні |
-| Broker | група `nc-pm2-control`; `/etc/goit-node-control-pm2-broker/ubuntu.env` і allowlist `root:root 644`; unit із релізу, `systemd-analyze verify` OK; `node-control-pm2-broker@ubuntu` enabled/active, процес `ubuntu` / група `nc-pm2-control`; `/run/goit-node-control-pm2-broker` `750`, сокет `660 ubuntu:nc-pm2-control`, журнал `/var/lib/goit-node-control-pm2-broker` `700`. Спершу з порожнім allowlist |
+| Broker | група `nc-pm2-control`; `/etc/node-control-pm2-broker/ubuntu.env` і allowlist `root:root 644`; unit із релізу, `systemd-analyze verify` OK; `node-control-pm2-broker@ubuntu` enabled/active, процес `ubuntu` / група `nc-pm2-control`; `/run/node-control-pm2-broker` `750`, сокет `660 ubuntu:nc-pm2-control`, журнал `/var/lib/node-control-pm2-broker` `700`. Спершу з порожнім allowlist |
 | Agent | `nodecontrol-agent` додано лише до `nc-pm2-control` (доступу до `rpc.sock` немає — перевірено); backup `agent.env.bak-20261013T133958Z`; додано лише `NC_AGENT_CONTROL_SOCKET` (600 `nodecontrol-agent`, токен не змінювався); restart лише Agent → `control: enabled`, `control poll ok, broker ok`; heartbeat/inventory `accepted` |
 | Allowlist | backup попередньої (порожньої) версії; 5 цілей (`targetKey` = ім'я PM2): `catalog-api`, `billing-api`, `orders-api-v2`, `orders-api`, `public-api`, дії `start/stop/restart`, fingerprint з baseline |
 | API | backup `api.env.bak-20261013T134144Z` (600 `nodecontrol`); додано `PM2_CONTROL_ENABLED=true`; restart лише `node-control-api`; лог старту `pm2ControlEnabled:true`, `trustedProxies:1`, `authOrigins:1`; 0 error/fatal, 0 відповідей 4xx агенту |
@@ -1059,12 +1061,12 @@ Rollback / аварійне вимкнення: `PM2_CONTROL_ENABLED` прибр
 | Міграція | як `nodecontrol`: pending 1 → applied=5, pending=0; нові таблиці `control_commands`, `server_control_status`, `server_control_targets` |
 | API/UI | unit-файл без змін; `current` → `b4ada6d`; restart лише `node-control-api`; `nodecontrol`, listener лише `127.0.0.1:3100`; лог старту `pm2ControlEnabled:false`, `trustedProxies:1`, `authOrigins:1`; `api.env` не змінювався |
 | Реліз Agent (центральний) | `current` → `b4ada6d`, unit disabled/inactive (без змін) |
-| `app-server` | baseline: Agent `7cdc50e` active, exporter timer active, God Daemon 3807, 5 PM2-процесів; backup `agent.env.bak-20261013T130714Z` (600 `nodecontrol-agent`); `prepare --no-install` + `activate` → `b4ada6d`; unit-файли Agent/exporter без змін; restart лише Agent → 0.3.0, `"control":{"enabled":false}`, heartbeat і inventory `accepted`. `agent.env` без змін (ключі `NC_AGENT_API_URL`, `NC_AGENT_TOKEN`, `NC_AGENT_INVENTORY_FILE`); broker, група `nc-pm2-control` і `/run/goit-node-control-pm2-broker` — відсутні |
+| `app-server` | baseline: Agent `7cdc50e` active, exporter timer active, God Daemon 3807, 5 PM2-процесів; backup `agent.env.bak-20261013T130714Z` (600 `nodecontrol-agent`); `prepare --no-install` + `activate` → `b4ada6d`; unit-файли Agent/exporter без змін; restart лише Agent → 0.3.0, `"control":{"enabled":false}`, heartbeat і inventory `accepted`. `agent.env` без змін (ключі `NC_AGENT_API_URL`, `NC_AGENT_TOKEN`, `NC_AGENT_INVENTORY_FILE`); broker, група `nc-pm2-control` і `/run/node-control-pm2-broker` — відсутні |
 | Після деплою (центральний) | live/ready 200; HTTPS `/`, `/servers/<id>`, `/applications` → 200; анонімно `GET …/control`, `GET …/control-commands` → 401, `POST …/control-commands` з Origin → 401, без Origin → 403; `POST /api/agent/control/poll` без токена / з невідомим токеном → 401, `…/result` без токена → 401; journal: 0 error/fatal, 0 секретів, 0 відповідей 4xx агентам; `nginx -t` OK; Nginx/PostgreSQL/Docker active, failed 0; migrations pending=0 |
 | Доказ fail closed | API `pm2ControlEnabled:false`; у БД 0 команд, 0 станів/цілей керування, 0 подій `process.*`; Agent не опитує керування (0 `control poll` у журналі); broker не встановлений |
 | Без рестартів / портів | God Daemon 3807 і всі 5 дочірніх PID із часом старту — ідентичні baseline; список listener-ів ідентичний; exporter продовжує (3 запуски за 2 хв); у БД: Agent 0.3.0, heartbeat 1 с, inventory `ok`, 5 процесів, збір 43 с тому |
 
-Rollback (не застосовувався): API — `server-release.js rollback` (→ `ffb32b0`) + restart; нові таблиці лишаються (additive), команд немає. Agent на `app-server` — `server-release.js rollback --base /opt/goit-node-control-agent` (→ `7cdc50e`) + restart Agent; `agent.env` не змінювався (backup є). Exporter/PM2 не зачіпаються.
+Rollback (не застосовувався): API — `server-release.js rollback` (→ `ffb32b0`) + restart; нові таблиці лишаються (additive), команд немає. Agent на `app-server` — `server-release.js rollback --base /opt/node-control-agent` (→ `7cdc50e`) + restart Agent; `agent.env` не змінювався (backup є). Exporter/PM2 не зачіпаються.
 
 **Для production enable потрібні від оператора:** перелік процесів (ім'я в PM2), `targetKey` і дозволені дії для кожного; підтвердження, що це fork-процеси з унікальними іменами; рішення увімкнути `PM2_CONTROL_ENABLED=true`. Далі — процедура в DEPLOYMENT («Керування PM2»).
 
@@ -1099,7 +1101,7 @@ Rollback і невиконане: див. Task 008.1. Відкритих бло�
 
 **P1.** `ConditionUser=!root` у `node-control-pm2-exporter@.service` перевіряє користувача system manager (root), а не `User=%i`. Через це кожен instance пропускався. **Виправлення:** умову прибрано, `User=%i` залишено. Заборона root — лише в коді: `loadExporterConfig` перевіряє фактичний UID до будь-якого доступу до `PM2_HOME`, `@root` завершується з exit 2. Hardening unit без змін. Додано статичний regression-тест `tests/unit/systemd-units.test.js`: на старому unit він падає, на новому проходить.
 
-**Runtime-перевірка systemd на центральному сервері** (ізольована тимчасова конфігурація: тестовий системний користувач `nc-pm2-systest`, порожній `PM2_HOME` без daemon, `/var/lib/goit-node-control-pm2`; після перевірки все видалено, `/etc/systemd/system` повернуто до стану без exporter units):
+**Runtime-перевірка systemd на центральному сервері** (ізольована тимчасова конфігурація: тестовий системний користувач `nc-pm2-systest`, порожній `PM2_HOME` без daemon, `/var/lib/node-control-pm2`; після перевірки все видалено, `/etc/systemd/system` повернуто до стану без exporter units):
 
 | Сценарій | Результат |
 |---|---|
@@ -1122,14 +1124,14 @@ Rollback і невиконане: див. Task 008.1. Відкритих бло�
 |---|---|
 | Read-only аудит | Ubuntu 24.04, systemd 255, `/usr/bin/node` v22.15.0 (не змінювалась). PM2 6.0.5 God Daemon PID 3807 від `ubuntu`, `PM2_HOME=/home/ubuntu/.pm2` (`ubuntu:ubuntu 775`, `rpc.sock` 775). Agent: release `81e1933` (зібраний оператором із `/home/ubuntu/node-control-source`), enabled/active, `nodecontrol-agent` лише у власній групі, `agent.env` з ключами `NC_AGENT_API_URL`, `NC_AGENT_TOKEN`. Baseline: 5 PM2-процесів (PID і час старту — 6 жовтня; аргументи не друкувались), listener-и записані |
 | Agent → `7cdc50e` | артефакт sha256 `32d8b3b4…cff3367a`, `sha256sum -c` OK; backup `agent.env.bak-20261013T113342Z` (600 `nodecontrol-agent`); `prepare --no-install` + `activate`, реліз `root:root 755`; unit-файл без змін; restart лише Agent → 0.2.0, heartbeat `accepted` |
-| Exporter | група `nc-pm2-inventory` (лише `nodecontrol-agent`); `/var/lib/goit-node-control-pm2` `ubuntu:nc-pm2-inventory 2750`; `/etc/goit-node-control-pm2-exporter/ubuntu.env` `root 644` (без секретів); unit-шаблони з релізу (без `ConditionUser`), `systemd-analyze verify` OK. Пробний запуск: «Finished», `state ok`, 5 процесів, 35 мс. `connect()` до `rpc.sock` працює під `ProtectHome=read-only`, hardening не послаблювався. Файл `ubuntu:nc-pm2-inventory 640`, 885 байт, лише allowlist-ключі |
+| Exporter | група `nc-pm2-inventory` (лише `nodecontrol-agent`); `/var/lib/node-control-pm2` `ubuntu:nc-pm2-inventory 2750`; `/etc/node-control-pm2-exporter/ubuntu.env` `root 644` (без секретів); unit-шаблони з релізу (без `ConditionUser`), `systemd-analyze verify` OK. Пробний запуск: «Finished», `state ok`, 5 процесів, 35 мс. `connect()` до `rpc.sock` працює під `ProtectHome=read-only`, hardening не послаблювався. Файл `ubuntu:nc-pm2-inventory 640`, 885 байт, лише allowlist-ключі |
 | Активація | `node-control-pm2-exporter@ubuntu.timer` enabled/active; в `agent.env` додано лише `NC_AGENT_INVENTORY_FILE` (600 `nodecontrol-agent` збережено, токен не змінювався); restart Agent → `inventory: enabled`, перший звіт `accepted, state ok, processCount 5` |
 | Acceptance (через ~2 хв) | exporter: 6 запусків за 3 хв, 0 помилок, snapshot `ok` віком 26 с; Agent: inventory і heartbeat `accepted`, 0 warn/error, 0 `insecure`/`permission`; центральна БД: Agent 0.2.0, heartbeat 13 с, inventory `ok`, 5 процесів (усі `online`, CPU/RAM відомі), збір 44 с тому → «Актуально» |
 | Без рестартів / портів | God Daemon PID 3807 і всі 5 дочірніх PID із часом старту 6 жовтня — без змін; список listener-ів ідентичний baseline; у Agent/exporter listener-ів немає |
 
 Перевірку в UI («Застосунки», сторінка сервера) виконує оператор під своєю сесією; адмінські credentials у цій сесії не використовувались.
 
-Rollback (не застосовувався): `sudo systemctl disable --now node-control-pm2-exporter@ubuntu.timer`; `agent.env` ← `agent.env.bak-20261013T113342Z`; `server-release.js rollback --base /opt/goit-node-control-agent` (→ `81e1933`); `systemctl restart node-control-agent` — heartbeat продовжиться. PM2 і проєкти не зачіпаються; дані в БД лишаються.
+Rollback (не застосовувався): `sudo systemctl disable --now node-control-pm2-exporter@ubuntu.timer`; `agent.env` ← `agent.env.bak-20261013T113342Z`; `server-release.js rollback --base /opt/node-control-agent` (→ `81e1933`); `systemctl restart node-control-agent` — heartbeat продовжиться. PM2 і проєкти не зачіпаються; дані в БД лишаються.
 
 **Інцидент на локальній машині розробника (не сервер).** Під час діагностики exit 127 я виконав `npx pm2@7.0.4 --version` без `PM2_HOME`. Це запустило PM2 daemon у `~/.pm2` на Mac розробника — саме та поведінка auto-start, від якої захищає exporter. Каталог створено в момент діагностики, він не містив процесів (`module_conf.json = {}`, порожні `pids`/`logs`). Daemon зупинено через `pm2 kill`, `~/.pm2` видалено; сторонніх PM2 daemon немає. Висновок для процедур: **не запускати жодних `pm2`-команд поза тимчасовим `PM2_HOME`**, навіть `--version`.
 
@@ -1167,14 +1169,14 @@ Rollback (не застосовувався): `sudo systemctl disable --now node
 | Backup | `/root/node-control-backups/node_control_db-20261013T104828Z-pre-ffb32b0….dump` (`600 root`), `pg_restore --list` читається |
 | Міграція | як `nodecontrol`: pending 1 → applied=4, pending=0; нові таблиці порожні; servers=1, активний credential 1, audit 5 — без змін |
 | API/UI | unit-файл без змін; `current` → `ffb32b0`; restart лише `node-control-api`; `nodecontrol`, listener лише `127.0.0.1:3100`; `api.env` не змінювався (`trustedProxies:1`, `authOrigins:1`, `cookieSecure:true`) |
-| Реліз Agent | `/opt/goit-node-control-agent/current` → `ffb32b0`; unit-файл без змін; локальний unit лишився disabled/inactive. Шаблони exporter проходять `systemd-analyze verify` (у тимчасовому каталозі, на `/etc/systemd/system` не встановлювались) |
+| Реліз Agent | `/opt/node-control-agent/current` → `ffb32b0`; unit-файл без змін; локальний unit лишився disabled/inactive. Шаблони exporter проходять `systemd-analyze verify` (у тимчасовому каталозі, на `/etc/systemd/system` не встановлювались) |
 | Після деплою | live/ready 200; HTTPS `/`, `/applications`, `/servers/<id>` → 200, bundle = `current`; анонімні `/api/auth/me`, `/api/applications`, `/api/servers/:id/applications` → 401; `POST /api/agent/inventory` без токена/з невідомим токеном → 401, з Origin → 403; **старий Agent 0.1.0 продовжує heartbeat** (останній — 27 с, 0 відповідей 4xx після strict schemas); journal: 0 error/fatal, 0 збігів секретів; `nginx -t` OK; Nginx/PostgreSQL/Docker active, failed 0; migrations pending=0 |
 
 **Віддалена активація (`app-server`) — не виконана.** Немає SSH-доступу й не відомі PM2 owner та `PM2_HOME`. Потрібно: оновити Agent до `ffb32b0` (реліз + restart, `agent.env` і токен не змінюються) і встановити exporter за DEPLOYMENT («PM2 inventory exporter»). До цього UI показує для сервера «Агент ще не передавав inventory PM2».
 
 > **Виправлення (Task 008.2):** рекомендація вище застаріла — `ffb32b0` містить дефектний unit exporter (`ConditionUser=!root`, instance пропускався). Встановлювати лише запушений реліз, що містить `7cdc50e` (`git merge-base --is-ancestor 7cdc50e <release-sha>`). Фактично `app-server` активовано з релізом `7cdc50e` — див. Task 008.1/008.2.
 
-Rollback (не застосовувався): API — `server-release.js rollback` (→ `0ba0824`) + restart `node-control-api`; таблиці inventory лишаються (additive), відновлення БД не потрібне. Реліз Agent — `server-release.js rollback --base /opt/goit-node-control-agent` (→ `0ba0824`), unit лишається disabled. Exporter ніде не активовано, тож і вимикати нічого.
+Rollback (не застосовувався): API — `server-release.js rollback` (→ `0ba0824`) + restart `node-control-api`; таблиці inventory лишаються (additive), відновлення БД не потрібне. Реліз Agent — `server-release.js rollback --base /opt/node-control-agent` (→ `0ba0824`), unit лишається disabled. Exporter ніде не активовано, тож і вимикати нічого.
 
 
 ## Task 007.1 — виправлення після review Codex (2026-10-13)
@@ -1220,7 +1222,7 @@ Rollback (не застосовувався): API — `server-release.js rollbac
 | Після деплою | live/ready 200; HTTPS `/`, `/servers`, `/servers/<id>` → 200; bundle UI збігається з `current/frontend/dist`; анонімні `/api/auth/me`, `/api/servers` і heartbeat без токена → 401; journal API: 0 error/fatal, 0 збігів секретів; `nginx -t` OK; Nginx/PostgreSQL/Docker active, failed units 0; у БД без змін (1 сервер, 1 активний credential, 0 heartbeat) |
 | Egress-smoke Agent | одноразово як `nodecontrol-agent` з фіктивним токеном через env → `unauthorized`; записів у БД 0. Штатний `accepted` не перевірявся: оператор ще не записав `agent.env` |
 
-Rollback (не застосовувався): API — `server-release.js rollback` (→ `97d1c06`) + restart `node-control-api`; Agent — `server-release.js rollback --base /opt/goit-node-control-agent` (→ `e2ac0c9`), unit лишається disabled. Схема, конфіг і credentials не змінювались, тому відновлювати їх не потрібно.
+Rollback (не застосовувався): API — `server-release.js rollback` (→ `97d1c06`) + restart `node-control-api`; Agent — `server-release.js rollback --base /opt/node-control-agent` (→ `e2ac0c9`), unit лишається disabled. Схема, конфіг і credentials не змінювались, тому відновлювати їх не потрібно.
 
 Окремого E2E-сценарію для переходу A → B не додано: його покриває real-router тест frontend. Наявний E2E servers.spec (видача/відкликання ключа, Agent online/unauthorized) успішний.
 
@@ -1243,14 +1245,14 @@ Rollback (не застосовувався): API — `server-release.js rollbac
 | Міграція | як `nodecontrol` з підготовленого релізу: pending 1 → applied=3, pending=0; таблиці й індекс `agent_credentials_one_active_idx` на місці; servers/credentials/heartbeats — 0 рядків |
 | Активація API | `current` → `97d1c06`; restart лише `node-control-api`; процес `nodecontrol`; listener лише `127.0.0.1:3100`; лог старту `trustedProxies:1`, `authOrigins:1`, `cookieSecure:true` |
 | Після деплою | live/ready 200; `https://control.example.com/` і `/servers/<id>` → 200 (SPA); анонімні `/api/auth/me`, `/api/servers` → 401; heartbeat без токена → 401; journal: 0 записів error/fatal, 0 збігів `ncag_`/password; `nginx -t` OK; PostgreSQL/Nginx active |
-| Agent (перша тестова нода — цей сервер) | користувач `nodecontrol-agent` (uid 994, `/usr/sbin/nologin`, home `/nonexistent`, без sudo); `/opt/goit-node-control-agent` current=`e2ac0c9`; `/etc/goit-node-control-agent` `750 root:nodecontrol-agent`, `agent.env` **відсутній**; unit встановлено, `systemd-analyze verify` OK, **disabled/inactive**; без конфігу → exit 2; listener-ів немає |
+| Agent (перша тестова нода — цей сервер) | користувач `nodecontrol-agent` (uid 994, `/usr/sbin/nologin`, home `/nonexistent`, без sudo); `/opt/node-control-agent` current=`e2ac0c9`; `/etc/node-control-agent` `750 root:nodecontrol-agent`, `agent.env` **відсутній**; unit встановлено, `systemd-analyze verify` OK, **disabled/inactive**; без конфігу → exit 2; listener-ів немає |
 | Egress-smoke Agent | одноразовий запуск як `nodecontrol-agent` з фіктивним (не виданим) токеном через env: HTTPS до публічного сайту з перевіркою TLS → `unauthorized`, наступна спроба через 900 с; процес зупинено timeout-ом; записів у БД 0 |
 
 Production credential **не створювався** (ні через SQL, ні через UI); security/load тести проти production не запускались; firewall/HBA/сторонні служби/публічний Nginx-конфіг не змінювались; Agent-порт не відкривався.
 
 **Підключення першої ноди (оператор):** UI → «Сервери» → «Додати сервер» → «Видати ключ» → на сервері записати `agent.env` через `read -rs` (процедура в DEPLOYMENT, розділ «Agent») → `systemctl enable --now node-control-agent` → у журналі `"outcome":"accepted"`, в UI статус «Онлайн».
 
-**Rollback (не застосовувався):** API — `server-release.js rollback` (→ `005fa62`) + restart `node-control-api`; heartbeat зникне (404), нові таблиці лишаються (additive), відновлення БД з backup не потрібне. Agent — `systemctl disable --now node-control-agent` і/або `server-release.js rollback --base /opt/goit-node-control-agent` (→ `97d1c06`).
+**Rollback (не застосовувався):** API — `server-release.js rollback` (→ `005fa62`) + restart `node-control-api`; heartbeat зникне (404), нові таблиці лишаються (additive), відновлення БД з backup не потрібне. Agent — `systemctl disable --now node-control-agent` і/або `server-release.js rollback --base /opt/node-control-agent` (→ `97d1c06`).
 
 ## Task 006.1 — login rate limit за Nginx (2026-10-12)
 
@@ -1282,7 +1284,7 @@ Production login/навантажувальні тести не виконува
 
 | Крок | Результат |
 |---|---|
-| Аудит сайту (read-only) | `conf.d/control.example.com.conf` без змін з 18:40 UTC: `root /opt/goit-node-control/current/frontend/dist`; `/api/` → `proxy_pass http://127.0.0.1:3100` (URI зберігається); 80 → 301 на HTTPS; `nginx -t` OK |
+| Аудит сайту (read-only) | `conf.d/control.example.com.conf` без змін з 18:40 UTC: `root /opt/node-control/current/frontend/dist`; `/api/` → `proxy_pass http://127.0.0.1:3100` (URI зберігається); 80 → 301 на HTTPS; `nginx -t` OK |
 | TLS | Let's Encrypt `CN=control.example.com`, до 2027-01-10; ланцюжок перевіряється (`ssl_verify_result=0`); оновлення — `snap.certbot.renew.timer` |
 | Репозиторій | loopback-шаблони Nginx видалено з репозиторію й артефакту; ADR-013; тести 82/82 (Node 22), `check:local` exit 0 |
 | Артефакт | 32 файли, SHA-256 `16e1d741…c41e17bea`; production deps `fastify`, `node-pg-migrate`, `pg` |
@@ -1315,7 +1317,7 @@ Login із правильним Origin у production не виконувався
 | Артефакт | 34 файли, SHA-256 `db1e4657…8576e4ee`; `sha256sum -c` OK; production `npm ls --omit=dev`: `fastify`, `node-pg-migrate`, `pg` (порожні scope-каталоги dev-пакетів від npm, 0 файлів) |
 | Міграції | `status` з нового релізу як `nodecontrol`: applied=2, pending=0 — схема не змінювалась; `api.env` не змінювався |
 | Активація | `current` → `fd16acb`, previous `be432c0`; restart лише `node-control-api`; процес `nodecontrol` |
-| Nginx | `nginx -t` baseline OK; нові файли (backup-каталог `/root/node-control-backups/nginx-20261012T185439Z`, змінюваних файлів не було): snippet заголовків, `sites-available/goit-node-control-loopback.conf` + symlink; `nginx -t` OK → reload |
+| Nginx | `nginx -t` baseline OK; нові файли (backup-каталог `/root/node-control-backups/nginx-20261012T185439Z`, змінюваних файлів не було): snippet заголовків, `sites-available/node-control-loopback.conf` + symlink; `nginx -t` OK → reload |
 | API | live/ready 200; `/api/auth/me` 401 `no-store` + `x-request-id` |
 | Loopback-сайт `127.0.0.1:3101` | `/` 200 `no-cache` + CSP/`X-Frame-Options`/`nosniff`/`Referrer-Policy`; `/assets/*.js` `max-age=31536000, immutable`; відсутній asset 404; `/servers` → index.html; `/api/auth/me` 401; `/api/does-not-exist` → JSON 404; login з loopback-origin → 403 (fail closed) |
 | Браузер через SSH forwarding | headless Chromium: `/audit` → `/login`, `me` 401, 0 помилок консолі, 0 порушень CSP |
@@ -1323,7 +1325,7 @@ Login із правильним Origin у production не виконувався
 | Journal / логи | warn лише очікувані (порожній allowlist; власний 403-запит); паролів 0; власний error log Nginx порожній |
 | Сторонні служби | PostgreSQL/Nginx/Docker active, failed 0, менеджер секретів up/200; `users` — 0 рядків |
 
-Rollback підготовлено, не застосовувався: `server-release.js rollback` (→ `be432c0`, узгоджена пара UI/API через одну `current`; у `be432c0` немає `frontend/dist`, тож loopback-сайт віддаватиме 404 на статику) + `systemctl restart node-control-api`; для Nginx — видалити symlink `sites-enabled/goit-node-control-loopback.conf` (і за потреби snippet/site), `nginx -t`, `systemctl reload nginx`. БД/дані не змінювались.
+Rollback підготовлено, не застосовувався: `server-release.js rollback` (→ `be432c0`, узгоджена пара UI/API через одну `current`; у `be432c0` немає `frontend/dist`, тож loopback-сайт віддаватиме 404 на статику) + `systemctl restart node-control-api`; для Nginx — видалити symlink `sites-enabled/node-control-loopback.conf` (і за потреби snippet/site), `nginx -t`, `systemctl reload nginx`. БД/дані не змінювались.
 
 ## Task 005 — authentication, RBAC, audit (2026-10-12)
 

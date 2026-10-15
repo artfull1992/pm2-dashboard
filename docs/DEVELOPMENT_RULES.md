@@ -59,7 +59,7 @@ Commit має описувати фактичну зміну. Push — у пот
 3. Виконати лише погоджені зміни. Nginx: конфігурація в `/etc/nginx/`, перед застосуванням `nginx -t`. Backend/agents: systemd, мінімальні права. `db:setup` — мутація з root, не перевірка стану.
 4. Перевірити systemd status, health endpoint (коли буде реалізовано), логи, доступність, сторонні сервіси й критичні помилки. При невдачі — rollback за планом і повторна перевірка.
 
-Деплой — лише versioned-артефактом (`scripts/deploy/build-release.js` → `server-release.js`, DEPLOYMENT). Історичний rsync у `/etc/pm2-dashboard` не використовується. Конфіг сервісу — `/etc/goit-node-control/api.env` (`600 nodecontrol`).
+Деплой — лише versioned-артефактом (`scripts/deploy/build-release.js` → `server-release.js`, DEPLOYMENT). Історичний rsync у `/etc/pm2-dashboard` не використовується. Конфіг сервісу — `/etc/node-control/api.env` (`600 nodecontrol`).
 
 Перед commit запускати `npm run typecheck` і `npm run lint` (backend, frontend, e2e, agent); для старих JS-скриптів lint не налаштований. За актуальним bootstrap-запитом документаційний push дозволений після успішних релевантних перевірок документів, unit-тестів і секретів із чесним зазначенням недоступності БД. Це не дозвіл на деплой із failing tests.
 

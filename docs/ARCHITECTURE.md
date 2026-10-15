@@ -1,4 +1,4 @@
-# Архітектура GOIT Node Control
+# Архітектура Node Control
 
 Стан перевірено за кодом 2026-10-12 (після Task 002). Документ розрізняє реалізоване і ціль MVP1.
 
@@ -101,7 +101,7 @@ Central API забезпечує RBAC; метрики застосунків (PM
 ```mermaid
 flowchart LR
   PM2[PM2 daemon власника] -- rpc.sock, лише getMonitorData --> Exp[Exporter / systemd timer / власник PM2]
-  Exp -- атомарний JSON 0640 --> File[/var/lib/goit-node-control-pm2/inventory.json/]
+  Exp -- атомарний JSON 0640 --> File[/var/lib/node-control-pm2/inventory.json/]
   File -- читання, група nc-pm2-inventory --> Agent[Agent / nodecontrol-agent]
   Agent -- HTTPS POST /api/agent/inventory --> API[Central API]
   API --> DB[(server_inventories / server_applications)]
