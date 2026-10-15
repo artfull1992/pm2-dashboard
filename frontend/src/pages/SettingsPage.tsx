@@ -37,7 +37,8 @@ const LABELS: Record<Field, { label: string; short: string; unit: string }> = {
 type Row = { title: string; text: string; fields: readonly [Field] | readonly [Field, Field] };
 const LOAD_ROWS: Row[] = [
   { title: 'CPU процесу', text: 'CPU за PM2; на кількох ядрах може перевищувати 100 %. Відновлення — нижче проблеми.', fields: ['cpuOpenPercent', 'cpuClosePercent'] },
-  { title: 'Пам’ять ОС', text: 'Зайнята пам’ять сервера (всього − вільно), не пам’ять застосунку. Відновлення — нижче проблеми.', fields: ['memoryOpenPercent', 'memoryClosePercent'] },
+  // OS memory thresholds are not shown: the server_memory rule is retired (ADR-023) and not evaluated by this release;
+  // their stored values are still sent back unchanged with every save.
   { title: 'Підтвердження', text: 'Скільки спостережень CPU й пам’яті поспіль відкривають і закривають проблему.', fields: ['confirmSamples', 'recoverSamples'] },
 ];
 const PROCESS_ROWS: Row[] = [

@@ -51,25 +51,12 @@ describe('server_offline', () => {
   });
 });
 
-describe('server_memory (OS total − free)', () => {
-  it('opens after 3 NEW heartbeats ≥ 90 %, the same heartbeat re-evaluated is not counted; recovers after 2 below 80 %', () => {
+describe('server_memory is not evaluated by the rollback compatibility release (retired, ADR-023)', () => {
+  it('never opens or resolves, even for a legacy 0.4.x snapshot at 95 % and a minimal snapshot without memory', () => {
     const hot = (t: number) => server(t, { memory: { totalBytes: 1000, freeBytes: 50 } });
-    const { transitions } = run([[hot(0)], [hot(0)], [hot(30_000)], [hot(30_000)], [hot(60_000)], [server(90_000, { memory: { totalBytes: 1000, freeBytes: 500 } })], [server(120_000)]]);
-    expect(kinds(transitions, 'server_memory')).toEqual([[], [], [], [], ['open'], [], ['resolve:recovered']]);
-    const open = transitions.flat().find((t) => t.kind === 'open');
-    expect(open).toMatchObject({ severity: 'warning', detail: { value: 95, threshold: 90 } });
-  });
-
-  it('hysteresis: 85 % neither opens nor resolves; it breaks a pending streak and a recovering streak', () => {
-    const m = (t: number, free: number) => server(t, { memory: { totalBytes: 1000, freeBytes: free } });
-    const { transitions } = run([[m(1, 50)], [m(2, 50)], [m(3, 150)], [m(4, 50)], [m(5, 50)], [m(6, 50)], [m(7, 500)], [m(8, 150)], [m(9, 500)], [m(10, 500)]]);
-    expect(kinds(transitions, 'server_memory')).toEqual([[], [], [], [], [], ['open'], [], [], [], ['resolve:recovered']]);
-  });
-
-  it('total memory 0 or no snapshot is unknown — never 0 % and never a recovery', () => {
-    const hot = (t: number) => server(t, { memory: { totalBytes: 1000, freeBytes: 10 } });
-    const { transitions } = run([[hot(1)], [hot(2)], [hot(3)], [server(4, { memory: { totalBytes: 0, freeBytes: 0 } })], [server(5, { memory: null })], [server(6, { memory: { totalBytes: 0, freeBytes: 0 } })]]);
-    expect(kinds(transitions, 'server_memory')).toEqual([[], [], ['open'], [], [], []]);
+    const { transitions } = run([[hot(1)], [hot(2)], [hot(3)], [hot(4)], [server(5, { memory: null })]]);
+    expect(transitions.flat().filter((t) => t.key.startsWith('server_memory:'))).toEqual([]);
+    expect(evaluate([hot(6)], [], T).upserts.some((u) => u.rule === 'server_memory')).toBe(false);
   });
 });
 
@@ -156,8 +143,8 @@ describe('exclusion and missing data', () => {
   });
 
   it('missing fresh data never resolves a firing incident', () => {
-    const hot = (t: number) => server(t, { memory: { totalBytes: 1000, freeBytes: 10 } });
+    const hot = (t: number) => server(t, { processes: [p({ cpuPercent: 95 })] });
     const { transitions } = run([[hot(1)], [hot(2)], [hot(3)], [hot(3)], [hot(3)], [server(3, { status: 'offline' })]]);
-    expect(kinds(transitions, 'server_memory')).toEqual([[], [], ['open'], [], [], []]);
+    expect(kinds(transitions, 'process_cpu')).toEqual([[], [], ['open'], [], [], []]);
   });
 });

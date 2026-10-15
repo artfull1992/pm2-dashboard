@@ -1,6 +1,11 @@
 // Heartbeat snapshot contract (ADR-015). The payload comes from an authenticated Agent but is NOT trusted to be
 // true: it is strictly shaped and bounded, and nothing else is accepted. Shared by the JSON schema (transport)
 // and the semantic check (cross-field rules) below.
+//
+// ROLLBACK COMPATIBILITY RELEASE (ADR-023): the pre-ADR-023 code, patched only to run on a database written by the
+// ADR-023 release. That release stores MINIMAL snapshots (agentVersion, hostname, platform, arch, loadAverage) and
+// Agent 0.5.0 sends only those, so uptimeSeconds, cpuCount and memory are OPTIONAL here: accepted in their exact old
+// shape from Agent 0.4.x, never invented when absent (null in responses).
 
 export const SNAPSHOT_LIMITS = Object.freeze({
   maxUptimeSeconds: 10 ** 10,
@@ -14,17 +19,20 @@ export interface ServerSnapshot {
   hostname: string;
   platform: string;
   arch: string;
-  uptimeSeconds: number;
-  cpuCount: number;
+  /** Absent in minimal snapshots (Agent >= 0.5.0 or rows written by the ADR-023 API). */
+  uptimeSeconds?: number;
+  /** Absent in minimal snapshots. */
+  cpuCount?: number;
   /** 1/5/15-minute load averages: runnable-queue length, NOT a CPU percentage. */
   loadAverage: [number, number, number];
-  memory: { totalBytes: number; freeBytes: number };
+  /** Absent in minimal snapshots. */
+  memory?: { totalBytes: number; freeBytes: number };
 }
 
 export const snapshotSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['agentVersion', 'hostname', 'platform', 'arch', 'uptimeSeconds', 'cpuCount', 'loadAverage', 'memory'],
+  required: ['agentVersion', 'hostname', 'platform', 'arch', 'loadAverage'],
   properties: {
     agentVersion: { type: 'string', pattern: '^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$' },
     hostname: { type: 'string', minLength: 1, maxLength: 253, pattern: '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$' },
@@ -50,19 +58,19 @@ export const snapshotSchema = {
 
 /** Cross-field rules JSON schema cannot express. Returns a fixed reason code or null. */
 export function snapshotProblem(snapshot: ServerSnapshot): 'memory_free_exceeds_total' | null {
-  return snapshot.memory.freeBytes > snapshot.memory.totalBytes ? 'memory_free_exceeds_total' : null;
+  return snapshot.memory && snapshot.memory.freeBytes > snapshot.memory.totalBytes ? 'memory_free_exceeds_total' : null;
 }
 
-/** Copies only the contract fields (defence in depth against extra keys reaching storage). */
+/** Copies only the contract fields that are present (defence in depth against extra keys reaching storage). */
 export function normalizeSnapshot(s: ServerSnapshot): ServerSnapshot {
   return {
     agentVersion: s.agentVersion,
     hostname: s.hostname,
     platform: s.platform,
     arch: s.arch,
-    uptimeSeconds: s.uptimeSeconds,
-    cpuCount: s.cpuCount,
+    ...(s.uptimeSeconds === undefined ? {} : { uptimeSeconds: s.uptimeSeconds }),
+    ...(s.cpuCount === undefined ? {} : { cpuCount: s.cpuCount }),
     loadAverage: [s.loadAverage[0], s.loadAverage[1], s.loadAverage[2]],
-    memory: { totalBytes: s.memory.totalBytes, freeBytes: s.memory.freeBytes },
+    ...(s.memory === undefined ? {} : { memory: { totalBytes: s.memory.totalBytes, freeBytes: s.memory.freeBytes } }),
   };
 }

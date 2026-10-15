@@ -17,7 +17,7 @@ const RULE_TITLE: Record<AlertRule, string> = {
   server_offline: 'Сервер не звітує', inventory_stale: 'Дані PM2 неактуальні', process_down: 'PM2-процес не працює',
   process_cpu: 'Високе CPU процесу (PM2)', server_memory: 'Висока пам’ять ОС', process_restarts: 'Часті рестарти',
 };
-const RESOLUTION_TEXT = { recovered: 'Відновлено', process_gone: 'Процес зник з PM2 (відновлення не підтверджено)', excluded: 'Сервер виключено з моніторингу' } as const;
+const RESOLUTION_TEXT = { recovered: 'Відновлено', process_gone: 'Процес зник з PM2 (відновлення не підтверджено)', excluded: 'Сервер виключено з моніторингу', retired: 'Правило виведено з експлуатації (не відновлення)' } as const;
 const DELIVERY_TEXT = {
   none: 'Не надсилалось', queued: 'У черзі', sending: 'Надсилається', sent: 'Надіслано', failed: 'Не доставлено',
   unknown: 'Результат невідомий (можливий дублікат)', dropped: 'Відкинуто: черга переповнена',

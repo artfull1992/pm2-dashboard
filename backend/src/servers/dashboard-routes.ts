@@ -35,9 +35,9 @@ export const dashboardResponseSchema = obj({
   serverList: list(obj({
     id: { type: 'string' }, name: { type: 'string' }, status: SERVER_STATUS, lastSeenAt: nullableString,
     metrics: nullableObj({
-      hostname: { type: 'string' }, uptimeSeconds: count, cpuCount: count,
+      hostname: { type: 'string' }, uptimeSeconds: nullableInt, cpuCount: nullableInt,
       loadAverage: { type: 'array', minItems: 3, maxItems: 3, items: { type: 'number', minimum: 0 } },
-      memory: obj({ totalBytes: count, usedBytes: count, usedPercent: { type: ['number', 'null'] } }),
+      memory: nullableObj({ totalBytes: count, usedBytes: count, usedPercent: { type: ['number', 'null'] } }),
     }),
     inventory: obj({ state: INVENTORY_STATE, collectedAt: nullableString }),
     processes: nullableObj({ total: count, online: count, problem: count }),

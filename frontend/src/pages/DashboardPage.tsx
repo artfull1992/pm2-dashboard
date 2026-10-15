@@ -49,7 +49,8 @@ function Stat({ label, value, detail, tone }: { label: string; value: string; de
 }
 
 function Memory({ m }: { m: NonNullable<DashboardServer['metrics']>['memory'] }) {
-  if (m.totalBytes === 0 || m.usedPercent === null) return <span>—<span className="visually-hidden"> (обсяг пам'яті невідомий)</span></span>;
+  // null: minimal snapshot without host memory (ADR-023 rollback compatibility) — unknown, not 0.
+  if (m === null || m.totalBytes === 0 || m.usedPercent === null) return <span>—<span className="visually-hidden"> (обсяг пам'яті невідомий)</span></span>;
   const label = `Зайнято ${String(m.usedPercent)} % (${formatMemory(m.usedBytes)} з ${formatMemory(m.totalBytes)})`;
   return (
     <div className="dash-mem">
@@ -139,7 +140,7 @@ function Overview({ d, outdated }: { d: DashboardView; outdated: boolean }) {
                     <td><StatusBadge status={srv.status} /></td>
                     <td className="date secondary">{srv.lastSeenAt ? formatDate(srv.lastSeenAt) : '—'}</td>
                     <td className="num">{srv.metrics ? formatUptime(srv.metrics.uptimeSeconds) : '—'}</td>
-                    <td className="num">{srv.metrics ? <>{srv.metrics.loadAverage.map(load).join(' / ')}<span className="cell-meta">{`ядер: ${String(srv.metrics.cpuCount)}`}</span></> : '—'}</td>
+                    <td className="num">{srv.metrics ? <>{srv.metrics.loadAverage.map(load).join(' / ')}{srv.metrics.cpuCount === null ? null : <span className="cell-meta">{`ядер: ${String(srv.metrics.cpuCount)}`}</span>}</> : '—'}</td>
                     <td>{srv.metrics ? <Memory m={srv.metrics.memory} /> : '—'}</td>
                     <td>
                       {srv.inventory.state === 'current' && srv.status === 'online'

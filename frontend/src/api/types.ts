@@ -119,10 +119,11 @@ export interface ServerSnapshot {
   hostname: string;
   platform: string;
   arch: string;
-  uptimeSeconds: number;
-  cpuCount: number;
+  /** null: not in the stored snapshot (minimal snapshot of ADR-023 — rollback compatibility); unknown, never 0. */
+  uptimeSeconds: number | null;
+  cpuCount: number | null;
   loadAverage: [number, number, number];
-  memory: { totalBytes: number; freeBytes: number };
+  memory: { totalBytes: number; freeBytes: number } | null;
 }
 
 export interface ServerDetail extends ServerSummary {
@@ -156,14 +157,21 @@ export function parseServerSummary(value: unknown): ServerSummary {
 }
 
 function parseSnapshot(value: unknown): ServerSnapshot {
-  expect(isObject(value) && isObject(value.memory) && Array.isArray(value.loadAverage) && value.loadAverage.length === 3);
+  expect(isObject(value) && Array.isArray(value.loadAverage) && value.loadAverage.length === 3);
   const { agentVersion, hostname, platform, arch, uptimeSeconds, cpuCount, loadAverage, memory } = value;
   expect(isString(agentVersion, 16) && isString(hostname, 253) && isString(platform, 16) && isString(arch, 16));
-  expect(isCount(uptimeSeconds, 1e10) && isCount(cpuCount, 4096) && (loadAverage as unknown[]).every((n) => isCount(n, 100_000)));
-  const { totalBytes, freeBytes } = memory;
-  expect(isCount(totalBytes, Number.MAX_SAFE_INTEGER) && isCount(freeBytes, Number.MAX_SAFE_INTEGER) && freeBytes <= totalBytes);
+  expect((loadAverage as unknown[]).every((n) => isCount(n, 100_000)));
+  // Host metrics are optional (minimal snapshots, ADR-023): when present they are validated as before.
+  expect((uptimeSeconds === undefined || isCount(uptimeSeconds, 1e10)) && (cpuCount === undefined || isCount(cpuCount, 4096)));
+  let mem: ServerSnapshot['memory'] = null;
+  if (memory !== undefined) {
+    expect(isObject(memory));
+    const { totalBytes, freeBytes } = memory;
+    expect(isCount(totalBytes, Number.MAX_SAFE_INTEGER) && isCount(freeBytes, Number.MAX_SAFE_INTEGER) && freeBytes <= totalBytes);
+    mem = { totalBytes, freeBytes };
+  }
   const [l1, l5, l15] = loadAverage as [number, number, number];
-  return { agentVersion, hostname, platform, arch, uptimeSeconds, cpuCount, loadAverage: [l1, l5, l15], memory: { totalBytes, freeBytes } };
+  return { agentVersion, hostname, platform, arch, uptimeSeconds: uptimeSeconds ?? null, cpuCount: cpuCount ?? null, loadAverage: [l1, l5, l15], memory: mem };
 }
 
 export function parseServerDetail(value: unknown): ServerDetail {
@@ -432,7 +440,7 @@ interface Bounded<T> { items: T[]; total: number; limit: number }
 
 export interface DashboardServer {
   id: string; name: string; status: ServerStatus; lastSeenAt: string | null;
-  metrics: { hostname: string; uptimeSeconds: number; cpuCount: number; loadAverage: [number, number, number]; memory: { totalBytes: number; usedBytes: number; usedPercent: number | null } } | null;
+  metrics: { hostname: string; uptimeSeconds: number | null; cpuCount: number | null; loadAverage: [number, number, number]; memory: { totalBytes: number; usedBytes: number; usedPercent: number | null } | null } | null;
   inventory: { state: InventoryStateAll; collectedAt: string | null };
   processes: { total: number; online: number; problem: number } | null;
 }
@@ -476,10 +484,14 @@ function parseDashboardServer(v: unknown): DashboardServer {
   let metrics: DashboardServer['metrics'] = null;
   if (v.metrics !== null) {
     const m = v.metrics;
-    expect(isObject(m) && isName(m.hostname) && isNum(m.uptimeSeconds) && isNum(m.cpuCount, 4096) && Array.isArray(m.loadAverage) && m.loadAverage.length === 3 && m.loadAverage.every((x) => isNum(x)));
-    expect(isObject(m.memory) && isNum(m.memory.totalBytes) && isNum(m.memory.usedBytes) && (m.memory.usedPercent === null || isNum(m.memory.usedPercent, 100)));
+    expect(isObject(m) && isName(m.hostname) && (m.uptimeSeconds === null || isNum(m.uptimeSeconds)) && (m.cpuCount === null || isNum(m.cpuCount, 4096)) && Array.isArray(m.loadAverage) && m.loadAverage.length === 3 && m.loadAverage.every((x) => isNum(x)));
+    let memory: NonNullable<DashboardServer['metrics']>['memory'] = null;
+    if (m.memory !== null) {
+      expect(isObject(m.memory) && isNum(m.memory.totalBytes) && isNum(m.memory.usedBytes) && (m.memory.usedPercent === null || isNum(m.memory.usedPercent, 100)));
+      memory = { totalBytes: m.memory.totalBytes, usedBytes: m.memory.usedBytes, usedPercent: m.memory.usedPercent };
+    }
     const [a, b, c] = m.loadAverage as [number, number, number];
-    metrics = { hostname: m.hostname, uptimeSeconds: m.uptimeSeconds, cpuCount: m.cpuCount, loadAverage: [a, b, c], memory: { totalBytes: m.memory.totalBytes, usedBytes: m.memory.usedBytes, usedPercent: m.memory.usedPercent } };
+    metrics = { hostname: m.hostname, uptimeSeconds: m.uptimeSeconds, cpuCount: m.cpuCount, loadAverage: [a, b, c], memory };
   }
   const processes = v.processes === null ? null : counts(v.processes, ['total', 'online', 'problem'] as const);
   return { id: v.id, name: v.name, status: v.status, lastSeenAt: v.lastSeenAt, metrics, inventory: { state: v.inventory.state, collectedAt: v.inventory.collectedAt }, processes };
@@ -525,7 +537,8 @@ export const ALERT_RULES = ['server_offline', 'inventory_stale', 'process_down',
 export type AlertRule = (typeof ALERT_RULES)[number];
 export const OUTBOX_STATES = ['none', 'queued', 'sending', 'sent', 'failed', 'unknown', 'dropped'] as const;
 export interface Incident {
-  id: string; rule: AlertRule; severity: 'critical' | 'warning'; status: 'firing' | 'resolved'; resolution: 'recovered' | 'process_gone' | 'excluded' | null;
+  /** retired: the rule was taken out of service (ADR-023 migration) — not a recovery. */
+  id: string; rule: AlertRule; severity: 'critical' | 'warning'; status: 'firing' | 'resolved'; resolution: 'recovered' | 'process_gone' | 'excluded' | 'retired' | null;
   serverId: string; serverName: string; serverStatus: ServerStatus | 'inactive'; processName: string | null; pmId: number | null;
   detail: { value?: number | null; threshold?: number | null; status?: string; state?: string; lastSeenAt?: string | null; delta?: number; spanSeconds?: number; windowSeconds?: number };
   openedAt: string; lastObservedAt: string; resolvedAt: string | null;
@@ -550,7 +563,7 @@ const nullableBool = (v: unknown): v is boolean | null => v === null || typeof v
 
 function parseIncident(v: unknown): Incident {
   expect(isObject(v) && isString(v.id, 36) && INCIDENT_UUID.test(v.id) && oneOf(ALERT_RULES, v.rule) && (v.severity === 'critical' || v.severity === 'warning'));
-  expect((v.status === 'firing' || v.status === 'resolved') && (v.resolution === null || v.resolution === 'recovered' || v.resolution === 'process_gone' || v.resolution === 'excluded'));
+  expect((v.status === 'firing' || v.status === 'resolved') && (v.resolution === null || v.resolution === 'recovered' || v.resolution === 'process_gone' || v.resolution === 'excluded' || v.resolution === 'retired'));
   expect(isString(v.serverId, 36) && INCIDENT_UUID.test(v.serverId) && isString(v.serverName, 100) && (isServerStatus(v.serverStatus) || v.serverStatus === 'inactive'));
   expect(isNullableString(v.processName) && (v.pmId === null || (typeof v.pmId === 'number' && Number.isInteger(v.pmId))));
   expect(isDate(v.openedAt) && isDate(v.lastObservedAt) && isNullableDate(v.resolvedAt) && isObject(v.detail));

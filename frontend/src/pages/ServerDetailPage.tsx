@@ -18,8 +18,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 function Vitals({ server }: { server: ServerDetail }) {
   const s = server.snapshot;
   if (!s) return <p className="hint">Агент ще не надсилав даних.</p>;
-  const total = s.memory.totalBytes;
-  const used = total > 0 ? total - s.memory.freeBytes : null;
+  // Minimal snapshots (ADR-023) have no memory/uptime/CPU count: shown as unknown, never as 0.
+  const total = s.memory?.totalBytes ?? 0;
+  const used = s.memory && total > 0 ? total - s.memory.freeBytes : null;
   const usedPercent = used === null ? null : Math.round((used / total) * 100);
   const outdated = server.status !== 'online';
   return (
@@ -29,7 +30,7 @@ function Vitals({ server }: { server: ServerDetail }) {
         <div className="metric">
           <span className="metric__label">Load average 1 / 5 / 15 хв</span>
           <strong className="metric__value">{s.loadAverage.map((n) => n.toFixed(2)).join(' / ')}</strong>
-          <span className="metric__detail">{`черга процесів, не відсоток CPU · ядер: ${String(s.cpuCount)}`}</span>
+          <span className="metric__detail">{`черга процесів, не відсоток CPU${s.cpuCount === null ? '' : ` · ядер: ${String(s.cpuCount)}`}`}</span>
         </div>
         <div className="metric">
           <span className="metric__label">Пам'ять ОС</span>
@@ -56,8 +57,8 @@ function SystemDetails({ server }: { server: ServerDetail }) {
           <dt>Хост</dt><dd>{s.hostname}</dd>
           <dt>Платформа</dt><dd>{`${s.platform} / ${s.arch}`}</dd>
           <dt>Версія агента</dt><dd>{s.agentVersion}</dd>
-          <dt>CPU</dt><dd>{`${String(s.cpuCount)} ядер`}</dd>
-          <dt>Пам'ять</dt><dd>{`вільно ${formatMemory(s.memory.freeBytes)} з ${formatMemory(s.memory.totalBytes)}`}</dd>
+          {s.cpuCount === null ? null : <><dt>CPU</dt><dd>{`${String(s.cpuCount)} ядер`}</dd></>}
+          {s.memory === null ? null : <><dt>Пам'ять</dt><dd>{`вільно ${formatMemory(s.memory.freeBytes)} з ${formatMemory(s.memory.totalBytes)}`}</dd></>}
         </> : null}
         <dt>Додано</dt><dd>{formatDate(server.createdAt)}</dd>
         <dt>Активність</dt><dd>{server.isActive ? 'активний' : 'неактивний — виключений з моніторингу'}</dd>

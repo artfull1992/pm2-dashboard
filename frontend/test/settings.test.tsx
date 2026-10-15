@@ -164,7 +164,7 @@ describe('rules tab', () => {
     renderApp('/settings/rules');
     const u = userEvent.setup();
     const close = await screen.findByLabelText<HTMLInputElement>('CPU процесу — поріг відновлення, %');
-    expect(screen.getAllByText('Відновлення', { selector: 'label' })).toHaveLength(3); // short visible labels
+    expect(screen.getAllByText('Відновлення', { selector: 'label' })).toHaveLength(2); // short visible labels (OS memory row hidden: rule retired, ADR-023)
     expect(close.getAttribute('aria-describedby')).toBeNull();
     expect(screen.queryByText('0–10000, типово 70')).toBeNull();
     const limits = screen.getByRole('button', { name: 'Показати межі й типові' });

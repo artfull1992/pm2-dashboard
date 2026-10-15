@@ -69,7 +69,7 @@ async function loadSnapshot(tx: QueryClient): Promise<ServerObs[]> {
     const snap = s.snapshot as ServerSnapshot | null;
     return {
       id: String(s.id), name: String(s.name), status: s.status as ServerObs['status'], heartbeatAt: ms(s.received_at),
-      memory: snap ? { totalBytes: snap.memory.totalBytes, freeBytes: snap.memory.freeBytes } : null,
+      memory: snap?.memory ? { totalBytes: snap.memory.totalBytes, freeBytes: snap.memory.freeBytes } : null, // minimal snapshot → unknown
       inventory: { state: s.inv as ServerObs['inventory']['state'], reportedAt: ms(s.reported_at), collectedAt: ms(s.inventory_collected_at) },
       processes: byServer.get(String(s.id)) ?? [],
     };

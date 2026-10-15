@@ -22,13 +22,16 @@ export interface DashboardServer {
   name: string;
   status: ServerStatus;
   lastSeenAt: string | null;
-  /** Only for an online server; never stale data presented as current. */
+  /**
+   * Only for an online server; never stale data presented as current. uptimeSeconds / cpuCount / memory are null when
+   * the stored snapshot is minimal (ADR-023 rollback compatibility) — unknown, never 0.
+   */
   metrics: {
     hostname: string;
-    uptimeSeconds: number;
-    cpuCount: number;
+    uptimeSeconds: number | null;
+    cpuCount: number | null;
     loadAverage: [number, number, number];
-    memory: { totalBytes: number; usedBytes: number; usedPercent: number | null };
+    memory: { totalBytes: number; usedBytes: number; usedPercent: number | null } | null;
   } | null;
   inventory: { state: InventoryState; collectedAt: string | null };
   /** Counts of LIVE processes (online server + current inventory); null when the data is not live. */
@@ -182,12 +185,12 @@ async function read(tx: QueryClient, actionsFor: string | null): Promise<Dashboa
         return {
           id: String(r.id), name: String(r.name), status: r.status as ServerStatus, lastSeenAt: iso(r.received_at),
           metrics: s ? {
-            hostname: s.hostname, uptimeSeconds: s.uptimeSeconds, cpuCount: s.cpuCount, loadAverage: [s.loadAverage[0], s.loadAverage[1], s.loadAverage[2]],
-            memory: {
+            hostname: s.hostname, uptimeSeconds: s.uptimeSeconds ?? null, cpuCount: s.cpuCount ?? null, loadAverage: [s.loadAverage[0], s.loadAverage[1], s.loadAverage[2]],
+            memory: s.memory ? {
               totalBytes: s.memory.totalBytes, usedBytes: s.memory.totalBytes - s.memory.freeBytes,
               // totalBytes = 0: the percentage is unknown, never 0 %.
               usedPercent: s.memory.totalBytes > 0 ? Math.round(((s.memory.totalBytes - s.memory.freeBytes) / s.memory.totalBytes) * 1000) / 10 : null,
-            },
+            } : null,
           } : null,
           inventory: { state: r.inv as InventoryState, collectedAt: iso(r.inventory_collected_at) },
           processes: live ? { total: num(r.p_total), online: num(r.p_online), problem: num(r.p_problem) } : null,

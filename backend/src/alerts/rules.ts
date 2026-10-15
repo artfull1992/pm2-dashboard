@@ -108,8 +108,6 @@ function step(prev: ConditionRow | undefined, c: StepContext, out: Transition[])
   }
 }
 
-const pct = (v: number) => Math.round(v * 10) / 10;
-
 /** Restart samples: baseline, identity/counter reset and the delta inside the window (never the cumulative count). */
 function restartEvidence(prev: ConditionRow | undefined, p: ProcessObs, at: number, t: AlertThresholds): { evidence: Evidence; samples: Sample[]; detail: Detail } {
   if (p.restarts === null) return { evidence: 'skip', samples: prev?.samples ?? [], detail: {} };
@@ -157,15 +155,8 @@ export function evaluate(servers: readonly ServerObs[], previous: readonly Condi
     // Everything below needs an online server; an offline one is covered by the single server_offline incident.
     if (s.status !== 'online') continue;
 
-    // 2. Server memory (OS view: total − free). total = 0 / no snapshot → unknown, never "0 %".
-    const mem = s.memory;
-    const usedPercent = mem && mem.totalBytes > 0 ? pct(((mem.totalBytes - mem.freeBytes) / mem.totalBytes) * 100) : null;
-    apply({
-      key: conditionKey('server_memory', s.id), rule: 'server_memory', server: s, process: null, severity: 'warning',
-      detail: { value: usedPercent, threshold: t.memoryOpenPercent },
-      evidence: usedPercent === null ? 'skip' : usedPercent >= t.memoryOpenPercent ? 'problem' : usedPercent < t.memoryClosePercent ? 'recovery' : 'hold',
-      sampleAt: s.heartbeatAt, confirm: t.confirmSamples, recover: t.recoverSamples,
-    });
+    // 2. Server memory: NOT evaluated in the rollback compatibility release — the rule is retired (ADR-023, migration
+    //    1791900000008); evaluating it again would reopen incidents and queue notifications for a retired rule.
 
     // 3. Inventory stale/unavailable on an online server (not_reported = PM2 inventory not set up: no alert).
     const inv = s.inventory;
