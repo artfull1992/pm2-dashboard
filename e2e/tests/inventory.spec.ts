@@ -58,7 +58,7 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
     await page.goto('/applications');
     await expect(async () => {
       await page.reload();
-      await expect(page.getByRole('cell', { name: 'e2e-api' }).or(page.getByRole('rowheader', { name: 'e2e-api' }))).toBeVisible({ timeout: 2_000 });
+      await expect(page.getByRole('cell', { name: 'e2e-api', exact: true }).or(page.getByRole('rowheader', { name: 'e2e-api', exact: true }))).toBeVisible({ timeout: 2_000 });
     }).toPass({ timeout: 30_000 });
     const table = page.getByRole('table', { name: 'PM2-процеси' });
     await expect(table.getByText(XSS)).toBeVisible();

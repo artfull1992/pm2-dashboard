@@ -218,9 +218,9 @@ test('server page: row menu stays open across a polling refresh', async ({ page 
   await page.goto(`/servers/${SERVER}`);
   const trigger = page.getByRole('button', { name: 'Дії: catalog-api' });
   await trigger.click();
-  await expect(page.getByRole('button', { name: 'Перезапустити', exact: true })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Перезапустити', exact: true })).toBeVisible();
   await page.clock.runFor(16_000);
   await expect(trigger).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.getByRole('button', { name: 'Перезапустити', exact: true })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Перезапустити', exact: true })).toBeVisible();
   expect(mutations).toEqual([]);
 });

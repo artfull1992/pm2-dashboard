@@ -5,7 +5,7 @@ import type { AttentionReason, DashboardView, RecentAction } from '../api/types'
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { ProcessStatusBadge } from '../components/Inventory';
-import { ACTION_LABELS } from '../components/ProcessControl';
+import { ACTION_LABELS } from '../components/processActions';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { PageHeader, Section, StatusIndicator } from '../components/ui';
 import { usePolledResource } from '../components/usePolledResource';

@@ -79,7 +79,7 @@ test('admin creates a user → the user changes the password → every session e
 
   // Role change by the admin ends the user's session.
   await admin.getByRole('button', { name: `Дії: ${MEMBER.email}` }).click();
-  await admin.getByRole('button', { name: 'Змінити роль' }).click();
+  await admin.getByRole('menuitem', { name: 'Змінити роль' }).click();
   const roleDialog = admin.getByRole('dialog', { name: `Змінити роль: ${MEMBER.email}` });
   await roleDialog.getByLabel('Нова роль').selectOption('viewer');
   await roleDialog.getByRole('button', { name: 'Змінити роль' }).click();
@@ -91,7 +91,7 @@ test('admin creates a user → the user changes the password → every session e
 
   // Deactivation ends it again; the account cannot be used.
   await admin.getByRole('button', { name: `Дії: ${MEMBER.email}` }).click();
-  await admin.getByRole('button', { name: 'Деактивувати' }).click();
+  await admin.getByRole('menuitem', { name: 'Деактивувати' }).click();
   await admin.getByRole('dialog').getByRole('button', { name: 'Деактивувати' }).click();
   await expect(admin.getByText(`${MEMBER.email} деактивовано. Усі його сесії завершено.`)).toBeVisible();
   await expect(admin.getByRole('row').filter({ hasText: MEMBER.email })).toContainText('Деактивований');
@@ -122,7 +122,7 @@ test('mobile 390 px: users table and account form fit, keyboard menu, Escape clo
   const trigger = page.getByRole('button', { name: `Дії: ${MEMBER.email}` });
   await trigger.focus();
   await page.keyboard.press('Enter');
-  await page.getByRole('button', { name: 'Змінити роль' }).click();
+  await page.getByRole('menuitem', { name: 'Змінити роль' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -156,7 +156,7 @@ test('more than 100 users: keyset pages ("Далі"/"Назад"), a user on pag
     expect(await noHorizontalScroll(page)).toBe(true);
     if (width === 1440) {
       await page.getByRole('button', { name: 'Дії: bulk-104@example.test' }).click();
-      await page.getByRole('button', { name: 'Деактивувати' }).click();
+      await page.getByRole('menuitem', { name: 'Деактивувати' }).click();
       await page.getByRole('dialog').getByRole('button', { name: 'Деактивувати' }).click();
       await expect(page.getByText('bulk-104@example.test деактивовано. Усі його сесії завершено.')).toBeVisible();
       await expect(page.getByRole('row').filter({ hasText: 'bulk-104@example.test' })).toContainText('Деактивований');

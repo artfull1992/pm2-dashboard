@@ -27,7 +27,7 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `backend/src/bootstrap-cli.ts`, `bootstrap-admin.ts` | CLI створення першого адміністратора (без HTTP) |
 | `frontend/src/api/` | API-клієнт (timeout, cancel, runtime-валідація) і типи контракту |
 | `frontend/src/auth/` | `AuthContext` (сесія в пам'яті, епохи проти гонок), guards (`RequireAuth`, `RequirePermission`, безпечний redirect) |
-| `frontend/src/pages/`, `components/` | Login, Огляд, Сервери, Застосунки (PM2 inventory, лише перегляд), Журнал аудиту; Layout із навігацією за правами |
+| `frontend/src/pages/`, `components/` | Login, Огляд, Сервери, Застосунки (PM2 inventory; дії й логи за правами, ADR-024), Журнал аудиту; Layout із навігацією за правами |
 | `e2e/` | Playwright: реальний backend + збірка UI + Agent на тестовій БД |
 | `backend/src/servers/` | Реєстр серверів (SQL, keyset), credentials агентів (digest), heartbeat (FOR SHARE + монотонний upsert), контракт snapshot |
 | `agent/src/` | Agent: конфіг (HTTPS-only, файл 600), snapshot (`node:os`), heartbeat (timeout, `redirect: 'error'`), цикл (без overlap, backoff + jitter) |

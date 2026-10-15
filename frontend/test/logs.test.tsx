@@ -57,7 +57,7 @@ const creates = (calls: RecordedRequest[]) => calls.filter((c) => c.method === '
 async function openLogs() {
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: 'Дії: api' }));
-  await user.click(await screen.findByRole('button', { name: 'Переглянути логи' }));
+  await user.click(await screen.findByRole('menuitem', { name: 'Переглянути логи' }));
   return { user, dialog: await screen.findByRole('dialog', { name: 'Логи: api' }) };
 }
 

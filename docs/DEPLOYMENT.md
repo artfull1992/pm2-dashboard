@@ -293,7 +293,7 @@ journalctl -u node-control-agent -n 5 -o cat                             # "cont
 #   PM2_CONTROL_ENABLED=true  у /etc/goit-node-control/api.env  (600 nodecontrol)
 ```
 
-Перевірка: UI → сервер → «Сервіси сервера» → колонка «Дії»: дозволені процеси мають активне меню; operator/admin виконує дію з підтвердженням; статус «Виконано й підтверджено»; audit `process.command_*`.
+Перевірка: UI → сервер → «Сервіси сервера» (або «Застосунки», ADR-024) → колонка «Дії»: дозволені процеси мають активне меню; operator/admin виконує дію з підтвердженням; статус «Виконано й підтверджено»; audit `process.command_*`.
 
 **Rollback / аварійне вимкнення** (у будь-якому порядку, PM2-процеси не зупиняються): `PM2_CONTROL_ENABLED=false` + restart API (нові команди → 409, черга не видається й експірує); прибрати `NC_AGENT_CONTROL_SOCKET` з `agent.env` + restart Agent; `systemctl disable --now node-control-pm2-broker@<owner>`; спорожнити allowlist. Журнал broker (`/var/lib/goit-node-control-pm2-broker`) не видаляти: він захищає від повторного виконання. Таблиці керування лишаються (additive).
 

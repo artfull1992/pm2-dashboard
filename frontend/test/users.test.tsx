@@ -210,12 +210,12 @@ describe('user administration', () => {
     renderApp('/users');
     const u = userEvent.setup();
     await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('button', { name: 'Змінити роль' }));
+    await u.click(screen.getByRole('menuitem', { name: 'Змінити роль' }));
     expect(screen.getByRole('dialog', { name: 'Змінити роль: other@example.test' })).toBeTruthy();
     await u.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).toBeNull();
     await u.click(screen.getByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('button', { name: 'Змінити роль' }));
+    await u.click(screen.getByRole('menuitem', { name: 'Змінити роль' }));
     const dialog = screen.getByRole('dialog', { name: 'Змінити роль: other@example.test' });
     expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Змінити роль' }).disabled).toBe(true); // unchanged role
     await u.selectOptions(within(dialog).getByLabelText('Нова роль'), 'operator');
@@ -236,7 +236,7 @@ describe('user administration', () => {
     renderApp('/users');
     const u = userEvent.setup();
     await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('button', { name: 'Деактивувати' }));
+    await u.click(screen.getByRole('menuitem', { name: 'Деактивувати' }));
     const dialog = screen.getByRole('dialog', { name: 'Деактивувати: other@example.test' });
     expect(within(dialog).getByText(/Усі сесії користувача буде завершено/)).toBeTruthy();
     await u.click(within(dialog).getByRole('button', { name: 'Деактивувати' }));
@@ -252,7 +252,7 @@ describe('user administration', () => {
     renderApp('/users');
     const u = userEvent.setup();
     await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('button', { name: 'Деактивувати' }));
+    await u.click(screen.getByRole('menuitem', { name: 'Деактивувати' }));
     const dialog = screen.getByRole('dialog');
     await u.click(within(dialog).getByRole('button', { name: 'Деактивувати' }));
     expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Збереження…' }).disabled).toBe(true);
@@ -269,7 +269,7 @@ describe('user administration', () => {
     renderApp('/users');
     const u = userEvent.setup();
     await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('button', { name: 'Деактивувати' }));
+    await u.click(screen.getByRole('menuitem', { name: 'Деактивувати' }));
     await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Деактивувати' }));
     expect(await screen.findByText('Сесія завершилась. Увійдіть знову.')).toBeTruthy();
   });
@@ -348,7 +348,7 @@ describe('stale responses across sessions', () => {
     await u.type(within(form).getByLabelText('Початковий пароль'), NEXT);
     await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
     await u.click(screen.getByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('button', { name: 'Деактивувати' }));
+    await u.click(screen.getByRole('menuitem', { name: 'Деактивувати' }));
     await u.click(within(screen.getByRole('dialog', { name: 'Деактивувати: other@example.test' })).getByRole('button', { name: 'Деактивувати' }));
     await u.click(screen.getByRole('link', { name: 'Огляд' }));
     const lists = calls.filter((c) => c.url.startsWith('/api/users?')).length;

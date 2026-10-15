@@ -61,7 +61,7 @@ for (const viewport of [{ width: 1440, height: 1050 }, { width: 390, height: 844
     const trigger = page.getByRole('button', { name: 'Дії: orders-api-v2' });
     await trigger.scrollIntoViewIfNeeded();
     await trigger.click();
-    const restart = page.getByRole('button', { name: 'Перезапустити', exact: true });
+    const restart = page.getByRole('menuitem', { name: 'Перезапустити', exact: true });
     await expect(restart).toBeVisible();
     await restart.click();
     const dialog = page.getByRole('dialog', { name: 'Перезапустити процес?' });
@@ -75,7 +75,7 @@ for (const viewport of [{ width: 1440, height: 1050 }, { width: 390, height: 844
 
     // Log viewer from the same row menu: readable, scrollable, no page overflow, Escape closes, focus returns.
     await trigger.click();
-    await page.getByRole('button', { name: 'Переглянути логи' }).click();
+    await page.getByRole('menuitem', { name: 'Переглянути логи' }).click();
     const logs = page.getByRole('dialog', { name: 'Логи: orders-api-v2' });
     await expect(logs.getByText(/GET \/api\/items\/99 200/)).toBeVisible();
     await expect(logs.getByText(/старіші рядки не показано/)).toBeVisible();

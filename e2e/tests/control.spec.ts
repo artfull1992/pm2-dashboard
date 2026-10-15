@@ -105,12 +105,12 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
       await op.reload();
       await expect(control.getByRole('button', { name: 'Дії: e2e-allowed' })).toBeEnabled({ timeout: 3_000 });
       await control.getByRole('button', { name: 'Дії: e2e-allowed' }).click();
-      await expect(control.getByRole('button', { name: 'Зупинити' })).toBeEnabled({ timeout: 3_000 });
+      await expect(op.getByRole('menuitem', { name: 'Зупинити' })).toBeEnabled({ timeout: 3_000 });
     }).toPass({ timeout: 60_000 });
     await expect(control.getByText('e2e-other', { exact: true })).toBeVisible();
     await expect(control.getByRole('button', { name: 'Дії: e2e-other' })).toHaveCount(0);
 
-    await control.getByRole('button', { name: 'Зупинити' }).click();
+    await op.getByRole('menuitem', { name: 'Зупинити' }).click();
     const confirm = op.getByRole('dialog', { name: 'Зупинити процес?' });
     await expect(confirm).toContainText('«e2e-allowed» (e2e-allowed) на сервері «e2e-control»');
     await confirm.getByRole('button', { name: 'Зупинити' }).click();
@@ -120,8 +120,8 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
 
     await expect(control.getByRole('button', { name: 'Дії: e2e-allowed' })).toBeEnabled({ timeout: 30_000 });
     await control.getByRole('button', { name: 'Дії: e2e-allowed' }).click();
-    await expect(control.getByRole('button', { name: 'Запустити', exact: true })).toBeEnabled({ timeout: 30_000 });
-    await control.getByRole('button', { name: 'Запустити', exact: true }).click();
+    await expect(op.getByRole('menuitem', { name: 'Запустити', exact: true })).toBeEnabled({ timeout: 30_000 });
+    await op.getByRole('menuitem', { name: 'Запустити', exact: true }).click();
     await op.getByRole('dialog', { name: 'Запустити процес?' }).getByRole('button', { name: 'Запустити', exact: true }).click();
     await expect(control.getByRole('status').filter({ hasText: /Запустити «e2e-allowed»: Виконано й підтверджено/ })).toBeVisible({ timeout: 60_000 });
     expect(statusOf('e2e-allowed')).toBe('online');
@@ -135,9 +135,9 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     await expect(control.getByText('Логи не дозволені')).toBeVisible({ timeout: 30_000 });
     await expect(async () => {
       await control.getByRole('button', { name: 'Дії: e2e-allowed' }).click();
-      await expect(op.getByRole('button', { name: 'Переглянути логи' })).toBeVisible({ timeout: 2_000 });
+      await expect(op.getByRole('menuitem', { name: 'Переглянути логи' })).toBeVisible({ timeout: 2_000 });
     }).toPass({ timeout: 60_000 });
-    await op.getByRole('button', { name: 'Переглянути логи' }).click();
+    await op.getByRole('menuitem', { name: 'Переглянути логи' }).click();
     const viewerDialog = op.getByRole('dialog', { name: 'Логи: e2e-allowed' });
     await expect(viewerDialog.getByText(/e2e stdout line password=\*\*\*/)).toBeVisible({ timeout: 30_000 });
     expect(await viewerDialog.textContent()).not.toContain(LOG_SECRET);
@@ -150,6 +150,28 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     expect(logAudit).toEqual([{ event: 'logs.view_opened', details: { serverId, targetKey: 'e2e-allowed' } }]);
     const leaked = await inRunSchema(async (q) => (await q(`SELECT count(*)::int AS n FROM audit_log WHERE details::text LIKE '%e2e stdout%' OR details::text LIKE $1`, [`%${LOG_SECRET}%`])).rows[0]);
     expect(leaked).toEqual({ n: 0 });
+
+    // The same control from the all-applications list, without the server page: addressed by server + confirmed target.
+    const uptimeOf = (name: string) => (JSON.parse(pm2('jlist')) as { name: string; pm2_env: { pm_uptime: number } }[]).find((p) => p.name === name)?.pm2_env.pm_uptime ?? 0;
+    const startedAt = uptimeOf('e2e-allowed');
+    await op.goto('/applications');
+    await expect(op.getByRole('button', { name: 'Дії: e2e-other на e2e-control' })).toBeVisible({ timeout: 15_000 });
+    await op.getByRole('button', { name: 'Дії: e2e-other на e2e-control' }).click();
+    await expect(op.getByText(/Не дозволено керування/)).toBeVisible();
+    await expect(op.getByRole('menuitem')).toHaveCount(0);
+    await op.keyboard.press('Escape');
+    await op.getByRole('button', { name: 'Дії: e2e-allowed на e2e-control' }).click();
+    await op.getByRole('menuitem', { name: 'Перезапустити' }).click();
+    const restartDialog = op.getByRole('dialog', { name: 'Перезапустити процес?' });
+    await expect(restartDialog).toContainText('«e2e-allowed» (e2e-allowed) на сервері «e2e-control»');
+    await restartDialog.getByRole('button', { name: 'Перезапустити' }).click();
+    await expect(op.getByRole('status').filter({ hasText: /Перезапустити «e2e-allowed» на сервері «e2e-control»: Виконано й підтверджено/ })).toBeVisible({ timeout: 60_000 });
+    expect(statusOf('e2e-allowed')).toBe('online');
+    expect(uptimeOf('e2e-allowed')).toBeGreaterThan(startedAt);
+    expect(statusOf('e2e-other')).toBe('online');
+    const restartAudit = await inRunSchema(async (q) => (await q(
+      `SELECT event FROM audit_log WHERE event LIKE 'process.%' AND details->>'serverId' = $1 ORDER BY id`, [serverId])).rows.map((r) => r.event));
+    expect(restartAudit.slice(6)).toEqual(['process.command_requested', 'process.command_dispatched', 'process.command_succeeded']);
     await opContext.close();
 
     // Viewer: sees the target, has no buttons; the API refuses even with a valid CSRF token.
@@ -160,7 +182,7 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     const viewerControl = viewer.getByRole('region', { name: 'Сервіси сервера' });
     await expect(viewerControl.getByRole('rowheader', { name: 'e2e-allowed' })).toBeVisible({ timeout: 15_000 });
     await expect(viewerControl.getByRole('button', { name: /^Дії:/ })).toHaveCount(0);
-    await expect(viewerControl.getByRole('button', { name: /^(Запустити|Зупинити|Перезапустити)$/ })).toHaveCount(0);
+    await expect(viewer.getByRole('menuitem', { name: /^(Запустити|Зупинити|Перезапустити)$/ })).toHaveCount(0);
     const status = await viewer.evaluate(async (id) => {
       const me = await (await fetch('/api/auth/me', { credentials: 'same-origin' })).json() as { csrfToken: string };
       const res = await fetch(`/api/servers/${id}/control-commands`, {

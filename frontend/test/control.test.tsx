@@ -82,7 +82,7 @@ describe('process control on the server page', () => {
     const trigger = s.queryByRole<HTMLButtonElement>('button', { name: /^Дії:/ });
     if (trigger) expect(trigger.disabled).toBe(true);
     else expect(s.getByText(/Керування зараз недоступне|fingerprint/)).toBeTruthy();
-    expect(s.queryByRole('button', { name: 'Перезапустити' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Перезапустити' })).toBeNull();
   });
 
   it('an open row menu survives polling refreshes (stable keys: no remount, focus and expanded state kept)', async () => {
@@ -99,7 +99,7 @@ describe('process control on the server page', () => {
       expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(reads); // the views really refreshed
       expect(screen.getByRole('button', { name: 'Дії: api' })).toBe(trigger); // same element, not a remount
       expect(trigger.getAttribute('aria-expanded')).toBe('true');
-      expect(screen.getByRole('button', { name: 'Перезапустити' })).toBeTruthy();
+      expect(screen.getByRole('menuitem', { name: 'Перезапустити' })).toBeTruthy();
       expect(posts(calls)).toHaveLength(0);
     } finally {
       vi.useRealTimers();
@@ -113,7 +113,7 @@ describe('process control on the server page', () => {
     const trigger = screen.getByRole('button', { name: 'Дії: api' });
     const row = trigger.closest('tr');
     expect(row?.textContent).toContain('api');
-    expect(within(row as HTMLElement).getByRole('button', { name: 'Перезапустити' })).toBeTruthy();
+    expect(row?.contains(screen.getByRole('menuitem', { name: 'Перезапустити' }))).toBe(false); // floating overlay, not inside the row
     expect(screen.queryByRole('heading', { name: 'Керування PM2' })).toBeNull();
     const user = userEvent.setup();
     await user.keyboard('{Escape}');
@@ -121,7 +121,7 @@ describe('process control on the server page', () => {
     expect(document.activeElement).toBe(trigger);
     await user.click(trigger);
     await user.click(screen.getByRole('heading', { name: 'alpha' }));
-    expect(screen.queryByRole('button', { name: 'Перезапустити' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Перезапустити' })).toBeNull();
     expect(posts(calls)).toEqual([]);
   });
 
@@ -153,13 +153,13 @@ describe('process control on the server page', () => {
     const s = await section();
     const user = userEvent.setup();
     await openActions();
-    await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
     let dialog = await screen.findByRole('dialog', { name: 'Перезапустити процес?' });
     expect(dialog.textContent).toContain('«api» (api-prod) на сервері «alpha»');
     await user.click(within(dialog).getByRole('button', { name: 'Скасувати' }));
     expect(posts(calls)).toEqual([]);
     await openActions();
-    await user.click(s.getByRole('button', { name: 'Перезапустити' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Перезапустити' }));
     dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
     await waitFor(() => { expect(posts(calls)).toHaveLength(1); });
@@ -186,7 +186,7 @@ describe('process control on the server page', () => {
     const s = await section();
     const user = userEvent.setup();
     await openActions();
-    await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     expect(await s.findByText(/У черзі/)).toBeTruthy();
     expect(s.queryByText(/Виконано/)).toBeNull();
@@ -206,7 +206,7 @@ describe('process control on the server page', () => {
     const s = await section();
     const user = userEvent.setup();
     await openActions();
-    await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     expect(await s.findByText(/Результат невідомий .*дія могла виконатися/, undefined, { timeout: 4000 })).toBeTruthy();
   });
@@ -220,10 +220,10 @@ describe('process control on the server page', () => {
       return json(200, command());
     });
     renderAt(`/servers/${A}`);
-    const s = await section();
+    await section();
     const user = userEvent.setup();
     await openActions();
-    await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
     expect(await within(dialog).findByRole('alert')).toBeTruthy();
@@ -244,10 +244,10 @@ describe('process control on the server page', () => {
     const slow = deferred<Response>();
     const calls = backend('operator', (req) => (req.method === 'POST' && req.url === `/api/servers/${A}/control-commands` ? slow.promise : undefined));
     renderAt(`/servers/${A}`);
-    const s = await section();
+    await section();
     const user = userEvent.setup();
     await openActions();
-    await user.click(await s.findByRole('button', { name: 'Перезапустити' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     await act(async () => { await nav.current?.(`/servers/${B}`); });
     expect(await screen.findByRole('heading', { name: 'beta' })).toBeTruthy();
