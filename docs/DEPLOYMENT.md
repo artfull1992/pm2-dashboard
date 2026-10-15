@@ -1,10 +1,10 @@
 # Деплой, перевірки та rollback
 
-Стан за репозиторієм на 2026-10-12 (Task 006). Central API — systemd під `nodecontrol` на `127.0.0.1:3100`; frontend — статика з того самого релізу через host Nginx. Публічний запуск не погоджено. Фактичний звіт деплою — у [PROJECT_STATUS](PROJECT_STATUS.md).
+Чинна процедура (переглянуто 2026-10-15). Central API — systemd `node-control-api` під `nodecontrol` на `127.0.0.1:3100`; frontend — статика з того самого релізу через host Nginx; Agent, PM2 exporter і broker — окремі systemd units на керованих нодах. Розділи нижче з позначкою «Task NNN» описують механізм, що діє досі, якщо поруч явно не сказано «історично». Фактичні результати кожного деплою (revision, перевірки) — лише в [PROJECT_STATUS](PROJECT_STATUS.md); production-готовність не заявляється, поки там є відкриті release blockers.
 
 ## Факти та межі наявного процесу
 
-- Реалізовані: PostgreSQL setup/check scripts, Central API (health, auth, RBAC, audit, реєстр серверів, Agent heartbeat), міграції, frontend (React/Vite), Agent, deployment scripts (`scripts/deploy/`), шаблони `deploy/systemd/` (API, Agent). Agent і API серверів/процесів відсутні.
+- Реалізовані: PostgreSQL setup/check scripts, Central API (health, auth, RBAC, audit, реєстр серверів, Agent heartbeat, PM2 inventory, керування процесами, логи, користувачі, Dashboard, сповіщення), міграції, frontend (React/Vite), Agent, PM2 exporter і broker, deployment scripts (`scripts/deploy/`), units `deploy/systemd/` (API, Agent, exporter, broker). Інсталяторів і Jenkins redeploy немає.
 - Затверджені: user `nodecontrol`, unit `node-control-api.service`, `/opt/goit-node-control`, `/etc/goit-node-control/api.env`, API `127.0.0.1:3100`; frontend — `current/frontend/dist`, публічний сайт `https://control.example.com` (нижче).
 - Історичний rsync у `/etc/pm2-dashboard/` (Task 001/002) **не використовується**; там лишаються стара збірка й legacy `.env` (джерело `DB_*` для одноразового створення `api.env`).
 - За історичним серверним звітом кластер PostgreSQL — `18/main`, unit `postgresql@18-main`; конфігурації — `/etc/postgresql/18/main/`. Поточний серверний стан у цій сесії не перевірявся через SSH.
@@ -26,7 +26,7 @@ Central API та Agents — Node.js 22, systemd. PM2 керує лише зас�
 
 Виконувати лише погоджені зміни. Не відкривати 5432 або inbound-порти Agent, не зупиняти сторонні сервіси, не створювати новий Jenkins і не переписувати pipelines без потреби. Перед production Agent/API потрібні окремий дизайн і security tests каналу та автентифікації.
 
-Після фактичного деплою перевірити статус визначених systemd units, health endpoint (коли реалізовано), API availability, application logs, database connectivity, regression smoke tests та відсутність впливу на сторонні сервіси. `npm run db:check` виконує SELECT 1 із поточним `.env`; його успіх не перевіряє весь деплой або політику TLS.
+Після фактичного деплою перевірити статус визначених systemd units, health endpoints `/health/live` і `/health/ready`, API availability, application logs, database connectivity, regression smoke tests та відсутність впливу на сторонні сервіси. `npm run db:check` виконує SELECT 1 із поточним `.env`; його успіх не перевіряє весь деплой або політику TLS.
 
 ## Central API: deployment contract (Task 003)
 
@@ -46,7 +46,7 @@ Central API та Agents — Node.js 22, systemd. PM2 керує лише зас�
 
 ### Артефакт
 
-`node scripts/deploy/build-release.js` (на Node.js 22) приймає лише чистий робочий каталог і commit, що вже є в `origin/main`; збирає з `git archive` цього commit у тимчасовому каталозі (`npm ci`, `npm run backend:build`). Вміст: `backend/dist/*.js`, `package.json`, `package-lock.json`, `deploy/systemd/node-control-api.service`, `scripts/deploy/**`, `RELEASE.json` (revision + SHA-256 кожного файлу). Не потрапляють `.env*`, `.git`, `node_modules`, сирці, тести, source maps. Окремо — `.tar.gz.sha256` і `server-bundle/` (серверний скрипт для першого кроку).
+`node scripts/deploy/build-release.js [--revision HEAD] [--out <dir>] [--remote-branch origin/main]` (на Node.js 22) приймає лише чистий робочий каталог і commit, що вже є у вказаній віддаленій гілці (типово `origin/main`); збирає з `git archive` цього commit у тимчасовому каталозі (`npm ci`, збірки backend, frontend, Agent). Вміст API-артефакту: `backend/dist/**`, `backend/migrations/*.sql`, `frontend/dist/**`, `package.json`, `package-lock.json`, `deploy/systemd/node-control-api.service`, `scripts/deploy/**`, `RELEASE.json` (revision + SHA-256 кожного файлу). Окремо збирається `node-control-agent-<sha>.tar.gz` (Agent, exporter, broker; розділ «Agent»). Не потрапляють `.env*`, `.git`, `node_modules`, сирці, тести, source maps. Окремо — `.tar.gz.sha256` і `server-bundle/` (серверний скрипт для першого кроку).
 
 ### Процедура
 

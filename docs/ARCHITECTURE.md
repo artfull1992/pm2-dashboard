@@ -4,7 +4,7 @@
 
 ## Реалізовано
 
-ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/` — React/Vite UI (Task 006); `agent/` — Node.js Agent із вихідним HTTPS heartbeat (Task 007). Є версійні міграції (`users`, `sessions`, `audit_log`). Є реєстр серверів і heartbeat Agent (Task 007) та read-only PM2 inventory через локальний exporter (Task 008, ADR-016) і керування явно дозволеними PM2-процесами через локальний broker (Task 009, ADR-017; у production вимкнено за замовчуванням); логи застосунків, deploy і WebSocket відсутні.
+ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти Task 001 тестуються вбудованим `node:test`, backend — Vitest. `backend/` містить Central API: health endpoints, authentication (сесії, CSRF), RBAC, audit log (Task 005); `frontend/` — React/Vite UI (Task 006); `agent/` — Node.js Agent із вихідним HTTPS heartbeat (Task 007). Є версійні міграції `backend/migrations/` (користувачі, сесії, audit, сервери, inventory, керування, сповіщення). Є реєстр серверів і heartbeat Agent (Task 007), read-only PM2 inventory через локальний exporter (Task 008, ADR-016), керування явно дозволеними PM2-процесами через локальний broker (Task 009, ADR-017; за замовчуванням вимкнено ключем `PM2_CONTROL_ENABLED`, вмикається явно), обмежений перегляд логів (Task 010, ADR-018), користувачі (ADR-019), Dashboard (ADR-020) і сповіщення (ADR-021/022). Redeploy через Jenkins і WebSocket відсутні.
 
 | Шлях | Фактична відповідальність |
 |---|---|
@@ -27,7 +27,7 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `backend/src/bootstrap-cli.ts`, `bootstrap-admin.ts` | CLI створення першого адміністратора (без HTTP) |
 | `frontend/src/api/` | API-клієнт (timeout, cancel, runtime-валідація) і типи контракту |
 | `frontend/src/auth/` | `AuthContext` (сесія в пам'яті, епохи проти гонок), guards (`RequireAuth`, `RequirePermission`, безпечний redirect) |
-| `frontend/src/pages/`, `components/` | Login, Огляд, Сервери, Застосунки (PM2 inventory; дії й логи за правами, ADR-024), Журнал аудиту; Layout із навігацією за правами |
+| `frontend/src/pages/`, `components/` | Login, Огляд, Сервери, Застосунки (PM2 inventory; дії й логи за правами, ADR-024), Сповіщення, Користувачі, Журнал аудиту, Налаштування, Обліковий запис; Layout із навігацією за правами; спільні дії з процесами — `processActions.tsx` (меню рядка, підтвердження, tracking команд), `useServerCapabilities.ts`, `ActionMenu.tsx` |
 | `e2e/` | Playwright: реальний backend + збірка UI + Agent на тестовій БД |
 | `backend/src/servers/` | Реєстр серверів (SQL, keyset), credentials агентів (digest), heartbeat (FOR SHARE + монотонний upsert), контракт snapshot |
 | `agent/src/` | Agent: конфіг (HTTPS-only, файл 600), snapshot (`node:os`), heartbeat (timeout, `redirect: 'error'`), цикл (без overlap, backoff + jitter) |

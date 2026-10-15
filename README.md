@@ -2,7 +2,7 @@
 
 Централізована платформа для моніторингу та керування Node.js-проєктами на декількох серверах.
 
-> Task 001 — сервер і PostgreSQL; Task 002/003 — Central API + деплой через systemd; Task 004 — тестова БД і міграції; Task 005 — authentication, RBAC, audit log; Task 006 — React/Vite frontend; Task 007 — реєстр серверів, Agent heartbeat, UI серверів. PM2/процеси ще не реалізовані; публічний production-запуск не погоджено.
+> Реалізовано (стан на 2026-10-15): Central API (systemd) з auth, RBAC, audit log, міграціями; React/Vite UI; реєстр серверів і Agent heartbeat; PM2 inventory через локальний exporter; керування явно дозволеними PM2-процесами (start/stop/restart) і перегляд їхніх логів через локальний broker — зі сторінки сервера та з розділу «Застосунки» (ADR-017/018/024); користувачі та зміна власного пароля; Dashboard; сповіщення в Slack. Не реалізовано: redeploy через Jenkins, WebSocket, видалення користувачів, інсталятори. Production-готовність не заявляється: відкриті release blockers — у [PROJECT_STATUS](docs/PROJECT_STATUS.md).
 
 Task 001 підтверджений файлами та локальними unit-тестами, але серверний стан незалежно не підтверджено. Актуальні результати й проблеми — [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
 
@@ -12,7 +12,7 @@ Task 001 підтверджений файлами та локальними uni
 - [Архітектура](docs/ARCHITECTURE.md) — фактичні компоненти й ціль MVP1.
 - [Стан проєкту](docs/PROJECT_STATUS.md) — перевірки, проблеми та наступний етап.
 - [Рішення](docs/DECISIONS.md), [правила розробки](docs/DEVELOPMENT_RULES.md), [AI workflow](docs/AI_WORKFLOW.md).
-- [Деплой і rollback](docs/DEPLOYMENT.md) — наявний процес та ще не визначені параметри.
+- [Деплой і rollback](docs/DEPLOYMENT.md) — чинна процедура деплою, перевірок і rollback; історичні процедури позначені окремо.
 
 ## Архітектурні принципи
 
@@ -54,7 +54,7 @@ Task 001 підтверджений файлами та локальними uni
 │   └── helpers/
 ├── .env              # не в Git
 ├── .env.example
-├── eslint.config.js  # lint лише для backend/
+├── eslint.config.js  # lint: backend, frontend, e2e, agent (npm run lint)
 └── package.json
 ```
 
@@ -92,12 +92,12 @@ DB_PASS=<generated_secure_password>
 DB_PORT=5432
 ```
 
-- На сервері: `/etc/pm2-dashboard/.env`, створюється `npm run db:setup`, права `600`, власник — користувач, від якого працює застосунок.
+- Цей `.env` — для скриптів PostgreSQL (`db:setup`, `db:check`, `test:integration`, Task 001) і локальної розробки. **Runtime API його не читає:** сервіс `node-control-api` бере конфігурацію лише з `/etc/goit-node-control/api.env` (`600 nodecontrol`, `Environment=ENV_FILE=…` у unit) — див. DEPLOYMENT. Історичний серверний `/etc/pm2-dashboard/.env` (Task 001/002) сервісом не використовується.
 - `.env` і `.env.*` ігноруються Git (крім `.env.example`); `npm run check:secrets` це перевіряє і шукає реальний пароль у всіх файлах, що можуть потрапити в коміт.
 
 ## Central API (backend)
 
-TypeScript (strict) + Fastify 5, PostgreSQL pool, health endpoints, authentication із серверними сесіями, CSRF, RBAC, audit log, структуровані логи, обробка помилок, graceful shutdown. Реєстр серверів і machine-auth heartbeat Agent (Task 007). **CRUD користувачів, зміна пароля, PM2/процеси, логи застосунків, WebSocket не реалізовані.**
+TypeScript (strict) + Fastify 5, PostgreSQL pool, health endpoints, authentication із серверними сесіями, CSRF, RBAC, audit log, структуровані логи, обробка помилок, graceful shutdown. Реєстр серверів і machine-auth heartbeat Agent (Task 007), PM2 inventory (Task 008), керування дозволеними PM2-процесами (Task 009), обмежений перегляд логів (Task 010), користувачі: створення, зміна ролі, деактивація/активація, зміна власного пароля (Task 011; видалення, зміни email і скидання пароля адміністратором немає), Dashboard (Task 012), сповіщення (Task 013). **WebSocket і Jenkins redeploy не реалізовані.**
 
 Runtime: **Node.js 22 LTS** (Fastify 5 офіційно підтримує Node 20/22, Vitest 5 потребує Node ≥ 22.12). Якщо локально інша версія, перевірки на 22 можна запускати через `npx -y node@22 …` (див. нижче).
 
@@ -187,8 +187,10 @@ Frontend flow: при старті `GET /api/auth/me` (401 → сторінка 
 | Роль | Дозволи |
 |---|---|
 | `viewer` | `monitoring:read` |
-| `operator` | `monitoring:read`, `processes:control` |
-| `admin` | `monitoring:read`, `processes:control`, `users:manage`, `audit:read` |
+| `operator` | `monitoring:read`, `processes:control`, `logs:read` |
+| `admin` | `monitoring:read`, `processes:control`, `logs:read`, `users:manage`, `servers:manage`, `audit:read`, `alerts:manage` |
+
+Джерело — `backend/src/auth/rbac.ts`; `processes:control` і `logs:read` незалежні.
 
 Конфігурація: `AUTH_ALLOWED_ORIGINS` (точні origin через кому; порожньо → login вимкнено), `AUTH_COOKIE_SECURE` (default `true`; `false` лише для loopback-розробки), `AUTH_SESSION_TTL_MINUTES` (15–1440, default 480). Rate limits: 5 спроб / 15 хв на акаунт, 30 / 15 хв на адресу клієнта (`request.ip`; за Nginx — адреса, яку proxy записав у `X-Forwarded-For`, лише якщо peer входить до `API_TRUSTED_PROXIES`); лише в пам'яті одного процесу.
 
@@ -220,10 +222,10 @@ API не вмикає TLS у `pg`: підтримується лише loopback 
 
 ```bash
 npm run typecheck           # tsc --noEmit, strict (src + test)
-npm run lint                # ESLint + typescript-eslint strictTypeChecked, лише backend/
+npm run lint                # ESLint + typescript-eslint strictTypeChecked: backend, frontend, e2e, agent
 npm run test:backend        # Vitest: config, API через inject, database, lifecycle — без мережевої БД
 npm run test:backend:smoke  # збирає dist і запускає скомпільований API як процес
-npm run check:local         # secrets + node:test unit + typecheck + lint + test:backend + smoke
+npm run check:local         # secrets + node:test unit + typecheck + lint + test:backend + smoke + agent + frontend + збірки
 ```
 
 `check:local` не запускає production-connected тести (`test:integration`, `test:backend:db`). Старий `npm run check` не змінено.
@@ -263,7 +265,7 @@ ENV_FILE=<config> npm run db:migrate:status    # read-only: applied / pending / 
 ENV_FILE=<config> npm run db:migrate:up        # явне застосування
 ```
 
-Немає `down`/`reset` у CLI: production-міграції лише вперед; відновлення — з backup (docs/DEPLOYMENT.md). Міграції: `1791900000000_create-users` (ADR-010), `1791900000001_auth-foundation` (ADR-011).
+Немає `down`/`reset` у CLI: production-міграції лише вперед; відновлення — з backup (docs/DEPLOYMENT.md). Міграції — `backend/migrations/` (`1791900000000`…`1791900000008`: користувачі, auth, реєстр серверів, PM2 inventory, керування процесами, версія credentials, сповіщення, налаштування сповіщень, виведення `server_memory`).
 
 ### Сервери та Agent (Task 007, ADR-015)
 
@@ -285,7 +287,7 @@ npm run agent:build && npm run test:agent
 npm run test:agent:pm2   # opt-in: справжній одноразовий PM2 у тимчасовому PM2_HOME (pm2@7.0.4 через npx)
 ```
 
-### PM2 inventory (Task 008, ADR-016) — лише перегляд
+### PM2 inventory (Task 008, ADR-016) — дані процесів
 
 | Запит | Доступ | Успіх | Помилки |
 |---|---|---|---|
@@ -293,7 +295,7 @@ npm run test:agent:pm2   # opt-in: справжній одноразовий PM2
 | `GET /api/servers/:id/applications` | `monitoring:read` | `200 {serverId, serverStatus, inventory:{state, reason, source, capturedAt, collectedAt, reportedAt, processCount}, items, freshWindowSeconds}` | 400, 401, 403, 404, 503 |
 | `POST /api/agent/inventory` | **machine** (Bearer) | `200 {status:"accepted"\|"ignored", receivedAt, intervalSeconds (30–600)}` | 400, 401, 403, 413, 429, 503 |
 
-`ApplicationItem = {key, serverId, serverName, serverStatus, source, pmId, name, status, uptimeSeconds, restarts, cpuPercent, memoryBytes, execMode, firstSeenAt, inventoryState: current|stale|unavailable, capturedAt, collectedAt}`. `null` — метрика невідома (не 0). Звіт Agent: `{version:1, state:"ok"|"stale"|"unavailable", reason, source, capturedAt, processes}`; зайві поля → 400 (strict schemas на всіх `/api`). Керування процесами **не реалізоване**.
+`ApplicationItem = {key, serverId, serverName, serverStatus, source, pmId, name, status, uptimeSeconds, restarts, cpuPercent, memoryBytes, execMode, firstSeenAt, inventoryState: current|stale|unavailable, capturedAt, collectedAt}`. `null` — метрика невідома (не 0). Звіт Agent: `{version:1, state:"ok"|"stale"|"unavailable", reason, source, capturedAt, processes}`; зайві поля → 400 (strict schemas на всіх `/api`). Inventory сам нічого не змінює; керування — окремий контракт нижче (ADR-017).
 
 Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HOME` (абсолютний), `NC_PM2_SNAPSHOT_FILE` (поза `PM2_HOME`), `NC_PM2_SOURCE` (типово `pm2`), `NC_PM2_TIMEOUT_SECONDS` (1–60), `NC_PM2_MAX_PROCESSES` (≤500). Agent: `NC_AGENT_INVENTORY_FILE` (вмикає inventory), `NC_AGENT_INVENTORY_INTERVAL_SECONDS` (30–600, типово 60), `NC_AGENT_INVENTORY_MAX_AGE_SECONDS` (30–3600, типово 120).
 
@@ -328,7 +330,7 @@ npm run test:e2e:pm2     # opt-in: UI → API → Agent → broker → одно�
 
 ### Production (сервер)
 
-Central API — systemd `node-control-api.service` під `nodecontrol` на `127.0.0.1:3100`; UI — статика з того самого релізу. Публічна адреса — **https://control.example.com** (host Nginx + Let's Encrypt, `/api/` → API). `AUTH_ALLOWED_ORIGINS=https://control.example.com`, cookie `Secure`. `API_TRUSTED_PROXIES=127.0.0.1`. Перший адміністратор створений (Task 006); нові — поки лише CLI. Agent першої ноди — `node-control-agent.service` (DEPLOYMENT). Процедура деплою й rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); фактичний стан і release blockers — [PROJECT_STATUS](docs/PROJECT_STATUS.md).
+Central API — systemd `node-control-api.service` під `nodecontrol` на `127.0.0.1:3100`; UI — статика з того самого релізу. Публічна адреса — **https://control.example.com** (host Nginx + Let's Encrypt, `/api/` → API). `AUTH_ALLOWED_ORIGINS=https://control.example.com`, cookie `Secure`. `API_TRUSTED_PROXIES=127.0.0.1`. Перший адміністратор — лише CLI (bootstrap); подальших користувачів створює admin у розділі «Користувачі» (Task 011). Agent першої ноди — `node-control-agent.service` (DEPLOYMENT). Процедура деплою й rollback — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); фактичний стан і release blockers — [PROJECT_STATUS](docs/PROJECT_STATUS.md).
 
 ## Тести та перевірки
 
@@ -343,11 +345,12 @@ npm run db:check          # SELECT 1 через .env, без виводу пар
 
 ## Frontend (React + Vite)
 
-`frontend/` — React 19 + React Router 8 + Vite 8, TypeScript strict (ADR-012). Інтерфейс українською: вхід, огляд, Сервери (реальні дані heartbeat, деталі, керування ключами агента для admin), Застосунки (чесний порожній стан — PM2 ще немає), Журнал аудиту (лише `audit:read`), інформація про користувача й вихід. Стани loading / empty / error / forbidden / unavailable; адаптивний layout (sidebar на desktop, меню на мобільних), skip-link, видимий фокус.
+`frontend/` — React 19 + React Router 8 + Vite 8, TypeScript strict (ADR-012). Інтерфейс українською: вхід, Огляд, Сервери (дані heartbeat, сервіси сервера з діями, ключі агента для admin), Застосунки (PM2-процеси всіх серверів з фільтрами й пагінацією; дії й логи за правами), Сповіщення, Користувачі (`users:manage`), Журнал аудиту (`audit:read`), Налаштування (`alerts:manage`), Обліковий запис (зміна пароля), вихід. Стани loading / empty / error / forbidden / unavailable; адаптивний layout (sidebar на desktop, меню на мобільних), skip-link, видимий фокус.
 
 - **API-клієнт** (`frontend/src/api/`): лише відносні `/api`, `credentials: 'same-origin'`, timeout 10 с і скасування, без автоматичних повторів, runtime-валідація відповідей, `Retry-After` для 429/503; повідомлення формує UI, текст сервера не показується.
 - **Сесія** (`frontend/src/auth/`): стан лише в пам'яті React — без localStorage/sessionStorage/URL; cookie керує браузер (HttpOnly); `csrfToken` з `login`/`me` у пам'яті; пароль очищається після запиту. «Епохи» сесії: відповідь `me`/`login`, що прийшла після logout/expiry, ігнорується. 401 від будь-якого запиту → приватні дані скидаються.
 - **Права в UI** — лише UX (приховування розділів, перевірка прямого URL); авторизацію виконує backend.
+- **Дії з процесами** (сторінка сервера й «Застосунки», ADR-017/018/024): меню «Дії» рядка — «Запустити», «Зупинити», «Перезапустити» (`processes:control`) і «Переглянути логи» (`logs:read`), лише для цілі, яку broker підтвердив для того самого імені й PM2 id, коли керування увімкнене, broker свіжий, allowlist валідний, inventory актуальний. Кожна дія — після підтвердження з назвою застосунку, сервера й операції; один POST з CSRF та idempotency key, без автоматичного повтору; статус відстежується до фінального («прийнято» ≠ «виконано», `unknown` — результат невідомий). Одночасно відстежується до 5 незавершених команд: поки їх 5, нова команда не надсилається (пункти меню недоступні з поясненням); прийнята команда ніколи не витісняється новою; список завершених обмежено 5 останніми. У «Застосунках» можливості сервера завантажуються лише при відкритті меню (без polling на рядок) і перевіряються ще раз перед POST.
 
 ```bash
 npm run frontend:dev        # Vite на 127.0.0.1:5173, /api → 127.0.0.1:3100 (той самий origin)
