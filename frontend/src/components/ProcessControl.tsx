@@ -38,7 +38,7 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
   const logTargets = usePolledResource(loadLogTargets, `${serverId}:${String(canLogs)}`);
 
   const onChanged = useCallback(() => { reloadCommands(); reloadView(); onFinished(); }, [reloadCommands, reloadView, onFinished]);
-  const { ask, dialog, tracked, isBusy } = useProcessCommands({ onChanged });
+  const { ask, dialog, tracked, isBusy, limitReached } = useProcessCommands({ onChanged });
 
   const v = view.state.status === 'ready' ? view.state.data : view.state.status === 'error' ? view.state.data : null;
   const current = v && v.serverId === serverId ? v : null;
@@ -51,7 +51,7 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
   const renderActions: RowActions = (app) => {
     const target = control?.targets.find((t) => t.name === app.name && t.pmId === app.pmId);
     const { items, reasons } = rowMenu({
-      app, canControl, canLogs, control, logs, busy: target ? isBusy(serverId, target.targetKey) : false,
+      app, canControl, canLogs, control, logs, busy: target ? isBusy(serverId, target.targetKey) : false, limitReached,
       onAction: (t, action) => { ask({ serverId, serverName, target: t, action }); },
       onLogs: (t) => { setLogView({ targetKey: t.targetKey, name: app.name }); },
     });

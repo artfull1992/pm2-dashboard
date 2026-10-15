@@ -70,7 +70,7 @@ function ApplicationsView() {
     const same = target && target.name === request.target.name && target.pmId === request.target.pmId && target.matchStatus === 'ok' && target.actions.includes(request.action);
     return controlReady(fresh.control) && same ? null : 'Стан процесу або керування змінився — дію не надіслано. Відкрийте меню ще раз.';
   }, [ensure]);
-  const { ask, dialog, tracked, isBusy } = useProcessCommands({ onChanged, verify });
+  const { ask, dialog, tracked, isBusy, limitReached } = useProcessCommands({ onChanged, verify });
 
   const setFilter = (name: 'serverId' | 'status', value: string) => {
     const next = new URLSearchParams(params);
@@ -98,7 +98,7 @@ function ApplicationsView() {
     const loaded = entry?.status === 'ready' ? entry.caps : null;
     const { items, reasons } = loaded ? rowMenu({
       app, canControl, canLogs, control: loaded.control, logs: loaded.logs,
-      busy: (loaded.control?.targets ?? []).some((t) => t.name === app.name && t.pmId === app.pmId && isBusy(app.serverId, t.targetKey)),
+      busy: (loaded.control?.targets ?? []).some((t) => t.name === app.name && t.pmId === app.pmId && isBusy(app.serverId, t.targetKey)), limitReached,
       onAction: (target, action) => { ask({ serverId: app.serverId, serverName: app.serverName, target, action }); },
       onLogs: (target) => { setLogView({ serverId: app.serverId, serverName: app.serverName, targetKey: target.targetKey, name: app.name }); },
     }) : { items: [], reasons: [] };

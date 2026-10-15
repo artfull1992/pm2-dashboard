@@ -86,6 +86,8 @@ export interface RowMenuInput {
   logs: LogTargetsView | null;
   /** A command for this very target is being sent or has not finished yet. */
   busy: boolean;
+  /** As many commands as can be followed are still running: no new command until one of them is final. */
+  limitReached?: boolean;
   onAction: (target: ControlTarget, action: ControlAction) => void;
   onLogs: (target: LogTarget) => void;
 }
@@ -97,7 +99,7 @@ export interface RowMenu { items: MenuItem[]; reasons: string[] }
  * offered or not usable. Only actions the broker allows for the confirmed target are listed. The server stays the
  * final authority — this only decides what the UI offers.
  */
-export function rowMenu({ app, canControl, canLogs, control, logs, busy, onAction, onLogs }: RowMenuInput): RowMenu {
+export function rowMenu({ app, canControl, canLogs, control, logs, busy, limitReached = false, onAction, onLogs }: RowMenuInput): RowMenu {
   const items: MenuItem[] = [];
   const reasons: string[] = [];
   if (canControl) {
@@ -107,7 +109,7 @@ export function rowMenu({ app, canControl, canLogs, control, logs, busy, onActio
     const named = view?.targets.find((t) => t.name === app.name);
     const live = app.inventoryState === 'current' && app.serverStatus === 'online';
     if (target) {
-      const blocked = !live || !ready || target.matchStatus !== 'ok' || busy;
+      const blocked = !live || !ready || target.matchStatus !== 'ok' || busy || limitReached;
       for (const action of CONTROL_ACTIONS) {
         if (!target.actions.includes(action)) continue;
         items.push({ key: action, label: ACTION_LABELS[action], danger: action === 'stop', disabled: blocked, onSelect: () => { onAction(target, action); } });
@@ -116,6 +118,7 @@ export function rowMenu({ app, canControl, canLogs, control, logs, busy, onActio
       else if (target.matchStatus !== 'ok') reasons.push(MATCH_LABELS[target.matchStatus]);
       else if (!live) reasons.push('Потрібні актуальні дані');
       if (busy) reasons.push('Команда для цього процесу ще виконується');
+      else if (limitReached) reasons.push(LIMIT_TEXT);
     } else {
       // Without a ready broker report the targets are unknown: say so instead of claiming the process is not allowed.
       reasons.push(!ready ? 'Керування зараз недоступне'
@@ -139,15 +142,29 @@ export interface CommandRequest { serverId: string; serverName: string; target: 
 export interface TrackedCommand { serverName: string; name: string; command: CommandView }
 
 const newKey = () => crypto.randomUUID();
-const MAX_TRACKED = 5;
+/** Commands followed at the same time (one GET each per interval). An accepted command is never dropped for a new one. */
+export const MAX_ACTIVE_COMMANDS = 5;
+/** Finished commands kept on screen (newest first); only this history is trimmed. */
+export const MAX_FINISHED_COMMANDS = 5;
 const TRACK_INTERVAL_MS = 2000;
+export const LIMIT_TEXT = `Уже виконується ${String(MAX_ACTIVE_COMMANDS)} команд — нова стане доступною, коли одна з них завершиться`;
+
+const isActive = (t: TrackedCommand) => !FINAL_COMMAND_STATUSES.includes(t.command.status);
+
+/** Keeps every active command and only the newest finished ones; order (newest first) is preserved. */
+function bounded(list: TrackedCommand[]): TrackedCommand[] {
+  let finished = 0;
+  return list.filter((t) => isActive(t) || ++finished <= MAX_FINISHED_COMMANDS);
+}
 
 /**
  * Confirmation + command lifecycle, bound to the session that started it (callers also remount per session).
  * - the POST goes out only from the confirmation, once; a user retry in the same dialog reuses the idempotency key;
  * - `verify` (optional) re-checks the capabilities right before the POST and can stop it with a reason;
  * - a late answer of an aborted/old request or of an ended session changes nothing;
- * - each accepted command is followed until its final, server-confirmed status (several targets in parallel).
+ * - each accepted command is followed until its final, server-confirmed status (several targets in parallel); it is
+ *   never dropped from tracking for a newer one. With MAX_ACTIVE_COMMANDS still running, no new POST is sent (the
+ *   dialog stays open with its key, so a later explicit retry is still idempotent); a final status frees the slot.
  */
 export function useProcessCommands({ onChanged, verify }: {
   /** The server's processes may have changed: a command was accepted or reached its final status. */
@@ -160,6 +177,8 @@ export function useProcessCommands({ onChanged, verify }: {
   const [error, setError] = useState<string | null>(null);
   const [tracked, setTracked] = useState<TrackedCommand[]>([]);
   const inflight = useRef<AbortController | null>(null);
+  // Synchronous guard against a second click before `pending` re-renders the button as disabled.
+  const sending = useRef(false);
   const latest = useRef({ onChanged, sessionExpired });
   useEffect(() => { latest.current = { onChanged, sessionExpired }; });
   useEffect(() => () => { inflight.current?.abort(); }, []);
@@ -167,8 +186,13 @@ export function useProcessCommands({ onChanged, verify }: {
   const ask = useCallback((request: CommandRequest) => { setError(null); setConfirm({ ...request, key: newKey() }); }, []);
   const cancel = useCallback(() => { if (!pending) setConfirm(null); }, [pending]);
 
+  const activeCount = tracked.filter(isActive).length;
+  const limitReached = activeCount >= MAX_ACTIVE_COMMANDS;
+
   const run = async () => {
-    if (!confirm || auth.status !== 'authenticated') return;
+    if (!confirm || auth.status !== 'authenticated' || sending.current) return;
+    if (limitReached) { setError(`${LIMIT_TEXT}. Команду не надіслано.`); return; }
+    sending.current = true;
     const binding = bindSession();
     const controller = new AbortController();
     inflight.current = controller;
@@ -181,7 +205,7 @@ export function useProcessCommands({ onChanged, verify }: {
       if (problem) { setError(problem); return; }
       const created = await controlApi.create(confirm.serverId, { targetKey: confirm.target.targetKey, action: confirm.action, idempotencyKey: confirm.key }, auth.session.csrfToken, controller.signal);
       if (stale()) return;
-      setTracked((list) => [{ serverName: confirm.serverName, name: confirm.target.name, command: created }, ...list.filter((t) => t.command.id !== created.id)].slice(0, MAX_TRACKED));
+      setTracked((list) => bounded([{ serverName: confirm.serverName, name: confirm.target.name, command: created }, ...list.filter((t) => t.command.id !== created.id)]));
       setConfirm(null);
       latest.current.onChanged(confirm.serverId);
     } catch (e) {
@@ -189,12 +213,14 @@ export function useProcessCommands({ onChanged, verify }: {
       if (e instanceof ApiError && e.kind === 'unauthorized') { sessionExpired(); return; }
       setError(controlError(e));
     } finally {
+      sending.current = false;
       if (!stale()) setPending(false);
     }
   };
 
-  // Follow every non-final command (bounded: at most MAX_TRACKED, one GET each per interval).
-  const open = tracked.filter((t) => !FINAL_COMMAND_STATUSES.includes(t.command.status)).map((t) => t.command.id).join(',');
+  // Follow every non-final command (at most MAX_ACTIVE_COMMANDS, one GET each per interval). A failed read keeps the
+  // command active — no final status is ever invented to free a slot.
+  const open = tracked.filter(isActive).map((t) => t.command.id).join(',');
   useEffect(() => {
     if (!open) return undefined;
     const binding = bindSession();
@@ -204,7 +230,7 @@ export function useProcessCommands({ onChanged, verify }: {
         controlApi.command(id, controller.signal).then(
           (c) => {
             if (controller.signal.aborted || !binding.current()) return;
-            setTracked((list) => list.map((t) => (t.command.id === c.id ? { ...t, command: c } : t)));
+            setTracked((list) => bounded(list.map((t) => (t.command.id === c.id ? { ...t, command: c } : t))));
             if (FINAL_COMMAND_STATUSES.includes(c.status)) latest.current.onChanged(c.serverId);
           },
           (e: unknown) => { if (e instanceof ApiError && e.kind === 'unauthorized' && binding.current()) latest.current.sessionExpired(); },
@@ -216,7 +242,7 @@ export function useProcessCommands({ onChanged, verify }: {
 
   /** A command for this target is being sent or is not final yet (the API allows one active command per target). */
   const isBusy = useCallback((serverId: string, targetKey: string) => (pending && confirm?.serverId === serverId && confirm.target.targetKey === targetKey)
-    || tracked.some((t) => t.command.serverId === serverId && t.command.targetKey === targetKey && !FINAL_COMMAND_STATUSES.includes(t.command.status)), [pending, confirm, tracked]);
+    || tracked.some((t) => t.command.serverId === serverId && t.command.targetKey === targetKey && isActive(t)), [pending, confirm, tracked]);
 
   const dialog = confirm ? (
     <Dialog
@@ -238,7 +264,7 @@ export function useProcessCommands({ onChanged, verify }: {
     </Dialog>
   ) : null;
 
-  return { ask, dialog, tracked, isBusy };
+  return { ask, dialog, tracked, isBusy, limitReached };
 }
 
 /** Status lines of the followed commands; the newest one takes focus once (its row menu may be disabled now). */
