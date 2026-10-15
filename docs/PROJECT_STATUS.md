@@ -22,6 +22,10 @@
 
 Перший прогін знайшов дефекти тестів (lint у нових тестах, неоднозначний локатор `inventory.spec` через нову кнопку «Дії: e2e-api на …»); виправлено й повторено повністю.
 
+**Деплой (2026-10-15).** Active API/UI: **`4737bfc9e3c6cdbdef84bdeed2387a2fff89a65a`** (`feat(ui): add application actions and floating row menus`), previous — `cf2f0f7` (ADR-023, сумісний). Штатний `build-release.js` → `sha256sum -c` OK, manifest 63 файли без помилок, `frontend/dist` і міграції = тестована збірка → `prepare` → `migrate status` applied=9 pending=0 (міграції не запускались) → unit без змін → `activate` → restart лише `node-control-api`. Після: systemd active, live/ready 200, `127.0.0.1:3100`, `nodecontrol`; warning/error/fatal у журналі API — 0; публічний сайт віддає новий bundle (з overlay-меню), `/applications` 200, `/api/auth/me` без cookie 401; nginx і PostgreSQL active. Agent/broker/exporter не передеплоювались і не перезапускались; PM2-процеси керованої ноди без змін (PID і час старту). Авторизований UI у production автоматично не перевірявся (login у production не виконується), production-команд не надсилалось — ручна перевірка оператором: «Застосунки» → «Дії» → відкрити меню, дію не виконувати.
+
+**Rollback:** `server-release.js rollback` (або `activate --revision cf2f0f7e7c2e89965031fe877e678cc543cf0931`) + `systemctl restart node-control-api`; без міграцій і без відкату БД. Не повертатися на несумісний pre-ADR-023 `c016beb`. Аварійна ціль відкату самого ADR-023 — окремий compatibility-реліз `70ddd1f` (розділ нижче).
+
 ## Незалежний review Codex — Task 011 (2026-10-14)
 
 Переглянуто фінальний code commit `20896dd` та docs-звіт `2ce89c7`; початкове дерево чисте. Review незавершеного робочого дерева раніше було зупинено користувачем; він не є висновком щодо фінального commit.
