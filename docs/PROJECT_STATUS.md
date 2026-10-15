@@ -206,7 +206,19 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 Тести, адаптовані до нового scope: перевірки пам'яті ОС у правилах, Dashboard і сторінці сервера замінено перевірками відсутності цих даних і виведення правила; тест «відсутні дані не закривають інцидент» і тест скидання серій перенесено на CPU процесу (зміст перевірки той самий). Під час першого прогону real-DB раз упав нестабільний тест гонки revoke/heartbeat (затримки тунелю), повтор і повний прогін — зелені.
 
-**Деплой:** ще не виконано (порядок і rollback — DEPLOYMENT, «Спрощення серверного моніторингу», ADR-023).
+**Деплой (2026-10-15).** Revision **`cf2f0f7e7c2e89965031fe877e678cc543cf0931`** (код — `db72d1c`, далі лише docs) для API/frontend і Agent; порядок за ADR-023.
+
+| Крок | Результат |
+|---|---|
+| Baseline | API на `c016beb`, Agent 0.4.0 на `2fe4d95`; PM2: 5 процесів online, restarts 0, daemon один |
+| Артефакти | `sha256sum -c` OK, manifest revision збігається; усі unit-файли (API, Agent, broker, exporter, timer) ідентичні встановленим — без `daemon-reload` |
+| API/frontend | backup лише `node_control_db` (`pg_dump -Fc`, 600, `pg_restore --list` OK) → `migrate up` (`1791900000008`, pending 0) → activate (`previous` = `c016beb`) → restart лише API; live/ready 200 локально й HTTPS, анонімні API → 401, HTTPS віддає новий bundle, 0 помилок, `nginx -t` OK |
+| Міграція на даних | активних `server_memory`-інцидентів не було → нічого не закрито й не скасовано; історичний закритий інцидент і його надіслані повідомлення не змінились; налаштування сповіщень (рушій і доставка ввімкнені, revision 4) не змінювались |
+| Старий Agent | після рестарту API Agent 0.4.0 далі приймається: heartbeat 14 с, legacy-поля не збережено |
+| Agent 0.5.0 | змінились лише `config.js` (версія) і `snapshot.js`; broker/exporter їх не імпортують → не перезапускались (broker той самий PID); activate (`previous` = `2fe4d95`) → restart лише Agent: heartbeat/inventory accepted, control/logs poll ok, 0 помилок; у БД snapshot = `agentVersion, arch, hostname, loadAverage, platform` (0.5.0) |
+| PM2 до/після | PID, час старту й restarts усіх 5 застосунків і daemon — без змін; автозапуск `pm2-<owner>` не змінювався (enabled) |
+
+**Rollback** (DEPLOYMENT, ADR-023): спершу Agent → `2fe4d95` + restart лише Agent (старий API не приймає мінімальний heartbeat), потім за потреби API → `c016beb` + restart. Схема не відкочується; backup БД не відновлюється поверх нових даних.
 
 ## Автозапуск PM2 на керованій ноді після reboot (2026-10-15)
 
