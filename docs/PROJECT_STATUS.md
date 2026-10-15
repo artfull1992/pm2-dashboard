@@ -1,8 +1,31 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-16 (незалежний review ADR-024 — APPROVED). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-16 (нейтральна назва Node Control і шляхи встановлення, ADR-025 — готово до review). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 > **Назви й шляхи в історичних записах (2026-10-16, ADR-025).** Продукт перейменовано на Node Control. У записах нижче шляхи встановлення наведено в чинних нейтральних назвах (`/opt/node-control`, `/etc/node-control/…`, `/opt/node-control-agent`, `/var/lib/node-control-pm2…`, `/run/node-control-pm2-broker`); на момент тих подій каталоги мали попередні назви з префіксом колишнього корпоративного бренду — точні значення є в історії Git і в units відповідних релізів. Revisions, результати й факти операцій не змінювались.
+
+## Нейтральна назва продукту й шляхів встановлення (2026-10-16, ADR-025) — готово до review Codex
+
+Статус: **готово до review Codex** (APPROVED не виставлявся). Нова функціональність не розроблялась.
+
+**Що змінено.** Продукт — Node Control (slug `node-control`, Agent — Node Control Agent): UI (`<title>`, бокова панель, сторінка входу), метадані пакетів і lockfile (лише поля `name`), текст тестового Slack-повідомлення, коментарі, units (`Description`, шляхи), `server-release.js` (типові `--base/--config`), типові шляхи broker, формат snapshot inventory (`node-control/pm2-inventory`), перевірка bundle на витік серверного конфігу (`/etc/node-control`), `.env.example`, тести, документація. Назви units, користувачів, груп, ключі `NC_*`, БД і ролі — без змін. Новий `scripts/deploy/migrate-paths.js` (в обох артефактах) і `setup-test-db.js --previous-comment`. Таблиця шляхів і процедура — DEPLOYMENT, «Перейменування шляхів встановлення».
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 104/104 (нові: `path-migration` 14, `test-db-plan` +1), backend 446/446, smoke 10/10, agent 165/165 (+3 opt-in), frontend 233/233, typecheck, lint, збірки, secrets |
+| `npx playwright test -c e2e/ui.config.ts` | 19/19 |
+| `npm run test:e2e` / `test:e2e:pm2` / `test:agent:pm2` | 18/18 (+1 opt-in) / 1/1 / 3/3 (одноразовий PM2) |
+| `systemd-analyze verify` (Linux, тимчасові копії units) | API — exit 0 на центральному сервері; Agent, broker@, exporter@ service/timer — exit 0 на керованій ноді |
+| `migrate-paths.js` під root на Linux (пісочниця в /tmp) | власники (`nodecontrol-agent`, `ubuntu:nc-pm2-inventory`, setgid), права й типи збережені після apply і rollback; env переписано (`600` збережено), backup `0600 root`; повторний apply — 0 змін; конфлікт destination — зупинка; rollback — env байт-у-байт |
+| Пошук бренду (case-insensitive) | tracked-текст, імена tracked-файлів, нові неігноровані файли, `frontend/dist`, обидва артефакти та `server-bundle` — 0 збігів |
+
+**Деплой і міграція (2026-10-16).** Артефакти `2340c00bce16c13692b8a5cd0ac82cf846527bb6`: checksum OK, manifest без помилок (API 65, Agent 35 файлів), `frontend/dist` = тестована збірка.
+- *Центральний сервер:* preflight `plan` (6 кроків, 0 конфліктів) → backups units і vhost (`/root/node-control-backups/paths-<ts>/`) → `prepare` у поточну базу (міграцій БД немає, pending=0) → зупинка API → `apply` (5 переміщень + тимчасовий alias) → нові units API і (вимкненого) Agent → `config` (лише валідація) → `activate` → старт API. Nginx: лише vhost Node Control — `nginx -t` до/після, `root` → `/opt/node-control/current/frontend/dist`, reload; після перевірки сайту `finalize` прибрав alias. Посилань на попередні шляхи в Nginx, units і конфігах немає. Active API/UI — **`2340c00`**, previous — `cd4cb2c`; live/ready 200, 0 warning/error; публічний сайт: `<title>Node Control</title>`, bundle без згадок бренду, `/applications` 200, `/api/auth/me` 401. Вимкнений Agent на цьому сервері лишився на своєму попередньому релізі (не вмикався).
+- *Керована нода:* preflight `plan` (9 кроків, 0 конфліктів) → backups 4 units → `prepare` у поточну базу → зупинка timer exporter, Agent, broker → `apply` (6 переміщень, 3 env-файли переписано: лише ключі `NC_AGENT_INVENTORY_FILE`, `NC_AGENT_CONTROL_SOCKET`, `NC_PM2_SNAPSHOT_FILE`, `NC_BROKER_ALLOWLIST`; `--map` для сокета під `/run`) → нові units → `verify` → `activate` (Agent `2340c00`, previous `cf2f0f7`) → broker → exporter один раз (snapshot `node-control/pm2-inventory`, 5 процесів) → Agent → timer. Після: усі units active, 0 warning у журналах Agent/broker/exporter, цикли heartbeat/inventory/control/logs poll, звіти inventory і керування свіжі (53 с / 1 с); сокет `0660 ubuntu:nc-pm2-control`, snapshot `0640`, каталог `2750`, журнал `0700`, `agent.env` `600 nodecontrol-agent`; allowlist той самий (SHA-256 збігається); нових інцидентів сповіщень за 30 хв — 0. **PM2 baseline:** PID і час старту всіх процесів без змін, 5 застосунків online, restarts 0 до й після. PM2-команди, керуючі дії, читання логів застосунків і Slack-тести не виконувались.
+
+**Rollback** — DEPLOYMENT, «Rollback перейменування»: API — `server-release.js rollback` (→ `cd4cb2c`, чинний unit підходить); Agent — лише повний (зупинка → `migrate-paths.js rollback --state /root/node-control-backups/paths-<ts>/state.json` → unit-файли з backup → `server-release.js rollback --base <попередня база>` → broker, exporter один раз, Agent, timer). БД не відкочується.
+
+**Залишки поза поточним деревом.** Історія Git (старі commits, compatibility-гілка `70ddd1f` і її артефакт) не переписувалась і містить попередню назву. Зовнішні системи не змінювались: назва репозиторію й remote, публічний домен і назва файлу vhost (за доменом), TLS, Slack, коментар правила в `pg_hba.conf` і `COMMENT` тестових ресурсів PostgreSQL (перемічаються лише явним `setup-test-db.js --previous-comment`), приватні env-значення (`ALERTS_PUBLIC_URL` тощо). На хостах лишаються давні операторські backups (`*.bak-<дата>`, у т.ч. env-файли з попередніми шляхами) і backups цієї міграції — видаляти разом після стабільної роботи.
 
 ## Незалежний review Codex — ADR-024: APPROVED (2026-10-16)
 
