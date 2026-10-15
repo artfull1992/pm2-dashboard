@@ -4,6 +4,7 @@ import type { AuditItem } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
+import { PageHeader, StatusIndicator, type Tone } from '../components/ui';
 
 const EVENT_LABELS: Record<string, string> = {
   'admin.bootstrap': 'Створення адміністратора',
@@ -19,6 +20,7 @@ const EVENT_LABELS: Record<string, string> = {
   'user.update_rejected': 'Зміну користувача відхилено',
 };
 const OUTCOME_LABELS: Record<AuditItem['outcome'], string> = { success: 'Успіх', failure: 'Невдача', denied: 'Відмовлено' };
+const OUTCOME_TONES: Record<AuditItem['outcome'], Tone> = { success: 'muted', failure: 'bad', denied: 'warn' };
 const REASON_LABELS: Record<string, string> = {
   invalid_credentials: 'невірні облікові дані', inactive_user: 'неактивний користувач', stale_credentials: 'облікові дані змінено паралельно',
   invalid_current_password: 'невірний поточний пароль', email_taken: 'email уже зайнятий', self_change: 'зміна власного облікового запису',
@@ -97,7 +99,7 @@ export function AuditPage() {
 
   return (
     <section className="page" aria-labelledby="audit-title">
-      <h1 id="audit-title" className="page__title">Журнал аудиту</h1>
+      <PageHeader title="Журнал аудиту" titleId="audit-title" meta={<span>Події безпеки й керування, від нових до старіших. Час — повна локальна дата.</span>} />
       {load.status === 'loading' ? <LoadingState /> : null}
       {load.status === 'error' ? (
         <ErrorState title="Не вдалося завантажити журнал" onRetry={retry}>
@@ -122,11 +124,11 @@ export function AuditPage() {
             <tbody>
               {items.map((item) => (
                 <tr key={item.id}>
-                  <td><time dateTime={item.occurredAt}>{dateFormat.format(new Date(item.occurredAt))}</time></td>
+                  <td className="date"><time dateTime={item.occurredAt}>{dateFormat.format(new Date(item.occurredAt))}</time></td>
                   <td>{EVENT_LABELS[item.event] ?? item.event}</td>
-                  <td><span className={`badge badge--${item.outcome}`}>{OUTCOME_LABELS[item.outcome]}</span></td>
-                  <td className="mono">{item.actorUserId ?? '—'}</td>
-                  <td className="mono">{item.requestId ?? '—'}</td>
+                  <td><StatusIndicator tone={OUTCOME_TONES[item.outcome]}>{OUTCOME_LABELS[item.outcome]}</StatusIndicator></td>
+                  <td className="mono secondary">{item.actorUserId ?? '—'}</td>
+                  <td className="mono secondary">{item.requestId ?? '—'}</td>
                   <td>{describeDetails(item.details)}</td>
                 </tr>
               ))}

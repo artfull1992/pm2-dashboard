@@ -16,8 +16,11 @@ test('admin provisions a server, the Agent reports in, revoke stops it; viewer c
   test.setTimeout(150_000);
   await login(page, 'admin');
   await page.getByRole('link', { name: 'Сервери' }).click();
-  await page.getByLabel('Назва нового сервера').fill('e2e-node');
   await page.getByRole('button', { name: 'Додати сервер' }).click();
+  const createDialog = page.getByRole('dialog', { name: 'Новий сервер' });
+  await createDialog.getByLabel('Назва нового сервера').fill('e2e-node');
+  await createDialog.getByRole('button', { name: 'Додати', exact: true }).click();
+  await expect(createDialog).toHaveCount(0);
   await page.getByRole('link', { name: 'e2e-node' }).click();
   await expect(page.getByText('Ще не підключався')).toBeVisible();
 
@@ -35,6 +38,7 @@ test('admin provisions a server, the Agent reports in, revoke stops it; viewer c
       await page.reload();
       await expect(page.getByText('Онлайн', { exact: true })).toBeVisible({ timeout: 2_000 });
     }).toPass({ timeout: 30_000 });
+    await page.getByText('Системні подробиці').click(); // system details live in a disclosure under the services
     await expect(page.getByText('linux / ').or(page.getByText('darwin / '))).toBeVisible();
 
     // Viewer: sees the server, has no credential controls, and the API refuses even with a valid CSRF token.

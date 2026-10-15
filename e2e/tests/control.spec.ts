@@ -73,8 +73,11 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     // Provision a server and start the Agent with control enabled.
     await login(page, 'admin');
     await page.getByRole('link', { name: 'Сервери' }).click();
-    await page.getByLabel('Назва нового сервера').fill('e2e-control');
     await page.getByRole('button', { name: 'Додати сервер' }).click();
+    const createDialog = page.getByRole('dialog', { name: 'Новий сервер' });
+    await createDialog.getByLabel('Назва нового сервера').fill('e2e-control');
+    await createDialog.getByRole('button', { name: 'Додати', exact: true }).click();
+    await expect(createDialog).toHaveCount(0);
     await page.getByRole('link', { name: 'e2e-control' }).click();
     await page.getByRole('button', { name: 'Видати ключ' }).click();
     const dialog = page.getByRole('dialog', { name: 'Ключ агента видано' });

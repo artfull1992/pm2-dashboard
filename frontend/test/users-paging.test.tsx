@@ -141,6 +141,7 @@ describe('user pages', () => {
     renderApp('/users');
     await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
     const u = userEvent.setup();
+    await u.click(screen.getByRole('button', { name: 'Новий користувач' }));
     const form = screen.getByRole('form', { name: 'Новий користувач' });
     await u.type(within(form).getByLabelText('Email'), 'fresh@example.test');
     await u.type(within(form).getByLabelText('Початковий пароль'), 'synthetic-Fresh-Passw0rd');
@@ -161,6 +162,7 @@ describe('user pages', () => {
     renderApp('/users');
     await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
     const u = userEvent.setup();
+    await u.click(screen.getByRole('button', { name: 'Новий користувач' }));
     const form = screen.getByRole('form', { name: 'Новий користувач' });
     await u.type(within(form).getByLabelText('Email'), 'dup@example.test');
     await u.type(within(form).getByLabelText('Початковий пароль'), 'synthetic-Dup-Passw0rd-1');
@@ -209,6 +211,7 @@ describe('user pages', () => {
 // CURRENT page (its cursor), decide visibility from the current data, and never reload the abandoned cursor.
 describe('create while paging', () => {
   async function startCreate(u: ReturnType<typeof userEvent.setup>, email = 'fresh@example.test') {
+    await u.click(screen.getByRole('button', { name: 'Новий користувач' }));
     const form = screen.getByRole('form', { name: 'Новий користувач' });
     await u.type(within(form).getByLabelText('Email'), email);
     await u.type(within(form).getByLabelText('Початковий пароль'), 'synthetic-Fresh-Passw0rd');

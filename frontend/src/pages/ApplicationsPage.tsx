@@ -5,7 +5,9 @@ import { PROCESS_STATUSES, type ProcessStatus } from '../api/types';
 import { Forbidden } from '../auth/guards';
 import { ApplicationsTable, PROCESS_STATUS_LABELS } from '../components/Inventory';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
+import { PageHeader } from '../components/ui';
 import { usePolledResource } from '../components/usePolledResource';
+import { formatDate } from './ServersPage';
 
 // Read-only list of PM2 processes from all servers (ADR-016). Filters and the page cursor live in the URL, so the
 // polled resource is keyed by them: switching a filter never shows rows of the previous filter (Task 007.1 rule).
@@ -55,13 +57,16 @@ export function ApplicationsPage() {
   const data = state.status === 'ready' ? state.data : state.status === 'error' ? state.data : null;
   const serverOptions = servers.status === 'ready' ? servers.data.items : [];
   const notCurrent = data ? data.items.filter((a) => a.inventoryState !== 'current' || a.serverStatus !== 'online').length : 0;
+  // A shared collection time is shown above the table only when every row has the same one; rows always keep theirs.
+  const times = data ? [...new Set(data.items.map((a) => a.collectedAt))] : [];
+  const collected = times.length === 1 ? formatDate(times[0] ?? null) : null;
 
   return (
     <section className="page" aria-labelledby="apps-title">
-      <h1 id="apps-title" className="page__title">Застосунки</h1>
-      <p className="page__lead">PM2-процеси підключених серверів — лише перегляд. Керування процесами ще не реалізоване.</p>
+      <PageHeader title="Застосунки" titleId="apps-title"
+        meta={<span>PM2-процеси всіх серверів. Керування й логи — на сторінці сервера.</span>} />
 
-      <div className="filters">
+      <div className="toolbar" role="group" aria-label="Фільтри">
         <div className="field">
           <label htmlFor={serverFieldId}>Сервер</label>
           <select id={serverFieldId} value={serverId ?? ''} onChange={(e) => { setFilter('serverId', e.target.value); }}>
@@ -92,6 +97,9 @@ export function ApplicationsPage() {
             ? 'За цим фільтром процесів немає.'
             : 'Процеси з’являться, коли на сервері буде налаштовано PM2 exporter і агент передасть inventory.'}
         </EmptyState>
+      ) : null}
+      {data && data.items.length > 0 && notCurrent === 0 && collected ? (
+        <p className="freshness" role="status"><span className="status status--ok">{`Усі рядки актуальні · зібрано ${collected}`}</span></p>
       ) : null}
       {data && notCurrent > 0 ? (
         <p className="notice notice--warning" role="status">

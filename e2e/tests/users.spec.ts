@@ -37,13 +37,14 @@ test('admin creates a user → the user changes the password → every session e
   await expect(ownRow.getByText('Ви', { exact: true })).toBeVisible();
   await expect(ownRow.getByRole('button', { name: /^Дії/ })).toHaveCount(0);
 
+  await admin.getByRole('button', { name: 'Новий користувач' }).click();
   const form = admin.getByRole('form', { name: 'Новий користувач' });
   await form.getByLabel('Email').fill(MEMBER.email);
   await form.getByLabel('Початковий пароль').fill(MEMBER.first);
   await form.getByLabel('Роль', { exact: true }).selectOption('operator');
   await form.getByRole('button', { name: 'Створити користувача' }).click();
   await expect(admin.getByText(`Користувача ${MEMBER.email} створено (Оператор).`)).toBeVisible();
-  await expect(form.getByLabel('Початковий пароль')).toHaveValue('');
+  await expect(admin.getByRole('dialog')).toHaveCount(0); // closed on success; the password left the page with the form
   await expect(admin.getByRole('row').filter({ hasText: MEMBER.email })).toContainText('Оператор');
 
   // Two sessions of the new user.
@@ -162,6 +163,7 @@ test('more than 100 users: keyset pages ("Далі"/"Назад"), a user on pag
       await expect(pager.getByText('Сторінка 2')).toBeVisible();
       await pager.getByRole('button', { name: 'Назад' }).click();
       await expect(pager.getByText('Сторінка 1')).toBeVisible();
+      await page.getByRole('button', { name: 'Новий користувач' }).click();
       const form = page.getByRole('form', { name: 'Новий користувач' });
       await form.getByLabel('Email').fill('after-bulk@example.test');
       await form.getByLabel('Початковий пароль').fill(pw());

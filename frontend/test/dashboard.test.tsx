@@ -63,7 +63,7 @@ function backend(role: 'admin' | 'operator' | 'viewer', dashboard: Route = () =>
   });
 }
 const dashCalls = (calls: RecordedRequest[]) => calls.filter((c) => c.url === '/api/dashboard').length;
-const stat = (label: string) => screen.getByText(label).closest('.dash-stat') as HTMLElement;
+const stat = (label: string) => screen.getByText(label).closest('.metric') as HTMLElement;
 
 describe('dashboard', () => {
   it('summary cards, attention lists, server table: exact values, honest labels, unknown as "—"', async () => {
@@ -81,7 +81,7 @@ describe('dashboard', () => {
     expect(screen.getByText('Показано 2 з 60 серверів.')).toBeTruthy();
     expect(screen.getByText(/рестартів усього 17/)).toBeTruthy();
     // Table: load average is labelled as a queue length, not CPU %; OS memory; unknown → "—".
-    expect(screen.getByTitle(/не відсоток CPU/)).toBeTruthy();
+    expect(screen.getByText(/Load avg — довжина черги процесів, не відсоток CPU/)).toBeTruthy(); // visible text, not a hover title
     const rows = within(screen.getByRole('table')).getAllByRole('row');
     const alpha = rows.find((r) => r.textContent.includes('alpha.local')) as HTMLElement;
     expect(alpha.textContent).toContain('1.50 / 0.75 / 0.25');
@@ -149,7 +149,7 @@ describe('dashboard', () => {
     const pending = gate;
     gate = null;
     await act(async () => { pending.resolve(json(200, full(true))); await Promise.resolve(); });
-    expect(await screen.findByRole('button', { name: /↻ Оновити/ })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^Оновити$/ })).toBeTruthy();
     expect(dashCalls(calls)).toBe(before);
   });
 

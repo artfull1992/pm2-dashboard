@@ -5,6 +5,7 @@ import type { AlertRule, AlertsStatus, Incident } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
+import { PageHeader, Section, StatusIndicator } from '../components/ui';
 import { usePolledResource } from '../components/usePolledResource';
 import { formatDate } from './ServersPage';
 
@@ -38,7 +39,7 @@ function IncidentTable({ items, resolved }: { items: Incident[]; resolved: boole
   const delivery = items.some((i) => i.notification !== null);
   return (
     <div className="table-wrap">
-      <table className="table service-table">
+      <table className="table">
         <caption className="visually-hidden">{resolved ? 'Закриті інциденти' : 'Активні проблеми'}</caption>
         <thead>
           <tr>
@@ -51,19 +52,19 @@ function IncidentTable({ items, resolved }: { items: Incident[]; resolved: boole
           {items.map((i) => (
             <tr key={i.id}>
               <th scope="row">
-                <span className={`badge badge--${i.severity === 'critical' ? 'errored' : 'stale'}`}>{i.severity === 'critical' ? 'Критично' : 'Попередження'}</span>
-                <br />{RULE_TITLE[i.rule]}
+                {RULE_TITLE[i.rule]}
+                <span className="cell-meta"><StatusIndicator tone={resolved ? 'muted' : i.severity === 'critical' ? 'bad' : 'warn'}>{i.severity === 'critical' ? 'Критично' : 'Попередження'}</StatusIndicator></span>
               </th>
               <td>
                 <Link to={`/servers/${i.serverId}`}>{i.serverName}</Link>
-                {i.processName ? <><br /><span className="mono">{i.processName}</span>{i.pmId === null ? null : <span className="hint">{` · PM2 id ${String(i.pmId)}`}</span>}</> : null}
-                {!resolved && i.serverStatus !== 'online' && i.rule !== 'server_offline' ? <><br /><span className="hint">{i.serverStatus === 'inactive' ? 'Сервер неактивний' : 'Сервер не звітує: стан не оновлюється'}</span></> : null}
+                {i.processName ? <span className="cell-meta"><span className="mono">{i.processName}</span>{i.pmId === null ? null : ` · PM2 id ${String(i.pmId)}`}</span> : null}
+                {!resolved && i.serverStatus !== 'online' && i.rule !== 'server_offline' ? <span className="cell-meta cell-meta--strong">{i.serverStatus === 'inactive' ? 'Сервер неактивний' : 'Сервер не звітує: стан не оновлюється'}</span> : null}
               </td>
               <td>{detailText(i)}</td>
-              <td>{formatDate(i.openedAt)}</td>
-              <td>{resolved ? <>{formatDate(i.resolvedAt)}<br /><span className="hint">{i.resolution ? RESOLUTION_TEXT[i.resolution] : ''}</span></> : formatDate(i.lastObservedAt)}</td>
+              <td className="date">{formatDate(i.openedAt)}</td>
+              <td className="date">{resolved ? <>{formatDate(i.resolvedAt)}<span className="cell-meta">{i.resolution ? RESOLUTION_TEXT[i.resolution] : ''}</span></> : formatDate(i.lastObservedAt)}</td>
               {delivery ? (
-                <td>{i.notification ? (i.notification.notify ? <>{DELIVERY_TEXT[i.notification.state]}{i.notification.lastError ? <span className="hint"><br />{`${i.notification.lastError} · спроб: ${String(i.notification.attempts)}`}</span> : null}</> : 'Без сповіщення (повтор у межах cooldown)') : '—'}</td>
+                <td>{i.notification ? (i.notification.notify ? <>{DELIVERY_TEXT[i.notification.state]}{i.notification.lastError ? <span className="cell-meta">{`${i.notification.lastError} · спроб: ${String(i.notification.attempts)}`}</span> : null}</> : <span className="secondary">Без сповіщення (повтор у межах cooldown)</span>) : '—'}</td>
               ) : null}
             </tr>
           ))}
@@ -73,16 +74,20 @@ function IncidentTable({ items, resolved }: { items: Incident[]; resolved: boole
   );
 }
 
+/** Three different pictures: engine off (warning), running (quiet line), unknown (rendered by the caller as an error). */
 function StatusBanner({ s }: { s: AlertsStatus }) {
   if (!s.engine.enabled) {
     return <p className="notice notice--warning" role="status">Рушій сповіщень вимкнено: проблеми зараз не відстежуються і не надсилаються. Наведені записи (якщо є) — з часу, коли він працював.</p>;
   }
+  const failedLast = s.engine.lastEvaluationOk === false;
   return (
-    <div className="notice" role="status">
-      <p>{s.engine.lastEvaluationAt
-        ? `Остання перевірка: ${formatDate(s.engine.lastEvaluationAt)}${s.engine.lastEvaluationOk === false ? ' — з помилкою' : ''}.`
-        : 'Рушій увімкнено, але перевірок ще не було.'}</p>
-      <p>{s.delivery.enabled ? 'Надсилання в Slack увімкнено.' : 'Надсилання в Slack вимкнено: інциденти лише записуються.'}</p>
+    <div className="freshness" role="status">
+      <StatusIndicator tone={failedLast ? 'bad' : s.engine.lastEvaluationAt ? 'ok' : 'muted'}>
+        {s.engine.lastEvaluationAt
+          ? `Остання перевірка: ${formatDate(s.engine.lastEvaluationAt)}${failedLast ? ' — з помилкою' : ''}.`
+          : 'Рушій увімкнено, але перевірок ще не було.'}
+      </StatusIndicator>
+      <span>{s.delivery.enabled ? 'Надсилання в Slack увімкнено.' : 'Надсилання в Slack вимкнено: інциденти лише записуються.'}</span>
     </div>
   );
 }
@@ -90,8 +95,8 @@ function StatusBanner({ s }: { s: AlertsStatus }) {
 function AdminPanel({ a }: { a: NonNullable<AlertsStatus['admin']> }) {
   const t = a.thresholds;
   return (
-    <section className="card" aria-labelledby="alerts-admin-title">
-      <h2 id="alerts-admin-title" className="card__title">Доставка й налаштування (адміністратор)</h2>
+    <details className="disclosure" aria-labelledby="alerts-admin-title">
+      <summary id="alerts-admin-title">Доставка й налаштування (адміністратор)</summary>
       <dl className="facts">
         <dt>Slack webhook</dt><dd>{a.webhookConfigured ? 'Налаштовано (значення не показується)' : 'Не налаштовано'}</dd>
         <dt>Черга</dt><dd>{`у черзі ${String(a.queue.queued)} · надсилається ${String(a.queue.sending)} · надіслано ${String(a.queue.sent)} · не доставлено ${String(a.queue.failed)} · невідомо ${String(a.queue.unknown)} · відкинуто ${String(a.queue.dropped)}`}</dd>
@@ -100,7 +105,7 @@ function AdminPanel({ a }: { a: NonNullable<AlertsStatus['admin']> }) {
         <dt>Цикл і cooldown</dt><dd>{`перевірка кожні ${String(a.intervalSeconds)} с · cooldown ${String(a.cooldownMinutes)} хв · нагадування ${a.reminderMinutes > 0 ? `кожні ${String(a.reminderMinutes)} хв` : 'вимкнено'} · до ${String(a.maxAttempts)} спроб · черга ≤ ${String(a.queueMax)}`}</dd>
       </dl>
       <p className="hint"><Link to="/settings/integrations">Налаштувати Slack</Link> · <Link to="/settings/rules">Правила сповіщень</Link></p>
-    </section>
+    </details>
   );
 }
 
@@ -122,16 +127,13 @@ export function AlertsPage() {
 
   return (
     <section className="page" aria-labelledby="alerts-title">
-      <div className="dash-head">
-        <h1 id="alerts-title" className="page__title">Сповіщення</h1>
-        {can('alerts:manage') ? <Link className="button" to="/settings/rules">Налаштувати</Link> : null}
-      </div>
+      <PageHeader title="Сповіщення" titleId="alerts-title"
+        actions={can('alerts:manage') ? <Link className="button" to="/settings/rules">Налаштувати</Link> : null} />
       {status.state.status === 'loading' ? <LoadingState label="Завантаження стану…" /> : null}
       {status.state.status === 'error' ? <ErrorState title="Не вдалося отримати стан рушія" onRetry={status.reload}>{`Стан невідомий.${formatRetry(status.state.retryAfterSeconds)}`}</ErrorState> : null}
       {s ? <StatusBanner s={s} /> : null}
 
-      <section className="card services-card" aria-labelledby="alerts-active-title">
-        <h2 id="alerts-active-title" className="card__title">{`Активні проблеми${a ? ` (${String(a.items.length)}${a.nextBefore ? '+' : ''})` : ''}`}</h2>
+      <Section title={`Активні проблеми${a ? ` (${String(a.items.length)}${a.nextBefore ? '+' : ''})` : ''}`} titleId="alerts-active-title">
         {active.state.status === 'loading' ? <LoadingState /> : null}
         {active.state.status === 'error' ? <ErrorState title="Не вдалося оновити список" onRetry={active.reload}>{`Показано останні відомі дані.${formatRetry(active.state.retryAfterSeconds)}`}</ErrorState> : null}
         {a && a.items.length === 0 ? (
@@ -142,21 +144,20 @@ export function AlertsPage() {
         ) : null}
         {a && a.items.length > 0 ? <IncidentTable items={a.items} resolved={false} /> : null}
         {a?.nextBefore ? <p className="hint">{`Показано перші ${String(a.items.length)} активних.`}</p> : null}
-      </section>
+      </Section>
 
-      <section className="card services-card" aria-labelledby="alerts-history-title">
-        <h2 id="alerts-history-title" className="card__title">Закриті інциденти</h2>
+      <Section title="Закриті інциденти" titleId="alerts-history-title" meta="Історія, від нових до старіших">
         {resolved.state.status === 'loading' ? <LoadingState /> : null}
         {resolved.state.status === 'error' ? <ErrorState title="Не вдалося завантажити історію" onRetry={resolved.reload}>{formatRetry(resolved.state.retryAfterSeconds)}</ErrorState> : null}
         {r && r.items.length === 0 ? <EmptyState title="Закритих інцидентів немає" /> : null}
         {r && r.items.length > 0 ? <IncidentTable items={r.items} resolved /> : null}
         <nav className="pager" aria-label="Сторінки історії">
-          <button type="button" className="button button--secondary" disabled={cursors.length === 1} onClick={() => { setCursors(cursors.slice(0, -1)); }}>Новіші</button>
+          <button type="button" className="button button--small" disabled={cursors.length === 1} onClick={() => { setCursors(cursors.slice(0, -1)); }}>Новіші</button>
           <span className="pager__page">{`Сторінка ${String(cursors.length)}`}</span>
-          <button type="button" className="button button--secondary" disabled={resolved.state.status !== 'ready' || !r?.nextBefore}
+          <button type="button" className="button button--small" disabled={resolved.state.status !== 'ready' || !r?.nextBefore}
             onClick={() => { if (r?.nextBefore) setCursors([...cursors, r.nextBefore]); }}>Старіші</button>
         </nav>
-      </section>
+      </Section>
 
       {s?.admin ? <AdminPanel a={s.admin} /> : null}
     </section>

@@ -185,7 +185,7 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
   };
 
   return (
-    <section className="card services-card" aria-labelledby="apps-title">
+    <section className="section" aria-labelledby="apps-title">
       {children(canControl || canLogs ? renderActions : undefined)}
       {view.state.status === 'loading' ? <LoadingState /> : null}
       {view.state.status === 'error' ? <ErrorState title="Не вдалося оновити стан керування" onRetry={view.reload}>{`Сервіс тимчасово недоступний.${formatRetry(view.state.retryAfterSeconds)}`}</ErrorState> : null}
@@ -208,11 +208,11 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
       ) : null}
 
       {list && list.length > 0 ? (
-        <details>
+        <details className="disclosure disclosure--plain">
           <summary>Останні команди</summary>
           <ul className="control-history">
             {list.map((c) => (
-              <li key={c.id}><span className="hint">{formatDate(c.requestedAt)}</span> {ACTION_LABELS[c.action]} <span className="mono">{c.targetKey}</span> — {commandStatusText(c)}</li>
+              <li key={c.id}><span className="hint num">{formatDate(c.requestedAt)}</span> {ACTION_LABELS[c.action]} <span className="mono">{c.targetKey}</span> — {commandStatusText(c)}</li>
             ))}
           </ul>
         </details>

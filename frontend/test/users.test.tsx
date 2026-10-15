@@ -177,7 +177,8 @@ describe('user administration', () => {
     });
     renderApp('/users');
     const u = userEvent.setup();
-    const form = await screen.findByRole('form', { name: 'Новий користувач' });
+    await u.click(await screen.findByRole('button', { name: 'Новий користувач' }));
+    const form = screen.getByRole('form', { name: 'Новий користувач' });
     await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
     expect(within(form).getByText('Введіть коректний email.')).toBeTruthy();
     expect(posts(calls, '/api/users')).toHaveLength(0);
@@ -190,12 +191,17 @@ describe('user administration', () => {
     const sent = posts(calls, '/api/users')[0];
     expect(sent?.headers.get('x-csrf-token')).toBe(CSRF);
     expect(JSON.parse(sent?.body ?? '{}')).toEqual({ email: 'new@example.test', password: NEXT, role: 'operator' });
-    expect(within(form).getByLabelText<HTMLInputElement>('Початковий пароль').value).toBe('');
+    expect(screen.queryByRole('dialog')).toBeNull(); // closed on success: the password left the page with the form
+    expect(document.body.innerHTML).not.toContain(NEXT);
     await waitFor(() => { expect(calls.filter((c) => c.url.startsWith('/api/users?')).length).toBeGreaterThan(listsBefore); });
-    await u.type(within(form).getByLabelText('Email'), 'new@example.test');
-    await u.type(within(form).getByLabelText('Початковий пароль'), NEXT);
-    await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
-    expect(await within(form).findByText('Користувач із таким email уже існує.')).toBeTruthy();
+    await u.click(screen.getByRole('button', { name: 'Новий користувач' }));
+    const again = screen.getByRole('form', { name: 'Новий користувач' });
+    expect(within(again).getByLabelText<HTMLInputElement>('Початковий пароль').value).toBe('');
+    await u.type(within(again).getByLabelText('Email'), 'new@example.test');
+    await u.type(within(again).getByLabelText('Початковий пароль'), NEXT);
+    await u.click(within(again).getByRole('button', { name: 'Створити користувача' }));
+    expect(await within(again).findByText('Користувач із таким email уже існує.')).toBeTruthy();
+    expect(within(again).getByLabelText<HTMLInputElement>('Початковий пароль').value).toBe(''); // cleared after a failed request too
     expect(document.body.innerHTML).not.toContain(NEXT);
   });
 
@@ -336,13 +342,14 @@ describe('stale responses across sessions', () => {
     });
     renderApp('/users');
     const u = userEvent.setup();
-    const form = await screen.findByRole('form', { name: 'Новий користувач' });
+    await u.click(await screen.findByRole('button', { name: 'Новий користувач' }));
+    const form = screen.getByRole('form', { name: 'Новий користувач' });
     await u.type(within(form).getByLabelText('Email'), 'late@example.test');
     await u.type(within(form).getByLabelText('Початковий пароль'), NEXT);
     await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
     await u.click(screen.getByRole('button', { name: 'Дії: other@example.test' }));
     await u.click(screen.getByRole('button', { name: 'Деактивувати' }));
-    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Деактивувати' }));
+    await u.click(within(screen.getByRole('dialog', { name: 'Деактивувати: other@example.test' })).getByRole('button', { name: 'Деактивувати' }));
     await u.click(screen.getByRole('link', { name: 'Огляд' }));
     const lists = calls.filter((c) => c.url.startsWith('/api/users?')).length;
     await act(async () => {

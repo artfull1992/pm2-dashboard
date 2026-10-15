@@ -5,34 +5,74 @@ import type { IssuedCredential, ServerDetail } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { Dialog } from '../components/Dialog';
-import { ApplicationsTable, formatUptime, InventorySummary } from '../components/Inventory';
+import { ApplicationsTable, formatMemory, formatUptime, InventorySummary } from '../components/Inventory';
 import { ProcessControl, type RowActions } from '../components/ProcessControl';
 import { ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
+import { PageHeader } from '../components/ui';
 import { usePolledResource } from '../components/usePolledResource';
 import { formatDate, mutationErrorMessage, StatusBadge } from './ServersPage';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const GiB = 1024 ** 3;
-const formatGiB = (bytes: number) => `${(bytes / GiB).toFixed(1)} ГіБ`;
 
-function Snapshot({ server }: { server: ServerDetail }) {
+/** Key numbers of the last heartbeat; an offline server's numbers are labelled as the last known snapshot. */
+function Vitals({ server }: { server: ServerDetail }) {
   const s = server.snapshot;
-  if (!s) return <p className="page__lead">Агент ще не надсилав даних.</p>;
+  if (!s) return <p className="hint">Агент ще не надсилав даних.</p>;
+  const total = s.memory.totalBytes;
+  const used = total > 0 ? total - s.memory.freeBytes : null;
+  const usedPercent = used === null ? null : Math.round((used / total) * 100);
+  const outdated = server.status !== 'online';
   return (
-    <dl className="facts">
-      <dt>Хост</dt><dd>{s.hostname}</dd>
-      <dt>Платформа</dt><dd>{`${s.platform} / ${s.arch}`}</dd>
-      <dt>Версія агента</dt><dd>{s.agentVersion}</dd>
-      <dt>Аптайм</dt><dd>{formatUptime(s.uptimeSeconds)}</dd>
-      <dt>CPU</dt><dd>{`${String(s.cpuCount)} ядер`}</dd>
-      <dt>Load average (1/5/15 хв)</dt>
-      <dd>{s.loadAverage.map((n) => n.toFixed(2)).join(' / ')} <span className="hint">— довжина черги процесів, не відсоток CPU</span></dd>
-      <dt>Пам'ять</dt><dd>{`вільно ${formatGiB(s.memory.freeBytes)} з ${formatGiB(s.memory.totalBytes)}`}</dd>
-    </dl>
+    <>
+      {outdated ? <p className="notice notice--warning" role="status">{`Сервер не онлайн — нижче останній відомий знімок (${formatDate(server.lastSeenAt)}), не поточний стан.`}</p> : null}
+      <div className={`metrics${outdated ? ' dash--outdated' : ''}`} aria-label="Показники останнього heartbeat">
+        <div className="metric">
+          <span className="metric__label">Load average 1 / 5 / 15 хв</span>
+          <strong className="metric__value">{s.loadAverage.map((n) => n.toFixed(2)).join(' / ')}</strong>
+          <span className="metric__detail">{`черга процесів, не відсоток CPU · ядер: ${String(s.cpuCount)}`}</span>
+        </div>
+        <div className="metric">
+          <span className="metric__label">Пам'ять ОС</span>
+          <strong className="metric__value">{usedPercent === null ? '—' : `${String(usedPercent)} %`}</strong>
+          <span className="metric__detail">{used === null ? 'обсяг невідомий' : `зайнято ${formatMemory(used)} з ${formatMemory(total)}`}</span>
+        </div>
+        <div className="metric">
+          <span className="metric__label">Аптайм ОС</span>
+          <strong className="metric__value">{formatUptime(s.uptimeSeconds)}</strong>
+          <span className="metric__detail">{`агент ${s.agentVersion}`}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function SystemDetails({ server }: { server: ServerDetail }) {
+  const s = server.snapshot;
+  return (
+    <details className="disclosure">
+      <summary>Системні подробиці</summary>
+      <dl className="facts">
+        {s ? <>
+          <dt>Хост</dt><dd>{s.hostname}</dd>
+          <dt>Платформа</dt><dd>{`${s.platform} / ${s.arch}`}</dd>
+          <dt>Версія агента</dt><dd>{s.agentVersion}</dd>
+          <dt>CPU</dt><dd>{`${String(s.cpuCount)} ядер`}</dd>
+          <dt>Пам'ять</dt><dd>{`вільно ${formatMemory(s.memory.freeBytes)} з ${formatMemory(s.memory.totalBytes)}`}</dd>
+        </> : null}
+        <dt>Додано</dt><dd>{formatDate(server.createdAt)}</dd>
+        <dt>Активність</dt><dd>{server.isActive ? 'активний' : 'неактивний — виключений з моніторингу'}</dd>
+      </dl>
+    </details>
   );
 }
 
 type Confirm = null | 'issue' | 'revoke';
+
+const summary = (items: { status: string }[]) => {
+  const online = items.filter((app) => app.status === 'online').length;
+  const other = items.length - online;
+  return `${String(items.length)} сервісів · працюють ${String(online)}${other > 0 ? ` · потребують уваги ${String(other)}` : ''} (за останнім збором)`;
+};
 
 /**
  * PM2 inventory of this server (read-only). Its own polled resource keyed by the server id: after navigation to
@@ -47,20 +87,21 @@ function ServerApplications({ serverId, refresh, renderActions }: { serverId: st
   const current = data && data.serverId === serverId ? data : null;
   return (
     <>
-      <div className="services-heading"><div><p className="eyebrow">PM2 · Застосунки</p><h2 id="apps-title" className="card__title">Сервіси сервера</h2></div><button type="button" className="button" onClick={reload}>↻ Оновити</button></div>
+      <div className="section__head">
+        <div>
+          <h2 id="apps-title" className="section__title">Сервіси сервера</h2>
+          {current ? <p className="section__meta">{summary(current.items)}</p> : null}
+        </div>
+        <div className="section__actions"><button type="button" className="button button--small" onClick={reload}>Оновити</button></div>
+      </div>
       {state.status === 'loading' ? <LoadingState /> : null}
       {state.status === 'error' ? (
         <ErrorState title="Не вдалося оновити застосунки" onRetry={reload}>{`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}`}</ErrorState>
       ) : null}
       {current ? (
         <>
-          <div className="service-overview" aria-label="Зведення за останнім збором">
-            <div><span>Усього сервісів</span><strong>{current.items.length}</strong></div>
-            <div><span>Працюють</span><strong>{current.items.filter((app) => app.status === 'online').length}</strong></div>
-            <div><span>Потребують уваги</span><strong>{current.items.filter((app) => app.status !== 'online').length}</strong></div>
-          </div>
           <InventorySummary inventory={current.inventory} serverStatus={current.serverStatus} />
-          {current.items.length > 0 ? <ApplicationsTable items={current.items} showServer={false} caption="PM2-процеси сервера" renderActions={renderActions} /> : <p className="card__text">Немає зібраних процесів PM2.</p>}
+          {current.items.length > 0 ? <ApplicationsTable items={current.items} showServer={false} caption="PM2-процеси сервера" renderActions={renderActions} /> : <p className="hint">Немає зібраних процесів PM2.</p>}
         </>
       ) : null}
     </>
@@ -125,11 +166,15 @@ function CredentialControls({ server, onChanged }: { server: ServerDetail; onCha
   };
 
   return (
-    <section className="card" aria-labelledby="cred-title">
-      <h2 id="cred-title" className="card__title">Ключ агента</h2>
-      <p className="card__text">{server.hasActiveCredential ? 'Ключ видано. Нова видача відкличе попередній ключ.' : 'Активного ключа немає — агент не може надсилати дані.'}</p>
+    <section className="section" aria-labelledby="cred-title">
+      <div className="section__head">
+        <div>
+          <h2 id="cred-title" className="section__title">Ключ агента</h2>
+          <p className="section__meta">{server.hasActiveCredential ? 'Ключ видано. Нова видача відкличе попередній ключ.' : 'Активного ключа немає — агент не може надсилати дані.'}</p>
+        </div>
+      </div>
       <div className="button-row">
-        <button type="button" className="button button--primary" disabled={pending || !server.isActive}
+        <button type="button" className={`button ${server.hasActiveCredential ? '' : 'button--primary'}`} disabled={pending || !server.isActive}
           onClick={() => { if (server.hasActiveCredential) setConfirm('issue'); else void run('issue'); }}>
           {server.hasActiveCredential ? 'Видати новий ключ' : 'Видати ключ'}
         </button>
@@ -188,8 +233,7 @@ export function ServerDetailPage() {
   if (!UUID_RE.test(id) || state.status === 'not_found') {
     return (
       <section className="page" aria-labelledby="sd-title">
-        <h1 id="sd-title" className="page__title">Сервер не знайдено</h1>
-        <p className="page__lead"><Link to="/servers">До списку серверів</Link></p>
+        <PageHeader title="Сервер не знайдено" titleId="sd-title" crumbs={<Link to="/servers">← Сервери</Link>} />
       </section>
     );
   }
@@ -201,28 +245,19 @@ export function ServerDetailPage() {
 
   return (
     <section className="page" aria-labelledby="sd-title">
-      <p><Link to="/servers">← Сервери</Link></p>
-      <h1 id="sd-title" className="page__title">{server ? server.name : 'Сервер'}</h1>
+      <PageHeader title={server ? server.name : 'Сервер'} titleId="sd-title" crumbs={<Link to="/servers">← Сервери</Link>}
+        status={server ? <>{<StatusBadge status={server.status} />}{server.isActive ? null : <span className="tag">неактивний</span>}</> : null}
+        meta={server ? <span>{`Останній сигнал: ${formatDate(server.lastSeenAt)}`}</span> : null} />
       {state.status === 'error' ? (
         <ErrorState title="Не вдалося оновити дані" onRetry={reload}>{`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}`}</ErrorState>
       ) : null}
       {server ? (
         <>
-          <div className="cards">
-            <article className="card">
-              <h2 className="card__title">Стан</h2>
-              <p><StatusBadge status={server.status} />{server.isActive ? null : ' · неактивний'}</p>
-              <p className="card__text">Останній сигнал: {formatDate(server.lastSeenAt)}</p>
-              <p className="card__text">Додано: {formatDate(server.createdAt)}</p>
-            </article>
-            <article className="card">
-              <h2 className="card__title">Система</h2>
-              <Snapshot server={server} />
-            </article>
-          </div>
+          <Vitals server={server} />
           <ProcessControl key={`${server.id}:${sessionKey}`} serverId={server.id} serverName={server.name} onFinished={bumpRefresh}>
             {(renderActions) => <ServerApplications serverId={server.id} refresh={refresh} renderActions={renderActions} />}
           </ProcessControl>
+          <SystemDetails server={server} />
           {can('servers:manage') ? <CredentialControls key={`${server.id}:${sessionKey}`} server={server} onChanged={reload} /> : null}
         </>
       ) : null}

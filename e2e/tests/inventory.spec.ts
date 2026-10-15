@@ -34,8 +34,11 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
   test.setTimeout(150_000);
   await login(page, 'admin');
   await page.getByRole('link', { name: 'Сервери' }).click();
-  await page.getByLabel('Назва нового сервера').fill('e2e-pm2');
   await page.getByRole('button', { name: 'Додати сервер' }).click();
+  const createDialog = page.getByRole('dialog', { name: 'Новий сервер' });
+  await createDialog.getByLabel('Назва нового сервера').fill('e2e-pm2');
+  await createDialog.getByRole('button', { name: 'Додати', exact: true }).click();
+  await expect(createDialog).toHaveCount(0);
   await page.getByRole('link', { name: 'e2e-pm2' }).click();
   await expect(page.getByText(/ще не передавав inventory/)).toBeVisible();
   await page.getByRole('button', { name: 'Видати ключ' }).click();

@@ -4,9 +4,10 @@ import { KNOWN_ROLES, type Role, type UserView } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { ActionMenu } from '../components/ActionMenu';
-import { Dialog } from '../components/Dialog';
+import { Dialog, FormDialog } from '../components/Dialog';
 import { ROLE_LABELS } from '../components/Layout';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
+import { PageHeader, StatusIndicator } from '../components/ui';
 import { usePolledResource } from '../components/usePolledResource';
 import { PASSWORD_MAX, PASSWORD_MIN, passwordLength } from './AccountPage';
 import { formatDate } from './ServersPage';
@@ -30,7 +31,7 @@ function userError(error: unknown, kind: 'create' | 'update'): string {
   }
 }
 
-function CreateUserForm({ onCreated }: { onCreated: (user: UserView) => void }) {
+function CreateUserForm({ onCreated, onClose }: { onCreated: (user: UserView) => void; onClose: () => void }) {
   const { state, sessionExpired, bindSession } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -80,38 +81,33 @@ function CreateUserForm({ onCreated }: { onCreated: (user: UserView) => void }) 
   };
 
   return (
-    <form className="card user-create" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="user-create-title">
-      <h2 id="user-create-title" className="card__title">Новий користувач</h2>
+    <FormDialog title="Новий користувач" submitLabel="Створити користувача" pendingLabel="Створення…" pending={pending}
+      dirty={email !== '' || password !== ''} onSubmit={(e) => { void onSubmit(e); }} onClose={onClose}>
       <p className="hint">Початковий пароль передайте користувачеві захищеним каналом; після входу він змінює його на сторінці «Обліковий запис».</p>
       {formError ? <p className="form-error" role="alert">{formError}</p> : null}
-      <div className="user-create__fields">
-        <div className="field">
-          <label htmlFor={ids.email}>Email</label>
-          <input id={ids.email} type="email" autoComplete="off" value={email} maxLength={254} disabled={pending} spellCheck={false}
-            onChange={(e) => { setEmail(e.target.value); }} aria-invalid={errors.email ? true : undefined} aria-describedby={errors.email ? ids.emailError : undefined} />
-          {errors.email ? <p id={ids.emailError} className="field__error">{errors.email}</p> : null}
-        </div>
-        <div className="field">
-          <label htmlFor={ids.password}>Початковий пароль</label>
-          <input id={ids.password} type={visible ? 'text' : 'password'} autoComplete="new-password" value={password} maxLength={1024} disabled={pending}
-            spellCheck={false} autoCapitalize="off" onChange={(e) => { setPassword(e.target.value); }}
-            aria-invalid={errors.password ? true : undefined} aria-describedby={errors.password ? ids.passwordError : undefined} />
-          {errors.password ? <p id={ids.passwordError} className="field__error">{errors.password}</p> : null}
-        </div>
-        <div className="field">
-          <label htmlFor={ids.role}>Роль</label>
-          <select id={ids.role} value={role} disabled={pending} onChange={(e) => { setRole(e.target.value as Role); }}>
-            {KNOWN_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-          </select>
-        </div>
+      <div className="field">
+        <label htmlFor={ids.email}>Email</label>
+        <input id={ids.email} type="email" autoComplete="off" value={email} maxLength={254} disabled={pending} spellCheck={false}
+          onChange={(e) => { setEmail(e.target.value); }} aria-invalid={errors.email ? true : undefined} aria-describedby={errors.email ? ids.emailError : undefined} />
+        {errors.email ? <p id={ids.emailError} className="field__error">{errors.email}</p> : null}
       </div>
-      <div className="button-row">
-        <button type="button" className="button button--secondary" aria-pressed={visible} onClick={() => { setVisible((v) => !v); }}>
+      <div className="field">
+        <label htmlFor={ids.password}>Початковий пароль</label>
+        <input id={ids.password} type={visible ? 'text' : 'password'} autoComplete="new-password" value={password} maxLength={1024} disabled={pending}
+          spellCheck={false} autoCapitalize="off" onChange={(e) => { setPassword(e.target.value); }}
+          aria-invalid={errors.password ? true : undefined} aria-describedby={errors.password ? ids.passwordError : undefined} />
+        {errors.password ? <p id={ids.passwordError} className="field__error">{errors.password}</p> : null}
+        <div><button type="button" className="button button--small" aria-pressed={visible} onClick={() => { setVisible((v) => !v); }}>
           {visible ? 'Приховати пароль' : 'Показати пароль'}
-        </button>
-        <button type="submit" className="button button--primary" disabled={pending}>{pending ? 'Створення…' : 'Створити користувача'}</button>
+        </button></div>
       </div>
-    </form>
+      <div className="field">
+        <label htmlFor={ids.role}>Роль</label>
+        <select id={ids.role} value={role} disabled={pending} onChange={(e) => { setRole(e.target.value as Role); }}>
+          {KNOWN_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+        </select>
+      </div>
+    </FormDialog>
   );
 }
 
@@ -134,6 +130,8 @@ export function UsersPage() {
   const [seeking, setSeeking] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
+  const [creating, setCreating] = useState(false);
+  const closeCreate = useCallback(() => { setCreating(false); }, []);
   const inflight = useRef<AbortController | null>(null);
   const roleId = useId();
   useEffect(() => () => { inflight.current?.abort(); }, []);
@@ -209,6 +207,7 @@ export function UsersPage() {
     const here = data !== null && data.nextAfter === null && data.items.length < USERS_PAGE_SIZE;
     const text = `Користувача ${user.email} створено (${ROLE_LABELS[user.role]}).`;
     setStatus(here ? { text } : { text: `${text} Нові користувачі — наприкінці списку.`, find: user });
+    setCreating(false);
     reload();
   };
 
@@ -216,13 +215,13 @@ export function UsersPage() {
 
   return (
     <section className="page" aria-labelledby="users-title">
-      <h1 id="users-title" className="page__title">Користувачі</h1>
-      <CreateUserForm onCreated={onCreated} />
+      <PageHeader title="Користувачі" titleId="users-title"
+        actions={<button type="button" className="button button--primary" onClick={() => { setCreating(true); }}>Новий користувач</button>} />
       {status ? (
-        <div className="notice user-status" role="status">
+        <div className="notice status-bar" role="status">
           <span>{status.text}</span>
           {status.find ? (
-            <button type="button" className="button button--secondary" disabled={busy} aria-label={`Показати ${status.find.email}`}
+            <button type="button" className="button button--small" disabled={busy} aria-label={`Показати ${status.find.email}`}
               onClick={() => { if (status.find) void seek(status.find); }}>{seeking ? 'Пошук…' : 'Показати'}</button>
           ) : null}
         </div>
@@ -234,16 +233,16 @@ export function UsersPage() {
       {data && data.items.length === 0 ? <EmptyState title="Користувачів ще немає" /> : null}
       {data && data.items.length > 0 ? (
         <div className="table-wrap">
-          <table className="table service-table">
+          <table className="table">
             <caption className="visually-hidden">Користувачі системи</caption>
             <thead><tr><th scope="col">Email</th><th scope="col">Роль</th><th scope="col">Активність</th><th scope="col">Створено</th><th scope="col">Дії</th></tr></thead>
             <tbody>
               {data.items.map((u) => (
                 <tr key={u.id}>
-                  <th scope="row"><span className="mono">{u.email}</span>{u.id === me ? <span className="badge badge--self">Ви</span> : null}</th>
+                  <th scope="row">{u.email}{u.id === me ? <span className="tag">Ви</span> : null}</th>
                   <td>{ROLE_LABELS[u.role]}</td>
-                  <td><span className={`badge ${u.isActive ? 'badge--online' : 'badge--offline'}`}>{u.isActive ? 'Активний' : 'Деактивований'}</span></td>
-                  <td>{formatDate(u.createdAt)}</td>
+                  <td><StatusIndicator tone={u.isActive ? 'ok' : 'muted'}>{u.isActive ? 'Активний' : 'Деактивований'}</StatusIndicator></td>
+                  <td className="date secondary">{formatDate(u.createdAt)}</td>
                   <td>
                     {u.id === me ? <span className="hint">Власний обліковий запис: роль і активність змінює інший адміністратор.</span> : (
                       <ActionMenu name={u.email} items={[
@@ -261,15 +260,16 @@ export function UsersPage() {
         </div>
       ) : null}
       <nav className="pager" aria-label="Сторінки користувачів">
-        <button type="button" className="button button--secondary" disabled={busy || cursors.length === 1} onClick={() => { go(cursors.slice(0, -1)); }}>Назад</button>
+        <button type="button" className="button button--small" disabled={busy || cursors.length === 1} onClick={() => { go(cursors.slice(0, -1)); }}>Назад</button>
         <span className="pager__page" aria-live="polite">{`Сторінка ${String(cursors.length)}`}</span>
-        <button type="button" className="button button--secondary" disabled={busy || state.status !== 'ready' || !data?.nextAfter}
+        <button type="button" className="button button--small" disabled={busy || state.status !== 'ready' || !data?.nextAfter}
           onClick={() => { if (data?.nextAfter) go([...cursors, data.nextAfter]); }}>Далі</button>
       </nav>
+      {creating ? <CreateUserForm onCreated={onCreated} onClose={closeCreate} /> : null}
       {dialog ? (
-        <Dialog title={dialogTitle} onClose={close} actions={(
+        <Dialog title={dialogTitle} onClose={close} dismissible={!pending} actions={(
           <>
-            <button type="button" className="button button--secondary" onClick={close} disabled={pending}>Скасувати</button>
+            <button type="button" className="button" onClick={close} disabled={pending}>Скасувати</button>
             <button type="button" className={`button ${dialog.kind === 'active' && !dialog.isActive ? 'button--danger' : 'button--primary'}`}
               onClick={() => { void submit(); }} disabled={pending || (dialog.kind === 'role' && dialog.role === dialog.user.role)}>
               {pending ? 'Збереження…' : dialog.kind === 'role' ? 'Змінити роль' : dialog.isActive ? 'Активувати' : 'Деактивувати'}

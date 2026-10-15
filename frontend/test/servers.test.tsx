@@ -76,15 +76,22 @@ describe('servers list', () => {
     });
     renderApp('/servers');
     const user = userEvent.setup();
-    await user.type(await screen.findByLabelText('Назва нового сервера'), '  web-01 ');
-    await user.click(screen.getByRole('button', { name: 'Додати сервер' }));
+    await user.click(await screen.findByRole('button', { name: 'Додати сервер' }));
+    let dialog = screen.getByRole('dialog', { name: 'Новий сервер' });
+    await user.type(within(dialog).getByLabelText('Назва нового сервера'), '  web-01 ');
+    await user.click(within(dialog).getByRole('button', { name: 'Додати' }));
     await waitFor(() => { expect(screen.getByRole('link', { name: 'web-01' })).toBeTruthy(); });
+    expect(screen.queryByRole('dialog')).toBeNull(); // closed on success
+    expect(screen.getByRole('status').textContent).toContain('Сервер «web-01» додано');
     const post = calls.find((c) => c.method === 'POST');
     expect(post?.headers.get('x-csrf-token')).toBe(CSRF);
     expect(JSON.parse(post?.body ?? '{}')).toEqual({ name: 'web-01' });
-    await user.type(screen.getByLabelText('Назва нового сервера'), 'web-01');
     await user.click(screen.getByRole('button', { name: 'Додати сервер' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('вже існує');
+    dialog = screen.getByRole('dialog', { name: 'Новий сервер' });
+    await user.type(within(dialog).getByLabelText('Назва нового сервера'), 'web-01');
+    await user.click(within(dialog).getByRole('button', { name: 'Додати' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('вже існує');
+    expect(screen.getByRole('dialog', { name: 'Новий сервер' })).toBeTruthy(); // stays open with the error
   });
 
   it('polling refreshes while visible and stops after unmount', async () => {

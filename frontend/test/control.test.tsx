@@ -85,6 +85,27 @@ describe('process control on the server page', () => {
     expect(s.queryByRole('button', { name: 'Перезапустити' })).toBeNull();
   });
 
+  it('an open row menu survives polling refreshes (stable keys: no remount, focus and expanded state kept)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const calls = backend('operator');
+      renderAt(`/servers/${A}`);
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+      await user.click(await screen.findByRole('button', { name: 'Дії: api' }));
+      const trigger = screen.getByRole('button', { name: 'Дії: api' });
+      expect(trigger.getAttribute('aria-expanded')).toBe('true');
+      const reads = calls.filter((c) => c.method === 'GET').length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(reads); // the views really refreshed
+      expect(screen.getByRole('button', { name: 'Дії: api' })).toBe(trigger); // same element, not a remount
+      expect(trigger.getAttribute('aria-expanded')).toBe('true');
+      expect(screen.getByRole('button', { name: 'Перезапустити' })).toBeTruthy();
+      expect(posts(calls)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('actions live in the service row; Escape and outside click close the disclosure without commands', async () => {
     const calls = backend('operator');
     renderAt(`/servers/${A}`);

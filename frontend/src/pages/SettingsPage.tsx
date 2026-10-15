@@ -6,6 +6,7 @@ import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { Dialog } from '../components/Dialog';
 import { ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
+import { PageHeader, StatusIndicator } from '../components/ui';
 import { formatDate } from './ServersPage';
 
 // Admin settings (ADR-022): Slack integration and alert rules. alerts:manage only (the API enforces it too).
@@ -120,10 +121,12 @@ function SlackPanel({ data, onData, onReload }: { data: SettingsView; onData: (d
 
   return (
     <section className="card settings-card" aria-labelledby="slack-title">
-      <h2 id="slack-title" className="card__title">Slack</h2>
+      <div className="settings-head">
+        <h2 id="slack-title" className="section__title">Slack</h2>
+        <StatusIndicator tone={slack.state === 'error' ? 'bad' : configured && data.deliveryEnabled ? 'ok' : 'muted'}>{state}</StatusIndicator>
+      </div>
       <p className="hint">Incoming Webhook, створений у Slack для потрібного (зокрема приватного) каналу. Канал визначає сам webhook, змінити його тут неможливо.</p>
       <dl className="facts">
-        <dt>Стан</dt><dd><strong>{state}</strong></dd>
         {configured || slack.state === 'error' ? <><dt>Webhook</dt><dd>{`Webhook налаштовано${slack.configuredAt ? ` (${formatDate(slack.configuredAt)})` : ''} — значення не показується`}</dd></> : null}
         <dt>Останній тест</dt><dd>{testShown ? `${testShown.outcome === 'success' ? 'успішно' : testShown.outcome === 'failed' ? `не вдалося (${testShown.code ?? '—'})` : `результат невідомий (${testShown.code ?? '—'})`} · ${formatDate(testShown.at)}` : 'не виконувався для цього webhook'}</dd>
         <dt>Черга</dt><dd>{`у черзі ${String(data.queue.queued)} · надсилається ${String(data.queue.sending)} · надіслано ${String(data.queue.sent)} · не доставлено ${String(data.queue.failed)} · невідомо ${String(data.queue.unknown)} · скасовано ${String(data.queue.cancelled)} · відкинуто ${String(data.queue.dropped)}`}</dd>
@@ -131,56 +134,63 @@ function SlackPanel({ data, onData, onReload }: { data: SettingsView; onData: (d
       {!slack.keyAvailable ? <p className="notice notice--warning">На сервері не задано ключ шифрування (ALERTS_SECRET_KEY): webhook не можна зберегти, доставка не працює.</p> : null}
       {message ? <p className={message.kind === 'ok' ? 'notice' : 'form-error'} role={message.kind === 'ok' ? 'status' : 'alert'}>{message.text}</p> : null}
 
-      {showForm ? (
-        <form className="settings-form" noValidate onSubmit={(e: SyntheticEvent) => {
-          e.preventDefault();
-          if (!/^https:\/\/hooks\.slack\.com\/services\/\S+$/.test(webhook)) { setMessage({ kind: 'error', text: errorText(new ApiError('invalid_request'), 'webhook') }); return; }
-          const url = webhook;
-          void run('webhook', (csrf, signal) => settingsApi.saveSlack(slack.generation, url, csrf, signal), 'Webhook збережено.');
-        }}>
-          <div className="field">
-            <label htmlFor={ids.webhook}>{replacing ? 'Новий webhook' : 'Webhook URL'}</label>
-            <input id={ids.webhook} type="password" autoComplete="off" spellCheck={false} value={webhook} maxLength={300} disabled={pending !== null}
-              onChange={(e) => { setWebhook(e.target.value); }} aria-describedby={ids.webhookHint} />
-            <p id={ids.webhookHint} className="hint">{replacing
-              ? 'Повідомлення в черзі для поточного webhook буде скасовано, а не переслано новому адресату.'
-              : 'https://hooks.slack.com/services/… — після збереження значення не показується.'}</p>
-          </div>
-          <div className="button-row">
-            <button type="submit" className="button button--primary" disabled={pending !== null || !slack.keyAvailable || webhook === ''}>{pending === 'webhook' ? 'Збереження…' : 'Зберегти webhook'}</button>
-            {replacing ? <button type="button" className="button button--secondary" disabled={pending !== null} onClick={() => { setReplacing(false); setWebhook(''); }}>Скасувати</button> : null}
-          </div>
-        </form>
-      ) : null}
-
-      <div className="field settings-toggle">
-        <label htmlFor={ids.delivery}>
-          <input id={ids.delivery} type="checkbox" checked={data.deliveryEnabled} disabled={pending !== null || (!configured && !data.deliveryEnabled)}
-            onChange={(e) => {
-              const enabled = e.target.checked;
-              void run('delivery', (csrf, signal) => settingsApi.patch({ revision: data.revision, deliveryEnabled: enabled }, csrf, signal),
-                enabled ? 'Автоматичну доставку увімкнено.' : 'Автоматичну доставку вимкнено; повідомлення в черзі скасовано.');
-            }} />
-          {' '}Автоматична доставка сповіщень у Slack
-        </label>
-        <p className="hint">{configured ? 'Вимкнення скасовує повідомлення, що чекають у черзі (вони не надішлються пізніше).' : 'Доступно після збереження webhook.'}</p>
+      <div className="settings-block">
+        <h3 className="settings-block__title">{showForm ? (replacing ? 'Новий webhook' : 'Підключення') : 'Перевірка й доставка'}</h3>
+        {showForm ? (
+          <form className="settings-form" noValidate onSubmit={(e: SyntheticEvent) => {
+            e.preventDefault();
+            if (!/^https:\/\/hooks\.slack\.com\/services\/\S+$/.test(webhook)) { setMessage({ kind: 'error', text: errorText(new ApiError('invalid_request'), 'webhook') }); return; }
+            const url = webhook;
+            void run('webhook', (csrf, signal) => settingsApi.saveSlack(slack.generation, url, csrf, signal), 'Webhook збережено.');
+          }}>
+            <div className="field">
+              <label htmlFor={ids.webhook}>{replacing ? 'Новий webhook' : 'Webhook URL'}</label>
+              <input id={ids.webhook} type="password" autoComplete="off" spellCheck={false} value={webhook} maxLength={300} disabled={pending !== null}
+                onChange={(e) => { setWebhook(e.target.value); }} aria-describedby={ids.webhookHint} />
+              <p id={ids.webhookHint} className="hint">{replacing
+                ? 'Повідомлення в черзі для поточного webhook буде скасовано, а не переслано новому адресату.'
+                : 'https://hooks.slack.com/services/… — після збереження значення не показується.'}</p>
+            </div>
+            <div className="button-row">
+              <button type="submit" className="button button--primary" disabled={pending !== null || !slack.keyAvailable || webhook === ''}>{pending === 'webhook' ? 'Збереження…' : 'Зберегти webhook'}</button>
+              {replacing ? <button type="button" className="button" disabled={pending !== null} onClick={() => { setReplacing(false); setWebhook(''); }}>Скасувати</button> : null}
+            </div>
+          </form>
+        ) : null}
+        <div className="button-row">
+          <button type="button" className={`button${configured && !showForm ? ' button--primary' : ''}`} disabled={pending !== null || !configured || unsaved}
+            onClick={() => { void run('test', (csrf, signal) => settingsApi.testSlack(slack.generation, csrf, signal), 'Тестове повідомлення оброблено.'); }}>
+            {pending === 'test' ? 'Надсилання…' : 'Надіслати тестове повідомлення'}
+          </button>
+        </div>
+        {unsaved ? <p className="hint">Спочатку збережіть webhook — тест перевіряє лише збережену інтеграцію.</p> : !configured ? <p className="hint">Тест доступний для збереженої інтеграції.</p> : <p className="hint">Тест надсилає одне позначене повідомлення в канал webhook; працює, навіть коли автоматичну доставку вимкнено.</p>}
+        <div className="field">
+          <label htmlFor={ids.delivery} className="switch">
+            <input id={ids.delivery} type="checkbox" role="switch" checked={data.deliveryEnabled} disabled={pending !== null || (!configured && !data.deliveryEnabled)}
+              onChange={(e) => {
+                const enabled = e.target.checked;
+                void run('delivery', (csrf, signal) => settingsApi.patch({ revision: data.revision, deliveryEnabled: enabled }, csrf, signal),
+                  enabled ? 'Автоматичну доставку увімкнено.' : 'Автоматичну доставку вимкнено; повідомлення в черзі скасовано.');
+              }} />
+            <span>Автоматична доставка сповіщень у Slack</span>
+          </label>
+          <p className="hint">{configured ? 'Вимкнення скасовує повідомлення, що чекають у черзі (вони не надішлються пізніше).' : 'Доступно після збереження webhook.'}</p>
+        </div>
       </div>
 
-      <div className="button-row">
-        <button type="button" className="button" disabled={pending !== null || !configured || unsaved}
-          onClick={() => { void run('test', (csrf, signal) => settingsApi.testSlack(slack.generation, csrf, signal), 'Тестове повідомлення оброблено.'); }}>
-          {pending === 'test' ? 'Надсилання…' : 'Надіслати тестове повідомлення'}
-        </button>
-        {configured && !replacing ? <button type="button" className="button button--secondary" disabled={pending !== null} onClick={() => { setReplacing(true); setMessage(null); }}>Замінити webhook</button> : null}
-        {slack.state !== 'not_configured' ? <button type="button" className="button button--danger" disabled={pending !== null} onClick={() => { setConfirmRemove(true); }}>Видалити інтеграцію</button> : null}
-        <button type="button" className="button button--secondary" disabled={pending !== null} onClick={onReload}>Перечитати стан</button>
+      <div className="settings-block">
+        <h3 className="settings-block__title">Інші дії</h3>
+        <div className="button-row">
+          {configured && !replacing ? <button type="button" className="button button--small" disabled={pending !== null} onClick={() => { setReplacing(true); setMessage(null); }}>Замінити webhook</button> : null}
+          <button type="button" className="button button--small" disabled={pending !== null} onClick={onReload}>Перечитати стан</button>
+          {slack.state !== 'not_configured' ? <button type="button" className="button button--small button--danger" disabled={pending !== null} onClick={() => { setConfirmRemove(true); }}>Видалити інтеграцію</button> : null}
+        </div>
       </div>
-      {unsaved ? <p className="hint">Спочатку збережіть webhook — тест перевіряє лише збережену інтеграцію.</p> : !configured ? <p className="hint">Тест доступний для збереженої інтеграції.</p> : <p className="hint">Тест надсилає одне позначене повідомлення в канал webhook; працює, навіть коли автоматичну доставку вимкнено.</p>}
 
       {confirmRemove ? (
-        <Dialog title="Видалити Slack-інтеграцію?" onClose={() => { if (pending === null) setConfirmRemove(false); }} actions={(
+        <Dialog title="Видалити Slack-інтеграцію?" dismissible={pending === null} onClose={() => { if (pending === null) setConfirmRemove(false); }} actions={(
           <>
-            <button type="button" className="button button--secondary" disabled={pending !== null} onClick={() => { setConfirmRemove(false); }}>Скасувати</button>
+            <button type="button" className="button" disabled={pending !== null} onClick={() => { setConfirmRemove(false); }}>Скасувати</button>
             <button type="button" className="button button--danger" disabled={pending !== null} onClick={() => {
               void run('remove', (csrf, signal) => settingsApi.removeSlack(slack.generation, csrf, signal), 'Інтеграцію видалено.').then(() => { setConfirmRemove(false); });
             }}>{pending === 'remove' ? 'Видалення…' : 'Видалити'}</button>
@@ -367,7 +377,8 @@ export function SettingsPage() {
   if (!allowed || state.status === 'forbidden') return <Forbidden />;
   return (
     <section className="page" aria-labelledby="settings-title">
-      <h1 id="settings-title" className="page__title">Налаштування</h1>
+      <PageHeader title="Налаштування" titleId="settings-title" meta={<span>Сповіщення: інтеграція зі Slack і правила. Зміни діють без перезапуску.</span>}
+        actions={<Link className="button" to="/alerts">До сповіщень</Link>} />
       <nav className="tabs" aria-label="Розділи налаштувань">
         <NavLink to="/settings/integrations" className={() => `tab${active === 'integrations' ? ' tab--active' : ''}`} aria-current={active === 'integrations' ? 'page' : undefined}
           onClick={(e) => { if (dirty && active !== 'integrations' && !window.confirm('Є незбережені зміни правил. Перейти без збереження?')) e.preventDefault(); }}>Інтеграції</NavLink>
@@ -380,7 +391,6 @@ export function SettingsPage() {
           ? <SlackPanel key={`slack-${String(state.data.slack.generation)}`} data={state.data} onData={onData} onReload={reload} />
           : <RulesPanel key={`rules-${String(seq)}`} data={state.data} onData={onData} onReload={reload} onDirty={setDirty} />
       ) : null}
-      <p className="hint"><Link to="/alerts">← До сповіщень</Link></p>
     </section>
   );
 }

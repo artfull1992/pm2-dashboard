@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import type { ApplicationItem, InventoryInfo, ProcessStatus, ServerStatus } from '../api/types';
 import { formatDate, StatusBadge } from '../pages/ServersPage';
+import { StatusIndicator, type Tone } from './ui';
 
 // Read-only PM2 inventory views (ADR-016). All values are rendered as React text (never as HTML). Freshness is
 // always explicit: data that is not `current`, or that belongs to an offline server, is labelled as such.
@@ -26,17 +27,21 @@ export const REASON_LABELS: Record<string, string> = {
 
 export const reasonLabel = (reason: string | null) => (reason ? REASON_LABELS[reason] ?? 'невідома причина' : '');
 
+// Normal is quiet; a process that should be running but is not stands out; transitions/unknown stay neutral.
+const PROCESS_TONES: Record<ProcessStatus, Tone> = {
+  online: 'ok', errored: 'bad', stopped: 'warn', 'waiting restart': 'warn', stopping: 'muted', launching: 'muted', 'one-launch-status': 'muted', unknown: 'muted',
+};
+
 export function ProcessStatusBadge({ status }: { status: ProcessStatus }) {
-  const tone = status === 'online' ? 'online' : status === 'errored' ? 'errored' : 'never_connected';
-  return <span className={`badge badge--${tone}`}>{PROCESS_STATUS_LABELS[status]}</span>;
+  return <StatusIndicator tone={PROCESS_TONES[status]}>{PROCESS_STATUS_LABELS[status]}</StatusIndicator>;
 }
 
 const FRESHNESS_LABELS = { current: 'Актуально', stale: 'Застарілі дані', unavailable: 'Exporter недоступний' } as const;
 
 /** Freshness of one row: the inventory state, downgraded when the server itself is not online. */
 export function FreshnessBadge({ state, serverStatus }: { state: ApplicationItem['inventoryState']; serverStatus: ServerStatus }) {
-  if (state === 'current' && serverStatus !== 'online') return <span className="badge badge--stale">Сервер офлайн</span>;
-  return <span className={`badge badge--${state === 'current' ? 'online' : 'stale'}`}>{FRESHNESS_LABELS[state]}</span>;
+  if (state === 'current' && serverStatus !== 'online') return <StatusIndicator tone="warn">Сервер офлайн</StatusIndicator>;
+  return <StatusIndicator tone={state === 'current' ? 'muted' : 'warn'}>{FRESHNESS_LABELS[state]}</StatusIndicator>;
 }
 
 export function formatUptime(seconds: number | null): string {
@@ -57,9 +62,13 @@ export const formatCpu = (cpu: number | null) => (cpu === null ? '—' : `${cpu.
 export const formatCount = (n: number | null) => (n === null ? '—' : String(n));
 
 export function ApplicationsTable({ items, showServer, caption, renderActions }: { items: ApplicationItem[]; showServer: boolean; caption: string; renderActions?: ((app: ApplicationItem) => ReactNode) | undefined }) {
+  // Every row live and collected at the same moment: that moment is shown once above the table, rows show only the
+  // state. Any difference (another time, stale data, offline server) keeps the time in each row.
+  const uniform = items.every((a) => a.inventoryState === 'current' && a.serverStatus === 'online')
+    && new Set(items.map((a) => a.collectedAt)).size === 1;
   return (
     <div className="table-wrap">
-      <table className="table service-table">
+      <table className="table">
         <caption className="visually-hidden">{caption}</caption>
         <thead>
           <tr>
@@ -67,32 +76,43 @@ export function ApplicationsTable({ items, showServer, caption, renderActions }:
             {showServer ? <th scope="col">Сервер</th> : null}
             <th scope="col">PM2 id</th>
             <th scope="col">Статус</th>
-            <th scope="col">Аптайм*</th>
-            <th scope="col">Рестарти</th>
-            <th scope="col">CPU*</th>
-            <th scope="col">Пам'ять*</th>
+            <th scope="col" className="num">Аптайм*</th>
+            <th scope="col" className="num">Рестарти</th>
+            <th scope="col" className="num">CPU*</th>
+            <th scope="col" className="num">Пам'ять*</th>
             <th scope="col">Дані</th>
             {renderActions ? <th scope="col">Дії</th> : null}
           </tr>
         </thead>
         <tbody>
-          {items.map((app) => (
-            <tr key={app.key}>
-              <th scope="row"><div className="service-name"><span className="service-icon" aria-hidden="true">▤</span><span className="mono">{app.name}</span></div></th>
-              {showServer ? <td><Link to={`/servers/${app.serverId}`}>{app.serverName}</Link> <StatusBadge status={app.serverStatus} /></td> : null}
-              <td>{app.pmId}{app.execMode ? <span className="hint"> · {app.execMode}</span> : null}</td>
-              <td><ProcessStatusBadge status={app.status} /></td>
-              <td>{formatUptime(app.uptimeSeconds)}</td>
-              <td>{formatCount(app.restarts)}</td>
-              <td>{formatCpu(app.cpuPercent)}</td>
-              <td>{formatMemory(app.memoryBytes)}</td>
-              <td><FreshnessBadge state={app.inventoryState} serverStatus={app.serverStatus} /><br /><span className="hint">зібрано {formatDate(app.collectedAt)}</span></td>
-              {renderActions ? <td className="service-action-cell">{renderActions(app)}</td> : null}
-            </tr>
-          ))}
+          {items.map((app) => {
+            const live = app.inventoryState === 'current' && app.serverStatus === 'online';
+            return (
+              <tr key={app.key}>
+                <th scope="row" className="mono">{app.name}</th>
+                {showServer ? (
+                  <td>
+                    <Link to={`/servers/${app.serverId}`}>{app.serverName}</Link>
+                    {app.serverStatus === 'online' ? null : <span className="cell-meta"><StatusBadge status={app.serverStatus} /></span>}
+                  </td>
+                ) : null}
+                <td className="secondary nowrap">{app.pmId}{app.execMode ? ` · ${app.execMode}` : ''}</td>
+                <td><ProcessStatusBadge status={app.status} /></td>
+                <td className="num">{formatUptime(app.uptimeSeconds)}</td>
+                <td className="num">{formatCount(app.restarts)}</td>
+                <td className="num">{formatCpu(app.cpuPercent)}</td>
+                <td className="num">{formatMemory(app.memoryBytes)}</td>
+                <td>
+                  <FreshnessBadge state={app.inventoryState} serverStatus={app.serverStatus} />
+                  {uniform ? null : <span className={`cell-meta${live ? '' : ' cell-meta--strong'}`}>зібрано {formatDate(app.collectedAt)}</span>}
+                </td>
+                {renderActions ? <td>{renderActions(app)}</td> : null}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
-      <p className="hint">* значення на момент збору; «—» — метрика невідома (не нуль).</p>
+      <p className="table-note">* значення на момент збору; «—» — метрика невідома (не нуль). CPU за PM2 на кількох ядрах може перевищувати 100 %.</p>
     </div>
   );
 }
@@ -116,8 +136,17 @@ export function InventorySummary({ inventory, serverStatus }: { inventory: Inven
       break;
   }
   const offline = serverStatus !== 'online' && inventory.state !== 'not_reported';
+  if (inventory.state === 'current' && !offline) {
+    // Normal case: one quiet line, shared by every row of this server.
+    return (
+      <p className="freshness" role="status">
+        <StatusIndicator tone="ok">{text}</StatusIndicator>
+        {inventory.reportedAt ? <span>{`Останній звіт агента: ${formatDate(inventory.reportedAt)}`}</span> : null}
+      </p>
+    );
+  }
   return (
-    <div className={`notice ${inventory.state === 'current' && !offline ? '' : 'notice--warning'}`} role="status">
+    <div className="notice notice--warning" role="status">
       <p>{text}</p>
       {offline ? <p>Сервер зараз не онлайн — показані дані не відображають поточний стан.</p> : null}
       {inventory.reportedAt ? <p className="hint">Останній звіт агента: {formatDate(inventory.reportedAt)}</p> : null}

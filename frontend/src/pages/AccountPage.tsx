@@ -3,6 +3,7 @@ import { ApiError, authApi } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { ROLE_LABELS } from '../components/Layout';
 import { formatRetry } from '../components/StatusMessage';
+import { PageHeader } from '../components/ui';
 
 // Own account (ADR-019): email, role and the self-service password change. Passwords live only in this form's state:
 // cleared after every request, on success (the whole private area is dropped) and on unmount. Never retried.
@@ -108,20 +109,16 @@ export function AccountPage() {
 
   return (
     <section className="page" aria-labelledby="account-title">
-      <h1 id="account-title" className="page__title">Обліковий запис</h1>
-      <dl className="facts">
-        <dt>Email</dt><dd>{user.email}</dd>
-        <dt>Роль</dt><dd>{ROLE_LABELS[user.role]}</dd>
-      </dl>
-      <form className="card account-form" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="password-title">
-        <h2 id="password-title" className="card__title">Зміна пароля</h2>
+      <PageHeader title="Обліковий запис" titleId="account-title" meta={<span>{`${user.email} · ${ROLE_LABELS[user.role]}`}</span>} />
+      <form className="panel account-form" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="password-title">
+        <h2 id="password-title" className="section__title">Зміна пароля</h2>
         <p className="notice notice--warning">Після зміни пароля всі ваші сесії буде завершено, зокрема на інших пристроях. Увійдіть знову з новим паролем.</p>
         {formError ? <p className="form-error" role="alert">{formError}</p> : null}
         {field('current', 'Поточний пароль', current, setCurrent, 'current-password')}
         {field('next', 'Новий пароль', next, setNext, 'new-password')}
         {field('confirm', 'Повторіть новий пароль', confirm, setConfirm, 'new-password')}
         <div className="button-row">
-          <button type="button" className="button button--secondary" aria-pressed={visible} onClick={() => { setVisible((v) => !v); }}>
+          <button type="button" className="button" aria-pressed={visible} onClick={() => { setVisible((v) => !v); }}>
             {visible ? 'Приховати паролі' : 'Показати паролі'}
           </button>
           <button type="submit" className="button button--primary" disabled={pending}>{pending ? 'Зміна…' : 'Змінити пароль'}</button>
