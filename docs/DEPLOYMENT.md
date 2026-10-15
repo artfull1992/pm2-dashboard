@@ -297,6 +297,78 @@ journalctl -u node-control-agent -n 5 -o cat                             # "cont
 
 **Rollback / аварійне вимкнення** (у будь-якому порядку, PM2-процеси не зупиняються): `PM2_CONTROL_ENABLED=false` + restart API (нові команди → 409, черга не видається й експірує); прибрати `NC_AGENT_CONTROL_SOCKET` з `agent.env` + restart Agent; `systemctl disable --now node-control-pm2-broker@<owner>`; спорожнити allowlist. Журнал broker (`/var/lib/goit-node-control-pm2-broker`) не видаляти: він захищає від повторного виконання. Таблиці керування лишаються (additive).
 
+### Автозапуск PM2 після reboot (окремо від Agent)
+
+PM2 і його застосунки належать власнику PM2 на керованій ноді; Node Control їх не запускає. Agent, exporter і broker — окремі systemd-служби й **не** відповідають за автозапуск PM2: після reboot вони працюють, але exporter звітує «daemon unavailable», доки PM2 не запущено. Автозапуск PM2 налаштовується окремо, штатною службою PM2 від імені власника.
+
+Параметри визначає оператор, не вгадуючи (приклади умовні):
+
+| Параметр | Як визначити | Приклад |
+|---|---|---|
+| Власник PM2 | `ps -eo user,cmd \| grep 'God Daemon'` (користувач, не root) | `deploy` |
+| HOME / PM2_HOME | `getent passwd <owner>`; каталог у `God Daemon (<PM2_HOME>)` | `/home/deploy`, `/home/deploy/.pm2` |
+| Node.js | `sudo -u <owner> -i bash -lc 'command -v node; node -v'` | `/usr/bin/node` або `~/.nvm/versions/node/v22.x/bin/node` |
+| PM2 | `readlink -f "$(sudo -u <owner> -i bash -lc 'command -v pm2')"` | `/usr/lib/node_modules/pm2/bin/pm2` |
+
+**Безпечна діагностика після reboot** (нічого не запускає): `uptime -s`; `ps -eo pid,user,lstart,cmd | grep 'God Daemon'`; `systemctl list-unit-files 'pm2*'`, `systemctl status pm2-<owner>`, `journalctl -b -u pm2-<owner>`; інші механізми (`crontab -l` власника й root на `@reboot`, `/etc/init.d`, `/etc/rc.local`, `loginctl show-user <owner> -p Linger` для user-служб); `<PM2_HOME>/pm2.log` — час старту daemon і застосунків; час збереження `<PM2_HOME>/dump.pm2`. **Будь-яка команда `pm2` без запущеного daemon створює новий daemon** — спершу переконатися, що daemon власника працює (`rpc.sock` існує), і лише тоді `pm2 jlist`/`save`. Виводити лише назви, ID, статуси, PID, час старту й лічильники; `jlist`, `env` і `dump.pm2` містять env застосунків — не друкувати.
+
+**Налаштування** (root на ноді; застосунки вже запущені й перевірені):
+
+```bash
+OWNER=deploy; OWNER_HOME=/home/deploy; PM2_HOME=$OWNER_HOME/.pm2
+PM2_BIN=$(readlink -f "$(sudo -u $OWNER -i bash -lc 'command -v pm2')")
+# 0. daemon власника вже працює; інакше зупинитися (pm2 створив би новий)
+pgrep -u $OWNER -f "God Daemon ($PM2_HOME)" && test -S $PM2_HOME/rpc.sock
+# 1. backup (dump містить env застосунків → лише root, 600)
+B=/root/pm2-backups/$(date -u +%Y%m%dT%H%M%SZ); install -d -m 700 /root/pm2-backups "$B"
+for f in dump.pm2 dump.pm2.bak; do [ -e $PM2_HOME/$f ] && install -m 600 $PM2_HOME/$f "$B/"; done
+[ -e /etc/systemd/system/pm2-$OWNER.service ] && install -m 600 /etc/systemd/system/pm2-$OWNER.service "$B/"
+# 2. зберегти поточний список через наявний daemon (процеси не чіпає)
+sudo -u $OWNER env HOME=$OWNER_HOME PM2_HOME=$PM2_HOME "$PM2_BIN" save
+# 3. перевірити кількість і назви записів у dump без виводу env (node -e з JSON.parse → лише name/status)
+```
+
+Служба `/etc/systemd/system/pm2-<owner>.service` — стандартний шаблон PM2 з абсолютними шляхами (те, що генерує `pm2 startup systemd -u <owner> --hp <home>`; файл можна записати вручну, щоб не запускати `pm2` від root):
+
+```ini
+[Unit]
+Description=PM2 process manager (owner deploy)
+After=network.target
+
+[Service]
+Type=forking
+User=deploy
+LimitNOFILE=infinity
+# з NVM додати на початок PATH каталог node, напр. /home/deploy/.nvm/versions/node/v22.x/bin
+Environment=PATH=/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/bin
+Environment=HOME=/home/deploy
+Environment=PM2_HOME=/home/deploy/.pm2
+PIDFile=/home/deploy/.pm2/pm2.pid
+Restart=on-failure
+ExecStart=/usr/lib/node_modules/pm2/bin/pm2 resurrect
+ExecReload=/usr/lib/node_modules/pm2/bin/pm2 reload all
+ExecStop=/usr/lib/node_modules/pm2/bin/pm2 kill
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemd-analyze verify /etc/systemd/system/pm2-$OWNER.service   # ім'я файлу має закінчуватися на .service
+systemctl daemon-reload
+systemctl enable pm2-$OWNER.service      # БЕЗ --now і без start, якщо daemon уже працює вручну
+```
+
+**Не робити на працюючому сервері:** `systemctl start/restart pm2-<owner>` або `enable --now`, поки daemon запущений вручну (`resurrect` в існуючий daemon може продублювати застосунки; передача керування systemd — лише в погоджене вікно, зазвичай наступним reboot); `pm2 kill`, `resurrect`, `restart/reload/start all`; `pm2` від root; друга служба для того самого власника. Не додавати запуск PM2 до Agent, exporter чи broker.
+
+**Коли оновлювати збережений список** (`pm2 save` від власника, з backup перед цим): після додавання/видалення застосунку, зміни його конфігурації (шлях, interpreter, env, ecosystem), зміни версії Node.js. **Небезпека:** `pm2 save` у момент, коли запущені не всі застосунки (після reboot до ручного старту, під час інциденту), перезапише dump частковим або порожнім списком — після наступного reboot решта не стартує. Перед збереженням звірити `pm2 jlist` з очікуваним набором; записи `stopped`/`errored` зберігаються у списку — вирішити свідомо, чи зберігати їх.
+
+**Після зміни Node.js або NVM:** перевірити шляхи в службі (`systemctl cat pm2-<owner>`, `systemd-analyze verify`), доступність `node` і `pm2` для власника (`sudo -u <owner> test -x <path>`), за потреби оновити `PATH`/`ExecStart` (backup → правка → `verify` → `daemon-reload`) і виконати `pm2 save`. З NVM шлях містить версію (`~/.nvm/versions/node/vX.Y.Z/bin`) і ламається після `nvm install`/видалення версії.
+
+**Перевірка без reboot:** служба `enabled`, `systemd-analyze verify` без помилок, User/HOME/PM2_HOME/шляхи відповідають власнику, dump містить очікуваний набір. Фактичний старт підтверджує лише reboot-тест у погоджене вікно: після нього — `systemctl status pm2-<owner>`, `journalctl -b -u pm2-<owner>`, `pm2 jlist` (лише безпечні поля), стан inventory у UI.
+
+**Rollback** (без зупинки застосунків): `systemctl disable pm2-<owner>` (працюючий daemon не зачіпається); повернути службу з backup або видалити файл + `daemon-reload`; повернути dump з backup (`install -m 664 -o <owner> -g <owner> <backup>/dump.pm2 <PM2_HOME>/dump.pm2`) — діє лише на наступний `resurrect`. Backup не видаляти.
+
 ### Перегляд логів (Task 010, ADR-018)
 
 Міграцій немає. Порядок rollout: **API/UI → реліз Agent (Agent і broker — один артефакт) → restart Agent і broker → (лише з погодження) `logs: true` у allowlist.** До останнього кроку читання логів вимкнене: UI показує «Логи не дозволені». Старий Agent/broker → «Перегляд логів не підтримується».

@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-15 (єдиний дизайн frontend). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-15 (автозапуск PM2 на керованій ноді). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Незалежний review Codex — Task 011 (2026-10-14)
 
@@ -183,6 +183,33 @@ Rollback підготовлено до production `up`: код — `server-relea
 2. **NC-SEC-001** (Ajv `instancePath` для динамічних ключів) — відкрито; схеми лише з явними `properties` і `additionalProperties: false`.
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
+
+## Автозапуск PM2 на керованій ноді після reboot (2026-10-15)
+
+**Симптом.** Після reboot керованої ноди PM2 daemon і застосунки не запустились; оператор запустив їх вручну.
+
+**Причина (за доказами).** Автозапуск PM2 на ноді ніколи не був налаштований: немає `pm2-*.service` (системних і користувацьких, lingering вимкнено), `@reboot` у cron, init.d чи rc.local; у журналах попередніх boot запусків PM2 немає. `pm2.log`: після boot daemon стартував окремо через ~1,5 хв, застосунки — поодинці з інтервалами (ручний запуск). Збережений `dump.pm2` був на 9 днів старіший, імовірно теж після ручного запуску (припущення). Ручний запуск змінив початковий стан, тож інші можливі причини (наприклад, служба, що існувала й була видалена раніше) доказами повністю не виключені.
+
+**Факти середовища:** власник PM2 — звичайний користувач (не root), PM2_HOME у його home; Node.js 22 системний (`/usr/bin/node`, без NVM), PM2 6 глобальний (`/usr/lib/node_modules/pm2/bin/pm2`); один daemon; інших власників PM2 чи менеджерів процесів немає.
+
+**Зроблено** (процедура — [DEPLOYMENT](DEPLOYMENT.md), «Автозапуск PM2 після reboot»):
+- baseline: 5 застосунків, усі online, без `stopped`/`errored`, рестартів 0 — погоджений набір;
+- backup `dump.pm2` і `dump.pm2.bak` у root-only каталог (`700`/`600`); попередньої PM2-служби не було;
+- `pm2 save` від власника в наявний daemon; новий dump: 5 записів, назви збігаються, усі online;
+- `pm2-<owner>.service` — стандартний шаблон PM2 (Type=forking, User=власник, HOME/PM2_HOME, абсолютний PATH і `pm2 resurrect`/`kill`), `systemd-analyze verify` OK, `enabled`, **не запущена** (daemon лишається ручним до наступного reboot).
+
+| Перевірка (операційна, не тести коду) | Результат |
+|---|---|
+| Служба | enabled, inactive; User, HOME, PM2_HOME, ExecStart/ExecStop, PIDFile відповідають власнику; executable доступні власнику, PM2_HOME доступний на запис |
+| Список | dump = поточний набір online-застосунків (5) |
+| Baseline до/після | PID, час старту й restarts усіх 5 застосунків і PID/час daemon — без змін; daemon один |
+| Node Control | Agent, broker, exporter timer active/enabled; inventory 19 с, стан ok, 5 процесів; Agent: heartbeat/inventory accepted, 0 помилок |
+
+`systemd-analyze verify` спершу не перевірив тимчасовий файл (systemd приймає лише імена `*.service`), і служба встановилася без перевірки; перевірку одразу виконано на встановленому файлі — без помилок.
+
+**Не підтверджено:** фактичний автозапуск після reboot (reboot-тест не виконувався без окремого погодження). Наступний reboot — перший запуск через службу; після нього перевірити `systemctl status`, `journalctl -b`, список процесів і inventory. Зауваження: `dump.pm2` має права PM2 за замовчуванням (`664`), але home власника закритий для інших (`750`); не змінювалось.
+
+**Rollback:** `systemctl disable pm2-<owner>` (застосунки не зупиняються), видалити або повернути службу + `daemon-reload`, за потреби повернути dump із root-only backup. Backup не видаляти. API, frontend, Agent не передеплоювались.
 
 ## Єдиний дизайн frontend — «спокійна інфраструктурна консоль» (2026-10-15)
 
