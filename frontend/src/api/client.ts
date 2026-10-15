@@ -302,8 +302,8 @@ export const serversApi = {
     apiRequest('/api/servers?limit=100', { parse: parseServerPage, ...(signal ? { signal } : {}) }),
   get: (id: string, signal?: AbortSignal): Promise<ServerDetail> =>
     apiRequest(serverPath(id), { parse: parseServerDetail, ...(signal ? { signal } : {}) }),
-  create: (name: string, csrfToken: string): Promise<ServerSummary> =>
-    apiRequest('/api/servers', { method: 'POST', body: { name }, csrfToken, parse: parseServerSummary }),
+  create: (name: string, csrfToken: string, signal?: AbortSignal): Promise<ServerSummary> =>
+    apiRequest('/api/servers', { method: 'POST', body: { name }, csrfToken, parse: parseServerSummary, ...(signal ? { signal } : {}) }),
   /** The response carries a one-time secret: callers must not log or persist it. */
   issueCredential: (id: string, csrfToken: string, signal?: AbortSignal): Promise<IssuedCredential> =>
     apiRequest(`${serverPath(id)}/agent-credentials`, { method: 'POST', csrfToken, parse: parseIssuedCredential, ...(signal ? { signal } : {}) }),
