@@ -214,6 +214,19 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 Перші прогони впали через сон Mac посеред тестів (тайм-аути, обрив тунелю, тестовий PM2 daemon, що лишився після обриву — зупинено); під `caffeinate` усе пройшло. Візуальна перевірка знайшла й виправила дві вади: фокус у вікні не потрапляв у поле (порядок `querySelectorAll` зі списком селекторів) і перемикач доставки Slack розтягувався загальним правилом полів.
 
+**Деплой (2026-10-15).** Code revision **`c016bebe98b33d862ebefde0bfbdca6041cd5311`** (`refactor(ui): align monitoring and administration pages`, на основі `6e0efee`).
+
+| Крок | Результат |
+|---|---|
+| Перед | API active, ready 200; активний реліз `3153abc` (ціль rollback) |
+| Артефакт | `sha256sum -c` OK, manifest revision збігається; unit ідентичний установленому; міграцій немає (applied 8, pending 0) |
+| Реліз | `current` → `c016beb`, `previous` → `3153abc`; restart лише `node-control-api` |
+| Після | active під `nodecontrol`, listener лише loopback :3100; live/ready 200 локально й через HTTPS; анонімні `/api/auth/me`, `/api/servers`, `/api/settings/alerts` → 401; HTTPS віддає новий bundle (той самий хеш, що на диску); SPA-маршрути 200; 0 помилок у журналі; `nginx -t` OK |
+
+Read-only smoke без входу: production-налаштування, користувачі, паролі, Slack-інтеграція й стан доставки, Agent/broker і PM2 не змінювались; Slack-тестів не надсилалось.
+
+**Rollback:** `server-release.js rollback` → `3153abc`, restart `node-control-api` (міграцій і змін unit немає; дані й конфігурацію не відкочувати).
+
 Обмеження: створення сервера/користувача під час гортання сторінок у браузері тепер недоступне (фон `inert`), але логіка пізніх відповідей і тести Task 011.2 збережені. Скриншоти «до» є лише для 1440 px.
 
 ## Task 013.2 (UI) — спрощений layout «Правил сповіщень» (2026-10-15)
