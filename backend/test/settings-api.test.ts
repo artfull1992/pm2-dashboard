@@ -224,7 +224,7 @@ describe('test message', () => {
     const res = await test(a, s);
     expect(res.json()).toMatchObject({ generation: 1, outcome: 'success', code: null, stored: true });
     expect(sent).toHaveLength(1);
-    expect(JSON.parse(sent[0]?.body ?? '{}')).toEqual({ text: expect.stringMatching(/^:test_tube: Тестове повідомлення GOIT Node Control[\s\S]*Це не інцидент/) as unknown });
+    expect(JSON.parse(sent[0]?.body ?? '{}')).toEqual({ text: expect.stringMatching(/^:test_tube: Тестове повідомлення Node Control[\s\S]*Це не інцидент/) as unknown });
     expect((await a.inject({ method: 'GET', url: '/api/settings/alerts', headers: { cookie: s.cookie } })).json()).toMatchObject({ slack: { lastTest: { outcome: 'success', code: null } } });
     expect(settings.audits.slice(-2).map((x) => [x.entry.event, x.entry.outcome])).toEqual([['integration.slack_test_requested', 'success'], ['integration.slack_test_result', 'success']]);
     noSecret(res.body, logs.text(), JSON.stringify(settings.audits));

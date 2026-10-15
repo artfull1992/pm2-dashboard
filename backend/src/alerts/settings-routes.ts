@@ -244,7 +244,7 @@ export function registerSettingsRoutes(app: FastifyInstance, options: SettingsRo
       await guarded(request, 'Audit', () => settings.audit({ event: 'integration.slack_test_requested', outcome: 'success', details: { operationId, generation } }, actor));
       const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
       const link = options.publicUrl ? `\n<${options.publicUrl}/settings/integrations|Налаштування Node Control>` : '';
-      const text = `:test_tube: Тестове повідомлення GOIT Node Control\nПеревірка Slack-інтеграції з розділу «Налаштування». Це не інцидент, дій не потрібно.\nЧас: ${now} UTC${link}`;
+      const text = `:test_tube: Тестове повідомлення Node Control\nПеревірка Slack-інтеграції з розділу «Налаштування». Це не інцидент, дій не потрібно.\nЧас: ${now} UTC${link}`;
       const sent = await sendToSlack(rt.integration.webhook, text, {
         timeoutMs: rt.settings.httpTimeoutMs, signal: new AbortController().signal, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
       });

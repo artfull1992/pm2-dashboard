@@ -41,7 +41,7 @@ describe('startup session check', () => {
   it('me 401 → login page', async () => {
     installFetch(() => json(401, {}));
     renderApp('/servers');
-    expect(await screen.findByRole('heading', { name: 'GOIT Node Control' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Node Control' })).toBeTruthy();
     expect(screen.getByLabelText('Email')).toBeTruthy();
   });
 

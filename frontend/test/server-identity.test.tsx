@@ -258,7 +258,7 @@ describe('server detail is bound to the server id in the URL', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: 'Видати ключ' }));
     expired = true;
     await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await Promise.resolve(); });
-    expect(await screen.findByRole('heading', { name: 'GOIT Node Control' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Node Control' })).toBeTruthy();
     await act(async () => { pendingIssue.resolve(json(201, issued(A, TOKEN_A))); await Promise.resolve(); });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.body.innerHTML).not.toContain(TOKEN_A);

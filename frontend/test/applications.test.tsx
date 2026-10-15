@@ -107,7 +107,7 @@ describe('applications page', () => {
       return undefined;
     });
     renderApp('/applications');
-    expect(await screen.findByRole('heading', { name: 'GOIT Node Control' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Node Control' })).toBeTruthy();
   });
 
   it('filters live in the URL, reset the cursor and never show rows of the previous filter while loading', async () => {

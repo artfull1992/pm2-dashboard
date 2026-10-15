@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Idempotent PostgreSQL setup for GOIT Node Control. Run on the DB host as root:
+// Idempotent PostgreSQL setup for Node Control. Run on the DB host as root:
 //   npm run db:setup -- [--env-owner <user>] [--rotate-password] [--skip-hba]
 // Never prints the password; only a SCRAM verifier is ever sent to PostgreSQL.
 

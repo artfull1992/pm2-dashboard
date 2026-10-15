@@ -65,14 +65,14 @@ export function Layout() {
     <div className="shell">
       <a className="skip-link" href="#main">Перейти до вмісту</a>
       <header className="topbar">
-        <span className="brand">GOIT Node Control</span>
+        <span className="brand">Node Control</span>
         <button ref={toggle} type="button" className="button button--ghost menu-toggle" aria-expanded={menuOpen} aria-controls={navId}
           onClick={() => { setMenuOpen((open) => !open); }}>
           Меню
         </button>
       </header>
       <aside id={navId} className={`sidebar${menuOpen ? ' sidebar--open' : ''}`}>
-        <div className="sidebar__brand brand">GOIT Node Control</div>
+        <div className="sidebar__brand brand">Node Control</div>
         <nav aria-label="Основна навігація">
           {groups.map((group, index) => (
             <div key={group.title} className="nav-group">

@@ -75,7 +75,7 @@ export function LoginPage() {
   return (
     <main className="login" id="main">
       <form className="login__card" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="login-title">
-        <h1 id="login-title" className="login__title">GOIT Node Control</h1>
+        <h1 id="login-title" className="login__title">Node Control</h1>
         <p className="login__subtitle">Увійдіть, щоб продовжити</p>
         {notice ? <p className="notice" role="status">{notice}</p> : null}
         {formError ? <p className="form-error" role="alert">{formError}</p> : null}

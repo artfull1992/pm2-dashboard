@@ -345,7 +345,7 @@ describe('applications list: row actions', () => {
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     await waitFor(() => { expect(posts(calls)).toHaveLength(1); });
     await act(async () => { await nav.logout?.(); });
-    expect(await screen.findByRole('heading', { name: 'GOIT Node Control' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Node Control' })).toBeTruthy();
     expect(posts(calls)[0]?.signal?.aborted).toBe(true);
     await act(async () => { slow.resolve(json(201, command(A))); await Promise.resolve(); });
     expect(screen.queryByText(/У черзі/)).toBeNull();

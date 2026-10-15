@@ -1,4 +1,4 @@
-/* GOIT Node Control UI — "calm infrastructure console". No inline styles anywhere (CSP style-src 'self').
+/* Node Control UI — "calm infrastructure console". No inline styles anywhere (CSP style-src 'self').
    Rules (docs/DEVELOPMENT_RULES.md, "Frontend design"): one card level, tokens below only, normal states are quiet
    (muted text + small dot), problems are visible (colour + text + soft background), numbers use tabular figures. */
 

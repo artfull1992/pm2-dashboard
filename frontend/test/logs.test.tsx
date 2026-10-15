@@ -166,7 +166,7 @@ describe('log viewer', () => {
     await within(dialog).findByText(/first/);
     expired = true;
     await user.click(within(dialog).getByRole('button', { name: 'Оновити' }));
-    expect(await screen.findByRole('heading', { name: 'GOIT Node Control' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Node Control' })).toBeTruthy();
     expect(document.body.textContent).not.toContain('first');
   });
 });

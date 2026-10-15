@@ -20,4 +20,4 @@ export const HBA_RULE = Object.freeze({
   method: 'scram-sha-256',
 });
 
-export const HBA_RULE_COMMENT = 'GOIT Node Control: remote TLS access, scoped to node_control_db/node_control_user only';
+export const HBA_RULE_COMMENT = 'Node Control: remote TLS access, scoped to node_control_db/node_control_user only';

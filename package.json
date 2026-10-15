@@ -1,5 +1,5 @@
 {
-  "name": "goit-node-control",
+  "name": "node-control",
   "version": "0.1.0",
   "private": true,
   "description": "Centralized monitoring and management platform for Node.js projects across multiple servers",
