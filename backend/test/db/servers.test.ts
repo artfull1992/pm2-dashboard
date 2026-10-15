@@ -7,7 +7,7 @@ import type { DbConfig } from '../../src/config.js';
 import { createDatabase, createPool, type Database } from '../../src/database.js';
 import { migrateUp } from '../../src/migrations.js';
 import { createPgServerStore, type ServerStore } from '../../src/servers/store.js';
-import { validSnapshot } from '../support/fake-server-store.js';
+import { legacySnapshot, validSnapshot } from '../support/fake-server-store.js';
 import { connectTestClient, createRunSchema, dropRunSchema, newRunSchemaName, readTestDbEnv, testDbConfig } from '../support/test-db.js';
 
 let config: DbConfig;
@@ -143,12 +143,12 @@ describe('heartbeat', () => {
     const serverId = await createServer(ctx);
     const { token } = await issue(ctx, serverId);
     expect((await ctx.store.get(serverId))?.status).toBe('never_connected');
-    const first = await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ uptimeSeconds: 1 }) });
-    const second = await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ uptimeSeconds: 2 }) });
+    const first = await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ loadAverage: [1, 0, 0] }) });
+    const second = await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ loadAverage: [2, 0, 0] }) });
     expect(first).toMatchObject({ serverId });
     expect(second).toMatchObject({ serverId });
     const detail = await ctx.store.get(serverId);
-    expect(detail).toMatchObject({ status: 'online', snapshot: { uptimeSeconds: 2 } });
+    expect(detail).toMatchObject({ status: 'online', snapshot: { loadAverage: [2, 0, 0] } });
     expect((await ctx.sql('SELECT count(*)::int AS n FROM server_heartbeats')).rows[0]).toEqual({ n: 1 });
     await ctx.sql(`UPDATE server_heartbeats SET received_at = now() - interval '91 seconds'`);
     expect((await ctx.store.get(serverId))?.status).toBe('offline');
@@ -158,17 +158,27 @@ describe('heartbeat', () => {
     const ctx = await setup();
     const serverId = await createServer(ctx);
     const { token } = await issue(ctx, serverId);
-    await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ uptimeSeconds: 10 }) });
+    await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ loadAverage: [10, 0, 0] }) });
     const before = (await ctx.sql('SELECT received_at FROM server_heartbeats')).rows[0] as { received_at: Date };
     await ctx.store.revokeCredential({ serverId, ...ctx.actor });
     expect(await ctx.store.resolveAgent(agentTokenDigest(token))).toBeNull();
-    expect(await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ uptimeSeconds: 20 }) })).toBe('unauthorized');
+    expect(await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ loadAverage: [20, 0, 0] }) })).toBe('unauthorized');
     const { token: fresh } = await issue(ctx, serverId);
     await ctx.sql('UPDATE servers SET is_active = false');
-    expect(await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(fresh), snapshot: validSnapshot({ uptimeSeconds: 30 }) })).toBe('unauthorized');
-    const after = (await ctx.sql('SELECT received_at, snapshot FROM server_heartbeats')).rows[0] as { received_at: Date; snapshot: { uptimeSeconds: number } };
+    expect(await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(fresh), snapshot: validSnapshot({ loadAverage: [30, 0, 0] }) })).toBe('unauthorized');
+    const after = (await ctx.sql('SELECT received_at, snapshot FROM server_heartbeats')).rows[0] as { received_at: Date; snapshot: { loadAverage: number[] } };
     expect(after.received_at.getTime()).toBe(before.received_at.getTime());
-    expect(after.snapshot.uptimeSeconds).toBe(10);
+    expect(after.snapshot.loadAverage[0]).toBe(10);
+  });
+
+  it('a row written before ADR-023 (legacy host metrics in JSONB) is read through the current contract', async () => {
+    const ctx = await setup();
+    const serverId = await createServer(ctx);
+    await ctx.sql('INSERT INTO server_heartbeats (server_id, received_at, snapshot) VALUES ($1, now(), $2::jsonb)', [serverId, JSON.stringify(legacySnapshot())]);
+    const detail = await ctx.store.get(serverId);
+    expect(detail?.snapshot).toEqual({ agentVersion: '0.4.0', hostname: 'node-1.example', platform: 'linux', arch: 'x64', loadAverage: [0.5, 0.4, 0.3] });
+    await ctx.sql(`UPDATE server_heartbeats SET snapshot = '{"unexpected": true}'::jsonb`);
+    expect((await ctx.store.get(serverId))?.snapshot).toBeNull(); // unreadable stored shape → "no data", not a crash
   });
 
   it('concurrent heartbeats: one row, latest server timestamp wins', async () => {
@@ -176,7 +186,7 @@ describe('heartbeat', () => {
     const serverId = await createServer(ctx);
     const { token } = await issue(ctx, serverId);
     const results = await Promise.all(Array.from({ length: 10 }, (_, i) =>
-      ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ uptimeSeconds: i }) })));
+      ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ loadAverage: [i, 0, 0] }) })));
     expect(results.every((r) => r !== 'unauthorized')).toBe(true);
     const { rows } = await ctx.sql('SELECT received_at FROM server_heartbeats');
     expect(rows).toHaveLength(1);

@@ -34,9 +34,9 @@ function full(withActions: boolean) {
     attentionProcesses: { items: [{ serverId: A, serverName: 'alpha', pmId: 4, name: 'worker', status: 'errored', restarts: 17, uptimeSeconds: null }], total: 2, limit: 20 },
     serverList: {
       items: [
-        { id: A, name: 'alpha', status: 'online', lastSeenAt: new Date().toISOString(), metrics: { hostname: 'alpha.local', uptimeSeconds: 90_000, cpuCount: 4, loadAverage: [1.5, 0.75, 0.25], memory: { totalBytes: 8 * 1024 ** 3, usedBytes: 6 * 1024 ** 3, usedPercent: 75 } }, inventory: { state: 'current', collectedAt: new Date().toISOString() }, processes: { total: 5, online: 3, problem: 2 } },
+        { id: A, name: 'alpha', status: 'online', lastSeenAt: new Date().toISOString(), metrics: { hostname: 'alpha.local', loadAverage: [1.5, 0.75, 0.25] }, inventory: { state: 'current', collectedAt: new Date().toISOString() }, processes: { total: 5, online: 3, problem: 2 } },
         { id: B, name: 'beta', status: 'offline', lastSeenAt: '2026-10-14T10:00:00.000Z', metrics: null, inventory: { state: 'current', collectedAt: new Date().toISOString() }, processes: null },
-        { id: C, name: 'gamma', status: 'online', lastSeenAt: new Date().toISOString(), metrics: { hostname: 'gamma.local', uptimeSeconds: 60, cpuCount: 1, loadAverage: [0, 0, 0], memory: { totalBytes: 0, usedBytes: 0, usedPercent: null } }, inventory: { state: 'stale', collectedAt: null }, processes: null },
+        { id: C, name: 'gamma', status: 'online', lastSeenAt: new Date().toISOString(), metrics: { hostname: 'gamma.local', loadAverage: [0, 0, 0] }, inventory: { state: 'stale', collectedAt: null }, processes: null },
       ],
       total: 3, limit: 50,
     },
@@ -80,19 +80,20 @@ describe('dashboard', () => {
     expect(screen.getByText(/Агент не звітує \(офлайн\)/)).toBeTruthy();
     expect(screen.getByText('Показано 2 з 60 серверів.')).toBeTruthy();
     expect(screen.getByText(/рестартів усього 17/)).toBeTruthy();
-    // Table: load average is labelled as a queue length, not CPU %; OS memory; unknown → "—".
-    expect(screen.getByText(/Load avg — довжина черги процесів, не відсоток CPU/)).toBeTruthy(); // visible text, not a hover title
+    // Table: load average is labelled as a queue length, not CPU %; no host memory/uptime/CPU-count columns (Zabbix); unknown → "—".
+    expect(screen.getByText(/Load avg — довжина черги процесів.*не відсоток CPU/)).toBeTruthy(); // visible text, not a hover title
     const rows = within(screen.getByRole('table')).getAllByRole('row');
     const alpha = rows.find((r) => r.textContent.includes('alpha.local')) as HTMLElement;
     expect(alpha.textContent).toContain('1.50 / 0.75 / 0.25');
-    expect(within(alpha).getByRole('img', { name: /Зайнято 75 %/ })).toBeTruthy();
     expect(alpha.textContent).toContain('3 з 5 працюють');
     const beta = rows.find((r) => r.textContent.includes('beta')) as HTMLElement;
-    expect(within(beta).getAllByText('—').length).toBe(3); // offline: no uptime, load or memory
+    expect(within(beta).getAllByText('—').length).toBe(1); // offline: no current load
     expect(within(beta).getByText('Сервер офлайн')).toBeTruthy(); // fresh inventory of an offline server is not "Актуально"
     const gamma = rows.find((r) => r.textContent.includes('gamma.local')) as HTMLElement;
-    expect(gamma.textContent).toContain('обсяг пам\'яті невідомий'); // totalBytes 0 → unknown, not 0 %
-    expect(gamma.textContent).not.toContain('0 %');
+    expect(gamma.textContent).toContain('0.00 / 0.00 / 0.00'); // a real zero load is shown as zero, not as unknown
+    const headers = within(screen.getByRole('table')).getAllByRole('columnheader').map((h) => h.textContent);
+    expect(headers).toEqual(['Сервер', 'Стан', 'Останній сигнал', 'Load avg 1/5/15', 'Сервіси PM2']);
+    expect(document.body.textContent).not.toMatch(/Пам['’]ять ОС|Uptime|ядер/);
   });
 
   it('empty system: exact zeros and an honest empty state — no "everything is fine"', async () => {

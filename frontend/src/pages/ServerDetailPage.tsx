@@ -5,7 +5,7 @@ import type { IssuedCredential, ServerDetail } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { Dialog } from '../components/Dialog';
-import { ApplicationsTable, formatMemory, formatUptime, InventorySummary } from '../components/Inventory';
+import { ApplicationsTable, InventorySummary } from '../components/Inventory';
 import { ProcessControl, type RowActions } from '../components/ProcessControl';
 import { ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { PageHeader } from '../components/ui';
@@ -14,35 +14,22 @@ import { formatDate, mutationErrorMessage, StatusBadge } from './ServersPage';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** Key numbers of the last heartbeat; an offline server's numbers are labelled as the last known snapshot. */
-function Vitals({ server }: { server: ServerDetail }) {
+/**
+ * The only host metric Node Control keeps (ADR-023; host monitoring is Zabbix's job): the current load average.
+ * An offline server's last value is not shown as current — the value is simply not shown.
+ */
+function CurrentLoad({ server }: { server: ServerDetail }) {
   const s = server.snapshot;
   if (!s) return <p className="hint">Агент ще не надсилав даних.</p>;
-  const total = s.memory.totalBytes;
-  const used = total > 0 ? total - s.memory.freeBytes : null;
-  const usedPercent = used === null ? null : Math.round((used / total) * 100);
-  const outdated = server.status !== 'online';
+  if (server.status !== 'online') {
+    return <p className="notice notice--warning" role="status">{`Поточне навантаження невідоме: сервер не онлайн (останній сигнал ${formatDate(server.lastSeenAt)}).`}</p>;
+  }
   return (
-    <>
-      {outdated ? <p className="notice notice--warning" role="status">{`Сервер не онлайн — нижче останній відомий знімок (${formatDate(server.lastSeenAt)}), не поточний стан.`}</p> : null}
-      <div className={`metrics${outdated ? ' dash--outdated' : ''}`} aria-label="Показники останнього heartbeat">
-        <div className="metric">
-          <span className="metric__label">Load average 1 / 5 / 15 хв</span>
-          <strong className="metric__value">{s.loadAverage.map((n) => n.toFixed(2)).join(' / ')}</strong>
-          <span className="metric__detail">{`черга процесів, не відсоток CPU · ядер: ${String(s.cpuCount)}`}</span>
-        </div>
-        <div className="metric">
-          <span className="metric__label">Пам'ять ОС</span>
-          <strong className="metric__value">{usedPercent === null ? '—' : `${String(usedPercent)} %`}</strong>
-          <span className="metric__detail">{used === null ? 'обсяг невідомий' : `зайнято ${formatMemory(used)} з ${formatMemory(total)}`}</span>
-        </div>
-        <div className="metric">
-          <span className="metric__label">Аптайм ОС</span>
-          <strong className="metric__value">{formatUptime(s.uptimeSeconds)}</strong>
-          <span className="metric__detail">{`агент ${s.agentVersion}`}</span>
-        </div>
-      </div>
-    </>
+    <p className="load-line" role="group" aria-label="Поточне навантаження">
+      <span className="load-line__label">Load average 1 / 5 / 15 хв</span>
+      <strong className="load-line__value">{s.loadAverage.map((n) => n.toFixed(2)).join(' / ')}</strong>
+      <span className="hint">черга процесів, не відсоток CPU · системний моніторинг сервера — у Zabbix</span>
+    </p>
   );
 }
 
@@ -56,8 +43,6 @@ function SystemDetails({ server }: { server: ServerDetail }) {
           <dt>Хост</dt><dd>{s.hostname}</dd>
           <dt>Платформа</dt><dd>{`${s.platform} / ${s.arch}`}</dd>
           <dt>Версія агента</dt><dd>{s.agentVersion}</dd>
-          <dt>CPU</dt><dd>{`${String(s.cpuCount)} ядер`}</dd>
-          <dt>Пам'ять</dt><dd>{`вільно ${formatMemory(s.memory.freeBytes)} з ${formatMemory(s.memory.totalBytes)}`}</dd>
         </> : null}
         <dt>Додано</dt><dd>{formatDate(server.createdAt)}</dd>
         <dt>Активність</dt><dd>{server.isActive ? 'активний' : 'неактивний — виключений з моніторингу'}</dd>
@@ -253,7 +238,7 @@ export function ServerDetailPage() {
       ) : null}
       {server ? (
         <>
-          <Vitals server={server} />
+          <CurrentLoad server={server} />
           <ProcessControl key={`${server.id}:${sessionKey}`} serverId={server.id} serverName={server.name} onFinished={bumpRefresh}>
             {(renderActions) => <ServerApplications serverId={server.id} refresh={refresh} renderActions={renderActions} />}
           </ProcessControl>

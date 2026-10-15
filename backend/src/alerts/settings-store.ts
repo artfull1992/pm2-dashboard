@@ -1,7 +1,7 @@
 import { type AuditEvent, insertAudit } from '../auth/store.js';
 import type { Database, QueryClient } from '../database.js';
 import type { SealedSecret } from './secret.js';
-import type { AlertSettings, AlertSettingsValues } from './settings.js';
+import { type AlertSettings, type AlertSettingsValues, LEGACY_MEMORY_THRESHOLDS } from './settings.js';
 
 // Settings and Slack integration persistence (ADR-022). Singletons with optimistic concurrency (settings.revision,
 // integration.generation). Every mutation and its audit rows are one transaction; lock order: alert_settings →
@@ -31,8 +31,9 @@ export interface SettingsStore {
 
 type Row = Record<string, unknown>;
 const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : null);
-const COLUMNS = `revision, rules_revision, engine_enabled, delivery_enabled, cpu_open_percent, cpu_close_percent, memory_open_percent,
-  memory_close_percent, confirm_samples, recover_samples, status_confirm_samples, restarts_threshold, restarts_window_minutes,
+// memory_open_percent / memory_close_percent: retired rule (ADR-023) — never read, never updated (see settings.ts).
+const COLUMNS = `revision, rules_revision, engine_enabled, delivery_enabled, cpu_open_percent, cpu_close_percent,
+  confirm_samples, recover_samples, status_confirm_samples, restarts_threshold, restarts_window_minutes,
   interval_seconds, cooldown_minutes, reminder_enabled, reminder_minutes, http_timeout_ms, max_attempts, queue_max, updated_at`;
 
 function toSettings(r: Row): AlertSettings {
@@ -40,8 +41,7 @@ function toSettings(r: Row): AlertSettings {
   return {
     revision: n('revision'), rulesRevision: n('rules_revision'), engineEnabled: r.engine_enabled === true, deliveryEnabled: r.delivery_enabled === true,
     thresholds: {
-      cpuOpenPercent: n('cpu_open_percent'), cpuClosePercent: n('cpu_close_percent'), memoryOpenPercent: n('memory_open_percent'),
-      memoryClosePercent: n('memory_close_percent'), confirmSamples: n('confirm_samples'), recoverSamples: n('recover_samples'),
+      cpuOpenPercent: n('cpu_open_percent'), cpuClosePercent: n('cpu_close_percent'), confirmSamples: n('confirm_samples'), recoverSamples: n('recover_samples'),
       statusConfirmSamples: n('status_confirm_samples'), restartsThreshold: n('restarts_threshold'), restartsWindowSeconds: n('restarts_window_minutes') * 60,
     },
     intervalSeconds: n('interval_seconds'), cooldownSeconds: n('cooldown_minutes') * 60, reminderEnabled: r.reminder_enabled === true,
@@ -52,7 +52,7 @@ function toSettings(r: Row): AlertSettings {
 
 function toRow(v: AlertSettingsValues): unknown[] {
   const t = v.thresholds;
-  return [v.engineEnabled, v.deliveryEnabled, t.cpuOpenPercent, t.cpuClosePercent, t.memoryOpenPercent, t.memoryClosePercent, t.confirmSamples,
+  return [v.engineEnabled, v.deliveryEnabled, t.cpuOpenPercent, t.cpuClosePercent, t.confirmSamples,
     t.recoverSamples, t.statusConfirmSamples, t.restartsThreshold, Math.round(t.restartsWindowSeconds / 60), v.intervalSeconds,
     Math.round(v.cooldownSeconds / 60), v.reminderEnabled, Math.round(v.reminderSeconds / 60), v.httpTimeoutMs, v.maxAttempts, v.queueMax];
 }
@@ -86,11 +86,11 @@ export function createPgSettingsStore(db: Database): SettingsStore {
   return {
     async initialize(defaults) {
       const r = await db.query(
-        `INSERT INTO alert_settings (id, engine_enabled, delivery_enabled, cpu_open_percent, cpu_close_percent, memory_open_percent, memory_close_percent,
+        `INSERT INTO alert_settings (id, engine_enabled, delivery_enabled, cpu_open_percent, cpu_close_percent,
            confirm_samples, recover_samples, status_confirm_samples, restarts_threshold, restarts_window_minutes, interval_seconds, cooldown_minutes,
-           reminder_enabled, reminder_minutes, http_timeout_ms, max_attempts, queue_max)
+           reminder_enabled, reminder_minutes, http_timeout_ms, max_attempts, queue_max, memory_open_percent, memory_close_percent)
          VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-         ON CONFLICT (id) DO NOTHING`, toRow({ ...defaults, engineEnabled: false, deliveryEnabled: false }));
+         ON CONFLICT (id) DO NOTHING`, [...toRow({ ...defaults, engineEnabled: false, deliveryEnabled: false }), LEGACY_MEMORY_THRESHOLDS.open, LEGACY_MEMORY_THRESHOLDS.close]);
       await db.query('INSERT INTO alert_slack_integration (id) VALUES (1) ON CONFLICT (id) DO NOTHING');
       return (r.rowCount ?? 0) > 0;
     },
@@ -112,7 +112,7 @@ export function createPgSettingsStore(db: Database): SettingsStore {
         const next: AlertSettingsValues = {
           ...current, ...patch, thresholds: { ...current.thresholds, ...(patch.thresholds ?? {}) },
         };
-        if (next.thresholds.cpuClosePercent >= next.thresholds.cpuOpenPercent || next.thresholds.memoryClosePercent >= next.thresholds.memoryOpenPercent) return { status: 'invalid' } as const;
+        if (next.thresholds.cpuClosePercent >= next.thresholds.cpuOpenPercent) return { status: 'invalid' } as const;
         const integration = await readIntegration(tx, 'FOR SHARE');
         if (next.deliveryEnabled && !current.deliveryEnabled && integration.sealed === null) return { status: 'not_configured' } as const;
         const changed = (Object.keys(patch) as (keyof SettingsPatch)[]).filter((k) => JSON.stringify(k === 'thresholds' ? next.thresholds : next[k]) !== JSON.stringify(k === 'thresholds' ? current.thresholds : current[k]));
@@ -120,11 +120,11 @@ export function createPgSettingsStore(db: Database): SettingsStore {
         const rulesChanged = changed.some((k) => (RULE_KEYS as readonly string[]).includes(k));
         const revision = current.revision + 1;
         const updated = (await tx.query(
-          `UPDATE alert_settings SET revision = $19, rules_revision = CASE WHEN $20 THEN $19 ELSE rules_revision END,
-             engine_enabled = $1, delivery_enabled = $2, cpu_open_percent = $3, cpu_close_percent = $4, memory_open_percent = $5, memory_close_percent = $6,
-             confirm_samples = $7, recover_samples = $8, status_confirm_samples = $9, restarts_threshold = $10, restarts_window_minutes = $11,
-             interval_seconds = $12, cooldown_minutes = $13, reminder_enabled = $14, reminder_minutes = $15, http_timeout_ms = $16, max_attempts = $17,
-             queue_max = $18, updated_at = now(), updated_by = $21
+          `UPDATE alert_settings SET revision = $17, rules_revision = CASE WHEN $18 THEN $17 ELSE rules_revision END,
+             engine_enabled = $1, delivery_enabled = $2, cpu_open_percent = $3, cpu_close_percent = $4,
+             confirm_samples = $5, recover_samples = $6, status_confirm_samples = $7, restarts_threshold = $8, restarts_window_minutes = $9,
+             interval_seconds = $10, cooldown_minutes = $11, reminder_enabled = $12, reminder_minutes = $13, http_timeout_ms = $14, max_attempts = $15,
+             queue_max = $16, updated_at = now(), updated_by = $19
            WHERE id = 1 RETURNING ${COLUMNS}`, [...toRow(next), revision, rulesChanged, actor.userId])).rows[0];
         if (!updated) throw new Error('settings update returned no row');
         const audit = auditOf(tx, actor);

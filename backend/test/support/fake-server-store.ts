@@ -2,7 +2,7 @@
 // Real SQL semantics (locks, upsert, concurrency) are covered in backend/test/db/servers.test.ts.
 import { randomUUID } from 'node:crypto';
 import type { AuditEvent } from '../../src/auth/store.js';
-import type { ServerSnapshot } from '../../src/servers/snapshot.js';
+import type { IncomingSnapshot, ServerSnapshot } from '../../src/servers/snapshot.js';
 import { ONLINE_WINDOW_SECONDS, type ServerDetail, type ServerStore, type ServerSummary } from '../../src/servers/store.js';
 
 interface FakeServer { id: string; name: string; isActive: boolean; createdAt: Date }
@@ -104,8 +104,13 @@ export class FakeServerStore implements ServerStore {
 }
 
 export function validSnapshot(overrides: Partial<ServerSnapshot> = {}): ServerSnapshot {
+  return { agentVersion: '0.5.0', hostname: 'node-1.example', platform: 'linux', arch: 'x64', loadAverage: [0.5, 0.4, 0.3], ...overrides };
+}
+
+/** What an Agent <= 0.4.x sends (and what rows written before ADR-023 contain): current fields + legacy host metrics. */
+export function legacySnapshot(overrides: Partial<IncomingSnapshot> = {}): IncomingSnapshot {
   return {
-    agentVersion: '0.1.0', hostname: 'node-1.example', platform: 'linux', arch: 'x64', uptimeSeconds: 3600,
+    agentVersion: '0.4.0', hostname: 'node-1.example', platform: 'linux', arch: 'x64', uptimeSeconds: 3600,
     cpuCount: 4, loadAverage: [0.5, 0.4, 0.3], memory: { totalBytes: 8_000_000_000, freeBytes: 2_000_000_000 },
     ...overrides,
   };

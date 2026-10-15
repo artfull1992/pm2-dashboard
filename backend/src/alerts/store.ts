@@ -1,7 +1,6 @@
 import type { Database, QueryClient } from '../database.js';
 import { INVENTORY_STATE_SQL, SERVER_STATUS_SQL } from '../servers/inventory-store.js';
-import type { ServerSnapshot } from '../servers/snapshot.js';
-import { type ConditionRow, type Detail, evaluate, type EvaluationResult, type ProcessObs, type Resolution, type Rule, type ServerObs, type Severity, type Transition } from './rules.js';
+import { type ConditionRow, type Detail, evaluate, type EvaluationResult, type ProcessObs, type Resolution, RETIRED_RULES, type Rule, type ServerObs, type Severity, type Transition } from './rules.js';
 import type { MessageIncident } from './slack.js';
 import type { EvaluationConfig } from './settings.js';
 
@@ -20,7 +19,7 @@ const MAX_PROCESSES = 20_000;
 export type OutboxKind = 'firing' | 'resolved' | 'reminder';
 export type OutboxStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'unknown' | 'dropped' | 'cancelled';
 
-export interface EvaluationSummary { skipped: boolean; opened: number; resolved: number; observed: number; enqueued: number; dropped: number; at: string | null }
+export interface EvaluationSummary { skipped: boolean; opened: number; resolved: number; observed: number; enqueued: number; dropped: number; retired: number; at: string | null }
 
 export interface ClaimedItem { id: string; kind: OutboxKind; attempts: number; incident: MessageIncident }
 
@@ -48,7 +47,7 @@ const ms = (v: unknown) => (v instanceof Date ? v.getTime() : null);
 
 async function loadSnapshot(tx: QueryClient): Promise<ServerObs[]> {
   const servers = (await tx.query(`
-    SELECT s.id, s.name, ${SERVER_STATUS_SQL} AS status, h.received_at, h.snapshot, ${INVENTORY_STATE_SQL} AS inv,
+    SELECT s.id, s.name, ${SERVER_STATUS_SQL} AS status, h.received_at, ${INVENTORY_STATE_SQL} AS inv,
            i.reported_at, i.inventory_collected_at
       FROM servers s LEFT JOIN server_heartbeats h ON h.server_id = s.id LEFT JOIN server_inventories i ON i.server_id = s.id
      WHERE s.is_active ORDER BY s.id`)).rows;
@@ -66,10 +65,8 @@ async function loadSnapshot(tx: QueryClient): Promise<ServerObs[]> {
     byServer.set(String(p.server_id), list);
   }
   return servers.map((s: Row): ServerObs => {
-    const snap = s.snapshot as ServerSnapshot | null;
     return {
       id: String(s.id), name: String(s.name), status: s.status as ServerObs['status'], heartbeatAt: ms(s.received_at),
-      memory: snap ? { totalBytes: snap.memory.totalBytes, freeBytes: snap.memory.freeBytes } : null,
       inventory: { state: s.inv as ServerObs['inventory']['state'], reportedAt: ms(s.reported_at), collectedAt: ms(s.inventory_collected_at) },
       processes: byServer.get(String(s.id)) ?? [],
     };
@@ -99,6 +96,36 @@ function toCondition(r: Row): ConditionRow {
   });
 }
 
+const RETIRED = [...RETIRED_RULES] as string[];
+
+/**
+ * Queued notifications of retired rules are never sent: cancelled like any other no-longer-valid item. A row still
+ * leased by a running delivery finishes normally (its message is a problem/reminder, never a fake recovery); if that
+ * delivery puts it back to "queued" or its lease expires, the next call cancels it. Idempotent.
+ */
+async function cancelRetiredOutbox(q: QueryClient | Database): Promise<number> {
+  const r = await q.query(
+    `UPDATE alert_outbox o SET status = 'cancelled', finished_at = now(), lease_until = NULL, last_error = 'rule_retired'
+       FROM alert_incidents i
+      WHERE i.id = o.incident_id AND i.rule = ANY($1::text[])
+        AND (o.status = 'queued' OR (o.status = 'sending' AND o.lease_until < now()))`, [RETIRED]);
+  return r.rowCount ?? 0;
+}
+
+/**
+ * Takes retired rules out of service inside the evaluation transaction: open incidents are closed as "retired"
+ * (no recovery message is queued), their pending notifications are cancelled and their condition state is dropped.
+ * Migration 1791900000008 does the same once at deploy; this repeats it for anything an older API created meanwhile.
+ */
+async function retireRules(tx: QueryClient, now: Date): Promise<number> {
+  const closed = await tx.query(
+    `UPDATE alert_incidents SET status = 'resolved', resolution = 'retired', resolved_at = $2, last_observed_at = GREATEST(last_observed_at, $2)
+      WHERE rule = ANY($1::text[]) AND status = 'firing'`, [RETIRED, now]);
+  await cancelRetiredOutbox(tx);
+  await tx.query('DELETE FROM alert_conditions WHERE rule = ANY($1::text[])', [RETIRED]);
+  return closed.rowCount ?? 0;
+}
+
 /** Enqueue (bounded): beyond queueMax pending rows the item is recorded as dropped instead of growing the queue. */
 async function enqueue(tx: QueryClient, incidentId: string, kind: OutboxKind, queueMax: number, generation: number): Promise<'queued' | 'dropped'> {
   const pending = Number((await tx.query("SELECT count(*) AS n FROM alert_outbox WHERE status IN ('queued', 'sending')")).rows[0]?.n ?? 0);
@@ -112,7 +139,7 @@ async function enqueue(tx: QueryClient, incidentId: string, kind: OutboxKind, qu
   return 'queued';
 }
 
-async function applyTransitions(tx: QueryClient, result: EvaluationResult, config: EvaluationConfig, now: Date): Promise<Omit<EvaluationSummary, 'skipped' | 'at'>> {
+async function applyTransitions(tx: QueryClient, result: EvaluationResult, config: EvaluationConfig, now: Date): Promise<Omit<EvaluationSummary, 'skipped' | 'at' | 'retired'>> {
   const opened = new Map<string, string>();
   let enqueued = 0;
   let dropped = 0;
@@ -202,25 +229,28 @@ export function createPgAlertsStore(db: Database): AlertsStore {
       return db.transaction(async (tx) => {
         await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
         const lock = await tx.query<{ ok: boolean }>('SELECT pg_try_advisory_xact_lock($1) AS ok', [EVALUATION_LOCK]);
-        if (!lock.rows[0]?.ok) return { skipped: true, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, at: null };
+        if (!lock.rows[0]?.ok) return { skipped: true, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, retired: 0, at: null };
         const now = (await tx.query<{ now: Date }>('SELECT now() AS now')).rows[0]?.now ?? new Date();
+        const retired = await retireRules(tx, now);
         const servers = await loadSnapshot(tx);
         const conditions = await loadConditions(tx, config.rulesRevision);
         const result = evaluate(servers, conditions, config.thresholds);
         const counts = await applyTransitions(tx, result, config, now);
-        return { skipped: false, ...counts, at: now.toISOString() };
+        return { skipped: false, ...counts, retired, at: now.toISOString() };
       });
     },
 
     async claim(limit, generation) {
+      await cancelRetiredOutbox(db);
       const { rows } = await db.query(
         `WITH picked AS (
-           SELECT id FROM alert_outbox
-            WHERE generation = $3 AND ((status = 'queued' AND next_attempt_at <= now()) OR (status = 'sending' AND lease_until < now()))
-            ORDER BY next_attempt_at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
+           SELECT o.id FROM alert_outbox o
+            WHERE o.generation = $3 AND ((o.status = 'queued' AND o.next_attempt_at <= now()) OR (o.status = 'sending' AND o.lease_until < now()))
+              AND NOT EXISTS (SELECT 1 FROM alert_incidents i WHERE i.id = o.incident_id AND i.rule = ANY($4::text[]))
+            ORDER BY o.next_attempt_at, o.id LIMIT $1 FOR UPDATE OF o SKIP LOCKED)
          UPDATE alert_outbox o SET status = 'sending', attempts = LEAST(o.attempts + 1, 20), lease_until = now() + make_interval(secs => $2)
            FROM picked WHERE o.id = picked.id
-         RETURNING o.id::text AS outbox_id, o.kind, o.attempts, o.incident_id`, [limit, LEASE_SECONDS, generation]);
+         RETURNING o.id::text AS outbox_id, o.kind, o.attempts, o.incident_id`, [limit, LEASE_SECONDS, generation, RETIRED]);
       if (rows.length === 0) return [];
       const incidents = await db.query(`SELECT ${INCIDENT_COLUMNS} FROM alert_incidents i WHERE i.id = ANY($1::uuid[])`, [rows.map((r: Row) => r.incident_id)]);
       const byId = new Map(incidents.rows.map((r: Row) => [String(r.id), toMessage(r)]));

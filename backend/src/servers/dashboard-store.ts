@@ -2,7 +2,7 @@ import type { Database, QueryClient } from '../database.js';
 import { type ControlAction, RESULT_GRACE_SECONDS } from './control.js';
 import { INVENTORY_FRESH_SECONDS, type ProcessStatus } from './inventory.js';
 import { INVENTORY_STATE_SQL, type InventoryState, SERVER_STATUS_SQL } from './inventory-store.js';
-import type { ServerSnapshot } from './snapshot.js';
+import { normalizeSnapshot } from './snapshot.js';
 import { ONLINE_WINDOW_SECONDS, type ServerStatus } from './store.js';
 
 // Dashboard (ADR-020): one read-only, consistent snapshot of the whole system. All queries run in ONE
@@ -22,14 +22,11 @@ export interface DashboardServer {
   name: string;
   status: ServerStatus;
   lastSeenAt: string | null;
-  /** Only for an online server; never stale data presented as current. */
-  metrics: {
-    hostname: string;
-    uptimeSeconds: number;
-    cpuCount: number;
-    loadAverage: [number, number, number];
-    memory: { totalBytes: number; usedBytes: number; usedPercent: number | null };
-  } | null;
+  /**
+   * Only for an online server; never stale data presented as current. Host monitoring is Zabbix's job (ADR-023):
+   * the current load average is the only host metric; hostname identifies the machine.
+   */
+  metrics: { hostname: string; loadAverage: [number, number, number] } | null;
   inventory: { state: InventoryState; collectedAt: string | null };
   /** Counts of LIVE processes (online server + current inventory); null when the data is not live. */
   processes: { total: number; online: number; problem: number } | null;
@@ -177,18 +174,11 @@ async function read(tx: QueryClient, actionsFor: string | null): Promise<Dashboa
     serverList: {
       limit: DASHBOARD_LIMITS.serverList, total: totalOf(serverList),
       items: serverList.map((r: Row): DashboardServer => {
-        const s = r.snapshot as ServerSnapshot | null;
+        const s = normalizeSnapshot(r.snapshot); // also reads rows written by older Agents (legacy keys ignored)
         const live = r.status === 'online' && r.inv === 'current';
         return {
           id: String(r.id), name: String(r.name), status: r.status as ServerStatus, lastSeenAt: iso(r.received_at),
-          metrics: s ? {
-            hostname: s.hostname, uptimeSeconds: s.uptimeSeconds, cpuCount: s.cpuCount, loadAverage: [s.loadAverage[0], s.loadAverage[1], s.loadAverage[2]],
-            memory: {
-              totalBytes: s.memory.totalBytes, usedBytes: s.memory.totalBytes - s.memory.freeBytes,
-              // totalBytes = 0: the percentage is unknown, never 0 %.
-              usedPercent: s.memory.totalBytes > 0 ? Math.round(((s.memory.totalBytes - s.memory.freeBytes) / s.memory.totalBytes) * 1000) / 10 : null,
-            },
-          } : null,
+          metrics: s ? { hostname: s.hostname, loadAverage: s.loadAverage } : null,
           inventory: { state: r.inv as InventoryState, collectedAt: iso(r.inventory_collected_at) },
           processes: live ? { total: num(r.p_total), online: num(r.p_online), problem: num(r.p_problem) } : null,
         };

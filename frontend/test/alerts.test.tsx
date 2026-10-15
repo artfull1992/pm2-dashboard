@@ -17,7 +17,7 @@ const status = (over: Record<string, unknown> = {}) => ({
 });
 const adminBlock = {
   webhookConfigured: true, publicUrlConfigured: true, intervalSeconds: 30, cooldownMinutes: 15, reminderMinutes: 0, maxAttempts: 6, queueMax: 100,
-  thresholds: { cpuOpenPercent: 90, cpuClosePercent: 70, memoryOpenPercent: 90, memoryClosePercent: 80, confirmSamples: 3, recoverSamples: 2, statusConfirmSamples: 2, restartsThreshold: 3, restartsWindowMinutes: 10 },
+  thresholds: { cpuOpenPercent: 90, cpuClosePercent: 70, confirmSamples: 3, recoverSamples: 2, statusConfirmSamples: 2, restartsThreshold: 3, restartsWindowMinutes: 10 },
   queue: { queued: 1, sending: 0, sent: 7, failed: 1, unknown: 1, dropped: 0 }, lastSentAt: '2026-10-14T10:00:00.000Z', lastDeliveryError: 'http_500', lastEvaluationError: null,
 };
 
@@ -48,14 +48,14 @@ describe('alerts page', () => {
 
   it('viewer: navigation item, active incidents with human wording, no delivery column and no admin panel', async () => {
     backend('viewer', (req) => (req.url.startsWith('/api/alerts?state=active') ? json(200, {
-      items: [inc(1), inc(2, { rule: 'server_memory', severity: 'warning', processName: null, pmId: null, detail: { value: 93.5, threshold: 90 }, serverStatus: 'offline' })], nextBefore: null,
+      items: [inc(1), inc(2, { rule: 'process_cpu', severity: 'warning', detail: { value: 312, threshold: 90 }, serverStatus: 'offline' })], nextBefore: null,
     }) : undefined));
     renderApp('/');
     await userEvent.setup().click(await screen.findByRole('link', { name: 'Сповіщення' }));
     const active = (await screen.findByRole('heading', { name: /Активні проблеми/ })).closest('section') as HTMLElement;
     expect(await within(active).findByText('Статус errored')).toBeTruthy();
     expect(within(active).getByText('Критично')).toBeTruthy();
-    expect(within(active).getByText('Зайнято 93.5 % (поріг 90 %)')).toBeTruthy();
+    expect(within(active).getByText('CPU 312 % (поріг 90 %)')).toBeTruthy(); // PM2 CPU may exceed 100 %
     expect(within(active).getByText('Сервер не звітує: стан не оновлюється')).toBeTruthy(); // stale data is labelled
     expect(within(active).queryByRole('columnheader', { name: 'Сповіщення' })).toBeNull();
     expect(screen.queryByText(/Доставка й налаштування/)).toBeNull();
@@ -87,6 +87,18 @@ describe('alerts page', () => {
     backend('operator', () => undefined);
     renderApp('/alerts');
     expect(await screen.findByText(/За останньою перевіркою .* відкритих проблем немає\./)).toBeTruthy();
+  });
+
+  it('history keeps a retired server_memory incident readable and never calls its closing a recovery (ADR-023)', async () => {
+    backend('viewer', (req) => (req.url.startsWith('/api/alerts?state=resolved') ? json(200, {
+      items: [inc(5, { rule: 'server_memory', severity: 'warning', processName: null, pmId: null, detail: { value: 93.5, threshold: 90 }, status: 'resolved', resolution: 'retired', resolvedAt: '2026-10-14T11:00:00.000Z' })],
+      nextBefore: null,
+    }) : undefined));
+    renderApp('/alerts');
+    const history = (await screen.findByRole('heading', { name: 'Закриті інциденти' })).closest('section') as HTMLElement;
+    expect(await within(history).findByText('Правило виведено з експлуатації (не відновлення)')).toBeTruthy();
+    expect(within(history).getByText(/Висока пам’ять ОС \(правило виведено\)/)).toBeTruthy();
+    expect(within(history).queryByText('Відновлено')).toBeNull();
   });
 
   it('resolved history pages with the cursor ("Старіші" / "Новіші")', async () => {

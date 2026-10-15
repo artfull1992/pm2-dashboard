@@ -21,7 +21,7 @@ const KEY = Buffer.alloc(32, 5).toString('base64');
 const config = (key: string | null = KEY): AlertsConfig => loadAlertsConfig((k, f = '') => (k === 'ALERTS_SECRET_KEY' && key ? key : f), []);
 
 class FakeAlerts implements AlertsStore {
-  evaluateOnce() { return Promise.resolve({ skipped: true, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, at: null }); }
+  evaluateOnce() { return Promise.resolve({ skipped: true, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, retired: 0, at: null }); }
   claim() { return Promise.resolve([]); }
   finish() { return Promise.resolve(true); }
   listIncidents() { return Promise.resolve({ items: [], nextBefore: null }); }
@@ -108,6 +108,21 @@ describe('PATCH /api/settings/alerts', () => {
     expect(settings.settings.revision).toBe(1);
     // PM2 CPU % may exceed 100 (multi-core).
     expect((await a.inject({ method: 'PATCH', url: '/api/settings/alerts', headers: h(s), payload: { revision: 1, rules: { cpuOpenPercent: 250, cpuClosePercent: 180 } } })).statusCode).toBe(200);
+  });
+
+  it('OS memory thresholds are gone (ADR-023): not in the view or ranges; even an in-range value is an unknown field (400, no revision step)', async () => {
+    const { app: a, login, settings } = setupWithKey();
+    const s = await login('admin');
+    const view = await a.inject({ method: 'GET', url: '/api/settings/alerts', headers: { cookie: s.cookie } });
+    expect(view.statusCode).toBe(200);
+    expect(view.body).not.toMatch(/memory/i);
+    expect(Object.keys(view.json<{ rules: object }>().rules).sort()).toEqual(['confirmSamples', 'cpuClosePercent', 'cpuOpenPercent', 'recoverSamples', 'restartsThreshold', 'restartsWindowMinutes', 'statusConfirmSamples']);
+    for (const rules of [{ memoryOpenPercent: 90 }, { memoryClosePercent: 80 }, { cpuOpenPercent: 90, memoryOpenPercent: 90 }]) {
+      expect((await a.inject({ method: 'PATCH', url: '/api/settings/alerts', headers: h(s), payload: { revision: 1, rules } })).statusCode).toBe(400);
+    }
+    expect(settings.settings.revision).toBe(1);
+    const status = await a.inject({ method: 'GET', url: '/api/alerts/status', headers: { cookie: s.cookie } });
+    expect(status.body).not.toMatch(/memory/i);
   });
 
   it('applies all groups with one revision step and audits metadata; stale revision → 409 and nothing changes', async () => {

@@ -8,7 +8,7 @@ import { agentTokenDigest, bearerToken, isWellFormedAgentToken, newAgentToken } 
 import { normalizeSnapshot, snapshotProblem } from '../src/servers/snapshot.js';
 import { captureLogs, fakeDatabase } from './helpers.js';
 import { FakeAuthStore } from './support/fake-auth-store.js';
-import { FakeServerStore, validSnapshot } from './support/fake-server-store.js';
+import { FakeServerStore, legacySnapshot, validSnapshot } from './support/fake-server-store.js';
 
 const ORIGIN = 'https://nc.example.test';
 const PASSWORD = 'synthetic-Servers-Passw0rd';
@@ -205,9 +205,20 @@ describe('machine authentication (heartbeat)', () => {
     expect(Number.isInteger(reply.intervalSeconds) && reply.intervalSeconds >= 5 && reply.intervalSeconds <= 300).toBe(true);
     expect(res.headers['cache-control']).toBe('no-store');
     expect([...servers.heartbeats.keys()]).toEqual([a.serverId]);
-    expect(Object.keys(servers.heartbeats.get(a.serverId)?.snapshot ?? {}).sort()).toEqual(['agentVersion', 'arch', 'cpuCount', 'hostname', 'loadAverage', 'memory', 'platform', 'uptimeSeconds']);
+    expect(Object.keys(servers.heartbeats.get(a.serverId)?.snapshot ?? {}).sort()).toEqual(['agentVersion', 'arch', 'hostname', 'loadAverage', 'platform']);
     const detail = await app.inject({ method: 'GET', url: `/api/servers/${a.serverId}`, headers: { cookie: admin.cookie } });
-    expect(detail.json()).toMatchObject({ status: 'online', snapshot: { hostname: 'node-1.example' } });
+    expect(detail.json()).toMatchObject({ status: 'online', snapshot: { hostname: 'node-1.example', loadAverage: [0.5, 0.4, 0.3] } });
+  });
+
+  it('compatibility (ADR-023): a 0.4.x heartbeat with legacy host metrics is accepted, but only the current fields are stored and returned', async () => {
+    build();
+    const admin = await session('admin');
+    const a = await provisioned(admin);
+    expect((await heartbeat(a.token, legacySnapshot())).statusCode).toBe(200);
+    const stored = servers.heartbeats.get(a.serverId)?.snapshot ?? {};
+    expect(stored).toEqual({ agentVersion: '0.4.0', hostname: 'node-1.example', platform: 'linux', arch: 'x64', loadAverage: [0.5, 0.4, 0.3] });
+    const detail = await app.inject({ method: 'GET', url: `/api/servers/${a.serverId}`, headers: { cookie: admin.cookie } });
+    for (const legacy of ['memory', 'freeBytes', 'totalBytes', 'uptimeSeconds', 'cpuCount']) expect(detail.body).not.toContain(legacy);
   });
 
   it.each([
@@ -261,20 +272,29 @@ describe('machine authentication (heartbeat)', () => {
   });
 
   it.each([
-    ['missing field', (s: Record<string, unknown>) => { delete s.hostname; }],
-    ['wrong type', (s: Record<string, unknown>) => { s.cpuCount = 'four'; }],
-    ['load average length', (s: Record<string, unknown>) => { s.loadAverage = [1, 2]; }],
-    ['negative uptime', (s: Record<string, unknown>) => { s.uptimeSeconds = -1; }],
-    ['huge cpu count', (s: Record<string, unknown>) => { s.cpuCount = 10_000; }],
-    ['hostname with spaces', (s: Record<string, unknown>) => { s.hostname = 'a b'; }],
-    ['long hostname', (s: Record<string, unknown>) => { s.hostname = 'a'.repeat(300); }],
-    ['bad version', (s: Record<string, unknown>) => { s.agentVersion = '1.0; DROP'; }],
-    ['free > total', (s: Record<string, unknown>) => { s.memory = { totalBytes: 1, freeBytes: 2 }; }],
-  ])('malformed snapshot (%s) → 400, nothing recorded', async (_name, mutate) => {
+    // Current contract (Agent >= 0.5.0).
+    ['missing field', 'current', (s: Record<string, unknown>) => { delete s.hostname; }],
+    ['missing load average', 'current', (s: Record<string, unknown>) => { delete s.loadAverage; }],
+    ['load average length', 'current', (s: Record<string, unknown>) => { s.loadAverage = [1, 2]; }],
+    ['negative load', 'current', (s: Record<string, unknown>) => { s.loadAverage = [-1, 0, 0]; }],
+    ['load not a number', 'current', (s: Record<string, unknown>) => { s.loadAverage = ['1', 0, 0]; }],
+    ['huge load', 'current', (s: Record<string, unknown>) => { s.loadAverage = [1e9, 0, 0]; }],
+    ['hostname with spaces', 'current', (s: Record<string, unknown>) => { s.hostname = 'a b'; }],
+    ['long hostname', 'current', (s: Record<string, unknown>) => { s.hostname = 'a'.repeat(300); }],
+    ['bad version', 'current', (s: Record<string, unknown>) => { s.agentVersion = '1.0; DROP'; }],
+    ['unknown field', 'current', (s: Record<string, unknown>) => { s.diskBytes = 1; }],
+    // Legacy fields are still validated in their exact old shape while accepted (no free-form JSON).
+    ['legacy: wrong type', 'legacy', (s: Record<string, unknown>) => { s.cpuCount = 'four'; }],
+    ['legacy: negative uptime', 'legacy', (s: Record<string, unknown>) => { s.uptimeSeconds = -1; }],
+    ['legacy: huge cpu count', 'legacy', (s: Record<string, unknown>) => { s.cpuCount = 10_000; }],
+    ['legacy: free > total', 'legacy', (s: Record<string, unknown>) => { s.memory = { totalBytes: 1, freeBytes: 2 }; }],
+    ['legacy: extra memory key', 'legacy', (s: Record<string, unknown>) => { s.memory = { totalBytes: 2, freeBytes: 1, usedBytes: 1 }; }],
+    ['legacy: memory without free', 'legacy', (s: Record<string, unknown>) => { s.memory = { totalBytes: 2 }; }],
+  ])('malformed snapshot (%s) → 400, nothing recorded', async (_name, kind, mutate) => {
     build();
     const admin = await session('admin');
     const { token } = await provisioned(admin);
-    const payload = validSnapshot() as unknown as Record<string, unknown>;
+    const payload = (kind === 'legacy' ? legacySnapshot() : validSnapshot()) as unknown as Record<string, unknown>;
     mutate(payload);
     expect((await heartbeat(token, payload)).statusCode).toBe(400);
     expect(servers.heartbeats.size).toBe(0);
@@ -324,11 +344,15 @@ describe('machine authentication (heartbeat)', () => {
 });
 
 describe('snapshot helpers and tokens', () => {
-  it('normalizeSnapshot keeps only contract fields; snapshotProblem checks memory', () => {
-    const withExtra = { ...validSnapshot(), env: { SECRET: 'x' } } as unknown as Parameters<typeof normalizeSnapshot>[0];
-    expect(normalizeSnapshot(withExtra)).not.toHaveProperty('env');
+  it('normalizeSnapshot keeps only the current fields (also for stored legacy rows); snapshotProblem checks the legacy memory shape', () => {
+    expect(normalizeSnapshot({ ...validSnapshot(), env: { SECRET: 'x' } })).toEqual(validSnapshot());
+    expect(normalizeSnapshot(legacySnapshot())).toEqual(validSnapshot({ agentVersion: '0.4.0' }));
+    for (const bad of [null, 'x', 42, {}, { ...validSnapshot(), loadAverage: [1, 2] }, { ...validSnapshot(), loadAverage: [Number.NaN, 0, 0] }, { ...validSnapshot(), hostname: 5 }]) {
+      expect(normalizeSnapshot(bad)).toBeNull();
+    }
     expect(snapshotProblem(validSnapshot())).toBeNull();
-    expect(snapshotProblem(validSnapshot({ memory: { totalBytes: 1, freeBytes: 2 } }))).toBe('memory_free_exceeds_total');
+    expect(snapshotProblem(legacySnapshot())).toBeNull();
+    expect(snapshotProblem(legacySnapshot({ memory: { totalBytes: 1, freeBytes: 2 } }))).toBe('memory_free_exceeds_total');
   });
 
   it('agent tokens: prefix + 32 random bytes, unique', () => {

@@ -75,7 +75,7 @@ export function registerAlertRoutes(app: FastifyInstance, options: AlertRoutesOp
             webhookConfigured: { type: 'boolean' }, publicUrlConfigured: { type: 'boolean' },
             intervalSeconds: int, cooldownMinutes: int, reminderMinutes: int, maxAttempts: int, queueMax: int,
             thresholds: obj({
-              cpuOpenPercent: int, cpuClosePercent: int, memoryOpenPercent: int, memoryClosePercent: int, confirmSamples: int,
+              cpuOpenPercent: int, cpuClosePercent: int, confirmSamples: int,
               recoverSamples: int, statusConfirmSamples: int, restartsThreshold: int, restartsWindowMinutes: int,
             }),
             queue: obj({ queued: int, sending: int, sent: int, failed: int, unknown: int, dropped: int, cancelled: int }),
@@ -110,7 +110,7 @@ export function registerAlertRoutes(app: FastifyInstance, options: AlertRoutesOp
         intervalSeconds: cfg.intervalSeconds, cooldownMinutes: cfg.cooldownSeconds / 60, reminderMinutes: cfg.reminderEnabled ? cfg.reminderSeconds / 60 : 0,
         maxAttempts: cfg.maxAttempts, queueMax: cfg.queueMax, integrationState: rt.integration.state, integrationError: rt.integration.error,
         thresholds: {
-          cpuOpenPercent: t.cpuOpenPercent, cpuClosePercent: t.cpuClosePercent, memoryOpenPercent: t.memoryOpenPercent, memoryClosePercent: t.memoryClosePercent,
+          cpuOpenPercent: t.cpuOpenPercent, cpuClosePercent: t.cpuClosePercent,
           confirmSamples: t.confirmSamples, recoverSamples: t.recoverSamples, statusConfirmSamples: t.statusConfirmSamples,
           restartsThreshold: t.restartsThreshold, restartsWindowMinutes: t.restartsWindowSeconds / 60,
         },

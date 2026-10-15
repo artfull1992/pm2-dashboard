@@ -29,7 +29,7 @@ const RULE_TITLE: Record<Rule, string> = {
   inventory_stale: 'Дані PM2 неактуальні',
   process_down: 'PM2-процес не працює',
   process_cpu: 'Високе CPU процесу (за PM2)',
-  server_memory: 'Висока зайнятість пам’яті ОС',
+  server_memory: 'Висока зайнятість пам’яті ОС (правило виведено)', // retired (ADR-023): never sent again
   process_restarts: 'Часті рестарти PM2-процесу',
 };
 const num = (v: unknown) => (typeof v === 'number' ? v : null);
@@ -56,7 +56,8 @@ export function renderMessage(kind: 'firing' | 'resolved' | 'reminder', i: Messa
     const minutes = i.resolvedAt ? Math.max(0, Math.round((Date.parse(i.resolvedAt) - Date.parse(i.openedAt)) / 60_000)) : null;
     const head = i.resolution === 'recovered' ? `:white_check_mark: Відновлено: ${RULE_TITLE[i.rule]}`
       : i.resolution === 'process_gone' ? `:information_source: Закрито без підтвердження відновлення: ${RULE_TITLE[i.rule]}`
-        : `:information_source: Закрито (сервер виключено з моніторингу): ${RULE_TITLE[i.rule]}`;
+        : i.resolution === 'retired' ? `:information_source: Закрито: правило виведено з експлуатації (не відновлення): ${RULE_TITLE[i.rule]}`
+          : `:information_source: Закрито (сервер виключено з моніторингу): ${RULE_TITLE[i.rule]}`;
     const why = i.resolution === 'process_gone' ? '\nПроцес більше не відображається в PM2 (видалено або перейменовано).' : '';
     return `${head}\n${target}${why}\nЗакрито: ${i.resolvedAt ? utc(i.resolvedAt) : '—'}${minutes === null ? '' : ` · тривалість ${String(minutes)} хв`} · ${ref}${link}`;
   }

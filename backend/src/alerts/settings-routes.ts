@@ -28,7 +28,7 @@ const MESSAGES = Object.freeze({
 });
 
 const range = (k: SettingKey) => ({ type: 'integer', minimum: SETTINGS_RANGES[k][0], maximum: SETTINGS_RANGES[k][1] }) as const;
-const RULE_KEYS = ['cpuOpenPercent', 'cpuClosePercent', 'memoryOpenPercent', 'memoryClosePercent', 'confirmSamples', 'recoverSamples', 'statusConfirmSamples', 'restartsThreshold', 'restartsWindowMinutes'] as const;
+const RULE_KEYS = ['cpuOpenPercent', 'cpuClosePercent', 'confirmSamples', 'recoverSamples', 'statusConfirmSamples', 'restartsThreshold', 'restartsWindowMinutes'] as const;
 const TIMING_KEYS = ['intervalSeconds', 'cooldownMinutes', 'reminderMinutes'] as const;
 const ADVANCED_KEYS = ['httpTimeoutMs', 'maxAttempts', 'queueMax'] as const;
 const group = (keys: readonly SettingKey[], extra: Record<string, unknown> = {}) => ({
@@ -124,7 +124,7 @@ export function registerSettingsRoutes(app: FastifyInstance, options: SettingsRo
     return {
       revision: s.revision, updatedAt: s.updatedAt, engineEnabled: s.engineEnabled, deliveryEnabled: s.deliveryEnabled,
       rules: {
-        cpuOpenPercent: t.cpuOpenPercent, cpuClosePercent: t.cpuClosePercent, memoryOpenPercent: t.memoryOpenPercent, memoryClosePercent: t.memoryClosePercent,
+        cpuOpenPercent: t.cpuOpenPercent, cpuClosePercent: t.cpuClosePercent,
         confirmSamples: t.confirmSamples, recoverSamples: t.recoverSamples, statusConfirmSamples: t.statusConfirmSamples,
         restartsThreshold: t.restartsThreshold, restartsWindowMinutes: t.restartsWindowSeconds / 60,
       },

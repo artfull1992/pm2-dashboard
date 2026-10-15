@@ -9,6 +9,7 @@ import { credentials, type E2eRole } from '../support/env.js';
 
 const ONLINE = `dash-online-${randomUUID().slice(0, 6)}`;
 const OFFLINE = `dash-offline-${randomUUID().slice(0, 6)}`;
+// A row as written by a 0.4.x Agent (legacy host metrics in JSONB): must still read fine, without showing them (ADR-023).
 const snapshot = { agentVersion: '0.4.0', hostname: 'dash-host', platform: 'linux', arch: 'x64', uptimeSeconds: 7200, cpuCount: 2, loadAverage: [0.42, 0.3, 0.2], memory: { totalBytes: 4 * 1024 ** 3, freeBytes: 1024 ** 3 } };
 
 test.beforeAll(async () => {
@@ -51,7 +52,8 @@ test('operator: seeded servers appear with live metrics and attention; recent ac
   const row = page.getByRole('row').filter({ hasText: ONLINE });
   await expect(row).toContainText('0.42 / 0.30 / 0.20');
   await expect(row).toContainText('1 з 2 працюють');
-  await expect(row.getByRole('img', { name: /Зайнято 75 %/ })).toBeVisible();
+  await expect(row).not.toContainText('ГіБ'); // legacy memory values are never shown
+  await expect(page.getByRole('columnheader', { name: /Пам.ять ОС|Uptime/ })).toHaveCount(0);
   const offlineRow = page.getByRole('row').filter({ hasText: OFFLINE });
   await expect(offlineRow).not.toContainText('dash-host'); // no metrics of an offline server
   const actions = page.getByRole('region', { name: 'Останні керуючі дії' });

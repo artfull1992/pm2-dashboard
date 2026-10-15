@@ -250,11 +250,12 @@ h1, h2, h3, p { margin: 0; }
 .metric__detail { font-size: var(--font-xs); color: var(--text-muted); }
 .metric--bad .metric__value { color: var(--danger); }
 .metric--warn .metric__value { color: var(--warning); }
-.dash--outdated .metric__value, .dash--outdated .meter__fill { opacity: .6; }
-.dash--outdated .meter__fill { background: var(--text-muted); }
-.meter { display: block; height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; margin-top: 4px; }
-.meter__fill { display: block; height: 100%; background: var(--primary); }
-.dash-mem { display: grid; min-width: 130px; }
+.dash--outdated .metric__value { opacity: .6; }
+
+/* Current load average: one compact line instead of host-metric cards (ADR-023). */
+.load-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-3); padding: var(--space-3) var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.load-line__label { font-size: var(--font-sm); color: var(--text-muted); }
+.load-line__value { font-size: 1.125rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* ------------------------------------------------------------------ lists (attention, recent actions) */
 .list { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }

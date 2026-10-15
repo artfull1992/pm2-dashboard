@@ -212,6 +212,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         }
         if (alertsConfig.legacy.webhook) alertsLog.warn({ key: 'ALERTS_SLACK_WEBHOOK_URL' }, 'Ignored: the Slack webhook is configured in the admin UI (ADR-022)');
         if (alertsConfig.legacy.flags) alertsLog.warn({ keys: 'ALERTS_ENABLED,ALERTS_DELIVERY_ENABLED' }, 'Ignored: engine/delivery are switched in the admin UI (ADR-022)');
+        if (alertsConfig.legacy.memory) alertsLog.warn({ keys: 'ALERTS_MEMORY_OPEN_PERCENT,ALERTS_MEMORY_CLOSE_PERCENT' }, 'Ignored: the OS memory rule was retired; host monitoring belongs to Zabbix (ADR-023)');
         engine.start();
       });
       app.addHook('preClose', async () => { await engine.stop(); });

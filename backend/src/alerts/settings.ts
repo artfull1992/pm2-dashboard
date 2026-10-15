@@ -18,10 +18,9 @@ export interface AlertSettingsValues {
 }
 export interface AlertSettings extends AlertSettingsValues { revision: number; rulesRevision: number; updatedAt: string }
 
-/** [min, max, default] — percentages: PM2 CPU % may exceed 100 (multi-core), OS memory % may not. */
+/** [min, max, default] — PM2 CPU % may exceed 100 (multi-core). */
 export const SETTINGS_RANGES = Object.freeze({
   cpuOpenPercent: [1, 10_000, 90], cpuClosePercent: [0, 10_000, 70],
-  memoryOpenPercent: [1, 100, 90], memoryClosePercent: [0, 100, 80],
   confirmSamples: [1, 20, 3], recoverSamples: [1, 20, 2], statusConfirmSamples: [1, 20, 2],
   restartsThreshold: [1, 1000, 3], restartsWindowMinutes: [2, 1440, 10],
   intervalSeconds: [10, 600, 30], cooldownMinutes: [0, 1440, 15], reminderMinutes: [1, 10_080, 60],
@@ -51,9 +50,14 @@ export function evaluationConfig(s: AlertSettings, delivery: { usable: boolean; 
   };
 }
 
-/** Cross-field rules (also enforced by DB CHECKs): recovery below opening. Returns the offending pair or null. */
-export function settingsProblem(v: AlertSettingsValues): 'cpu' | 'memory' | null {
-  if (v.thresholds.cpuClosePercent >= v.thresholds.cpuOpenPercent) return 'cpu';
-  if (v.thresholds.memoryClosePercent >= v.thresholds.memoryOpenPercent) return 'memory';
-  return null;
+/**
+ * alert_settings.memory_open_percent / memory_close_percent belong to the retired server_memory rule (ADR-023). They
+ * stay in the table (NOT NULL, CHECKed) only for compatibility with the previous release: a new row gets these
+ * values, updates never touch them, nothing reads them.
+ */
+export const LEGACY_MEMORY_THRESHOLDS = Object.freeze({ open: 90, close: 80 });
+
+/** Cross-field rule (also enforced by a DB CHECK): recovery below opening. Returns the offending pair or null. */
+export function settingsProblem(v: AlertSettingsValues): 'cpu' | null {
+  return v.thresholds.cpuClosePercent >= v.thresholds.cpuOpenPercent ? 'cpu' : null;
 }

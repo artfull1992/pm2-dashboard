@@ -15,11 +15,11 @@ const names = ['catalog-api', 'billing-api', 'orders-api', 'public-api', LONG, '
 
 const settings = {
   revision: 3, updatedAt: old, engineEnabled: true, deliveryEnabled: true,
-  rules: { cpuOpenPercent: 90, cpuClosePercent: 70, memoryOpenPercent: 90, memoryClosePercent: 80, confirmSamples: 3, recoverSamples: 2, statusConfirmSamples: 2, restartsThreshold: 3, restartsWindowMinutes: 10 },
+  rules: { cpuOpenPercent: 90, cpuClosePercent: 70, confirmSamples: 3, recoverSamples: 2, statusConfirmSamples: 2, restartsThreshold: 3, restartsWindowMinutes: 10 },
   timing: { intervalSeconds: 30, cooldownMinutes: 15, reminderEnabled: false, reminderMinutes: 60 },
   advanced: { httpTimeoutMs: 5000, maxAttempts: 6, queueMax: 100 },
   ranges: Object.fromEntries(Object.entries({
-    cpuOpenPercent: [1, 10000, 90], cpuClosePercent: [0, 10000, 70], memoryOpenPercent: [1, 100, 90], memoryClosePercent: [0, 100, 80],
+    cpuOpenPercent: [1, 10000, 90], cpuClosePercent: [0, 10000, 70],
     confirmSamples: [1, 20, 3], recoverSamples: [1, 20, 2], statusConfirmSamples: [1, 20, 2], restartsThreshold: [1, 1000, 3], restartsWindowMinutes: [2, 1440, 10],
     intervalSeconds: [10, 600, 30], cooldownMinutes: [0, 1440, 15], reminderMinutes: [1, 10080, 60], httpTimeoutMs: [1000, 30000, 5000], maxAttempts: [1, 15, 6], queueMax: [10, 1000, 100],
   }).map(([k, [min, max, d]]) => [k, { min, max, default: d }])),
@@ -38,9 +38,9 @@ function dashboard() {
     attentionProcesses: { items: [{ serverId: SERVER, serverName: 'app-server', pmId: 5, name: 'reports-worker', status: 'errored', restarts: 14, uptimeSeconds: null }], total: 1, limit: 20 },
     serverList: {
       items: [
-        { id: SERVER, name: 'app-server', status: 'online', lastSeenAt: now, metrics: { hostname: 'app-server.example.com', uptimeSeconds: 1_900_000, cpuCount: 8, loadAverage: [1.42, 1.1, 0.95], memory: { totalBytes: 16 * 1024 ** 3, usedBytes: 9.5 * 1024 ** 3, usedPercent: 59 } }, inventory: { state: 'current', collectedAt: now }, processes: { total: 6, online: 5, problem: 1 } },
+        { id: SERVER, name: 'app-server', status: 'online', lastSeenAt: now, metrics: { hostname: 'app-server.example.com', loadAverage: [1.42, 1.1, 0.95] }, inventory: { state: 'current', collectedAt: now }, processes: { total: 6, online: 5, problem: 1 } },
         { id: OFFLINE, name: 'backup-server', status: 'offline', lastSeenAt: old, metrics: null, inventory: { state: 'stale', collectedAt: old }, processes: null },
-        { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', name: 'control-server', status: 'online', lastSeenAt: now, metrics: { hostname: 'control-server.example.com', uptimeSeconds: 600_000, cpuCount: 4, loadAverage: [0.12, 0.2, 0.18], memory: { totalBytes: 8 * 1024 ** 3, usedBytes: 2.1 * 1024 ** 3, usedPercent: 26 } }, inventory: { state: 'current', collectedAt: now }, processes: { total: 3, online: 3, problem: 0 } },
+        { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', name: 'control-server', status: 'online', lastSeenAt: now, metrics: { hostname: 'control-server.example.com', loadAverage: [0.12, 0.2, 0.18] }, inventory: { state: 'current', collectedAt: now }, processes: { total: 3, online: 3, problem: 0 } },
       ],
       total: 3, limit: 50,
     },
@@ -72,7 +72,7 @@ async function api(page: Page, { usersCount = 3 } = {}) {
       ], nextAfterId: null, onlineWindowSeconds: 90 };
     } else if (path === `/api/servers/${SERVER}`) {
       data = { id: SERVER, name: 'app-server', status: 'online', isActive: true, createdAt: old, lastSeenAt: now, hasActiveCredential: true,
-        snapshot: { agentVersion: '0.1.0', hostname: 'app-server.example.com', platform: 'linux', arch: 'x64', uptimeSeconds: 1_900_000, cpuCount: 8, loadAverage: [1.42, 1.1, 0.95], memory: { totalBytes: 16 * 1024 ** 3, freeBytes: 6.5 * 1024 ** 3 } } };
+        snapshot: { agentVersion: '0.5.0', hostname: 'app-server.example.com', platform: 'linux', arch: 'x64', loadAverage: [1.42, 1.1, 0.95] } };
     } else if (path.endsWith('/applications')) {
       data = {
         serverId: SERVER, serverStatus: 'online', freshWindowSeconds: 180,

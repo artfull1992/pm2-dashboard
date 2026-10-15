@@ -19,10 +19,8 @@ type Field = RuleField | TimingField | AdvancedField;
 const LABELS: Record<Field, { label: string; short: string; unit: string }> = {
   cpuOpenPercent: { label: 'CPU процесу — поріг проблеми', short: 'Проблема', unit: '%' },
   cpuClosePercent: { label: 'CPU процесу — поріг відновлення', short: 'Відновлення', unit: '%' },
-  memoryOpenPercent: { label: 'Пам’ять ОС — поріг проблеми', short: 'Проблема', unit: '%' },
-  memoryClosePercent: { label: 'Пам’ять ОС — поріг відновлення', short: 'Відновлення', unit: '%' },
-  confirmSamples: { label: 'Підтверджень проблеми (CPU, пам’ять)', short: 'Проблема', unit: 'поспіль' },
-  recoverSamples: { label: 'Підтверджень відновлення (CPU, пам’ять)', short: 'Відновлення', unit: 'поспіль' },
+  confirmSamples: { label: 'Підтверджень проблеми (CPU процесу)', short: 'Проблема', unit: 'поспіль' },
+  recoverSamples: { label: 'Підтверджень відновлення (CPU процесу)', short: 'Відновлення', unit: 'поспіль' },
   statusConfirmSamples: { label: 'Підтверджень статусу процесу й даних PM2', short: 'Підтверджень', unit: 'поспіль' },
   restartsThreshold: { label: 'Рестартів для сповіщення', short: 'Кількість', unit: 'рестартів' },
   restartsWindowMinutes: { label: 'Вікно для рестартів', short: 'За період', unit: 'хв' },
@@ -37,8 +35,7 @@ const LABELS: Record<Field, { label: string; short: string; unit: string }> = {
 type Row = { title: string; text: string; fields: readonly [Field] | readonly [Field, Field] };
 const LOAD_ROWS: Row[] = [
   { title: 'CPU процесу', text: 'CPU за PM2; на кількох ядрах може перевищувати 100 %. Відновлення — нижче проблеми.', fields: ['cpuOpenPercent', 'cpuClosePercent'] },
-  { title: 'Пам’ять ОС', text: 'Зайнята пам’ять сервера (всього − вільно), не пам’ять застосунку. Відновлення — нижче проблеми.', fields: ['memoryOpenPercent', 'memoryClosePercent'] },
-  { title: 'Підтвердження', text: 'Скільки спостережень CPU й пам’яті поспіль відкривають і закривають проблему.', fields: ['confirmSamples', 'recoverSamples'] },
+  { title: 'Підтвердження', text: 'Скільки зборів PM2 поспіль із високим CPU відкривають проблему і скільки з нормальним — закривають.', fields: ['confirmSamples', 'recoverSamples'] },
 ];
 const PROCESS_ROWS: Row[] = [
   { title: 'Статус процесу', text: 'Скільки вибірок поспіль підтверджують зміну статусу або відсутність даних PM2.', fields: ['statusConfirmSamples'] },
@@ -216,7 +213,6 @@ function validate(draft: Draft, d: SettingsView): Partial<Record<Field, string>>
     if (!/^\d+$/.test(v) || Number(v) < r.min || Number(v) > r.max) e[k] = `Ціле число від ${String(r.min)} до ${String(r.max)}.`;
   }
   if (!e.cpuClosePercent && !e.cpuOpenPercent && Number(draft.cpuClosePercent) >= Number(draft.cpuOpenPercent)) e.cpuClosePercent = 'Має бути нижче порогу проблеми.';
-  if (!e.memoryClosePercent && !e.memoryOpenPercent && Number(draft.memoryClosePercent) >= Number(draft.memoryOpenPercent)) e.memoryClosePercent = 'Має бути нижче порогу проблеми.';
   return e;
 }
 
@@ -299,7 +295,7 @@ function RulesPanel({ data, onData, onReload, onDirty }: { data: SettingsView; o
           </div>
         </div>
       </fieldset>
-      <fieldset className="rules-group"><legend>Навантаження</legend>{LOAD_ROWS.map(row)}</fieldset>
+      <fieldset className="rules-group"><legend>Навантаження процесів</legend>{LOAD_ROWS.map(row)}</fieldset>
       <fieldset className="rules-group"><legend>Процеси</legend>{PROCESS_ROWS.map(row)}</fieldset>
       <fieldset className="rules-group">
         <legend>Цикл і повтори</legend>

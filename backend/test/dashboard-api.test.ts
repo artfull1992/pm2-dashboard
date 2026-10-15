@@ -27,7 +27,8 @@ function sample(withActions: boolean): Dashboard & Record<string, unknown> {
       items: [{
         id: SERVER, name: 'a', status: 'online', lastSeenAt: '2026-10-14T11:59:50.000Z',
         // Extra fields a store might leak must never reach the client.
-        metrics: { hostname: 'h', uptimeSeconds: 10, cpuCount: 2, loadAverage: [0.1, 0.2, 0.3], memory: { totalBytes: 0, usedBytes: 0, usedPercent: null, freeBytes: 0 } as never },
+        // Legacy host metrics a store could still hand over must never reach the client (ADR-023).
+        metrics: { hostname: 'h', loadAverage: [0.1, 0.2, 0.3], uptimeSeconds: 10, cpuCount: 2, memory: { totalBytes: 0, freeBytes: 0 } } as never,
         inventory: { state: 'current', collectedAt: '2026-10-14T11:59:00.000Z' }, processes: { total: 2, online: 1, problem: 1 },
         agentToken: 'ncag_SHOULD_NOT_LEAK',
       } as never],
@@ -107,10 +108,10 @@ describe('GET /api/dashboard', () => {
   it('strict response: unknown fields (tokens, hashes, extra metrics, requester ids) never reach the client', async () => {
     const a = await session('admin');
     const res = await get(a.cookie);
-    for (const leak of ['SHOULD_NOT_LEAK', 'passwordHash', 'agentToken', 'freeBytes', 'requestedBy"', 'leak']) expect(res.body).not.toContain(leak);
+    for (const leak of ['SHOULD_NOT_LEAK', 'passwordHash', 'agentToken', 'freeBytes', 'requestedBy"', 'leak', 'uptimeSeconds":10', 'cpuCount', 'memory', 'usedPercent']) expect(res.body).not.toContain(leak);
     const body = res.json<Dashboard>();
     expect(Object.keys(body).sort()).toEqual(['attentionProcesses', 'attentionServers', 'generatedAt', 'inventory', 'processes', 'recentActions', 'serverList', 'servers', 'windows']);
-    expect(body.serverList.items[0]?.metrics?.memory).toEqual({ totalBytes: 0, usedBytes: 0, usedPercent: null });
+    expect(body.serverList.items[0]?.metrics).toEqual({ hostname: 'h', loadAverage: [0.1, 0.2, 0.3] });
   });
 
   it('database failure → 503 + Retry-After, no SQL or error text in the response or logs', async () => {

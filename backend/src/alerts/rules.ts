@@ -5,19 +5,25 @@
 //   problem  — the open threshold is met by a NEW sample;
 //   recovery — the recovery threshold is met by a NEW sample;
 //   hold     — a new sample in the hysteresis band (breaks a pending/recovering streak, keeps a firing incident);
-//   skip     — no usable data (offline server, stale inventory, null metric, total memory 0, same sample again):
+//   skip     — no usable data (offline server, stale inventory, null metric, same sample again):
 //              nothing changes — missing data is never treated as recovery.
 
+/** Every rule an incident row can carry — including retired ones, whose history stays readable. */
 export const RULES = ['server_offline', 'inventory_stale', 'process_down', 'process_cpu', 'server_memory', 'process_restarts'] as const;
 export type Rule = (typeof RULES)[number];
+/**
+ * Rules that are no longer evaluated (ADR-023: host metrics belong to Zabbix). Their open incidents are closed as
+ * "retired" (never as a recovery), their queued notifications are cancelled and their condition state is dropped.
+ */
+export const RETIRED_RULES = ['server_memory'] as const satisfies readonly Rule[];
 export type Severity = 'critical' | 'warning';
 export type ConditionState = 'ok' | 'pending' | 'firing' | 'recovering';
-export type Resolution = 'recovered' | 'process_gone' | 'excluded';
+/** retired = the rule was taken out of service; says nothing about the observed value. */
+export type Resolution = 'recovered' | 'process_gone' | 'excluded' | 'retired';
 
 export interface AlertThresholds {
   cpuOpenPercent: number; cpuClosePercent: number;
-  memoryOpenPercent: number; memoryClosePercent: number;
-  /** New samples in a row needed to open / to resolve the CPU and memory rules. */
+  /** New samples in a row needed to open / to resolve the process CPU rule. */
   confirmSamples: number; recoverSamples: number;
   /** New inventory samples in a row needed to open process_down and inventory_stale. */
   statusConfirmSamples: number;
@@ -31,7 +37,6 @@ export interface ServerObs {
   id: string; name: string;
   status: 'online' | 'offline' | 'never_connected';
   heartbeatAt: number | null;
-  memory: { totalBytes: number; freeBytes: number } | null;
   inventory: { state: 'current' | 'stale' | 'unavailable' | 'not_reported'; reportedAt: number | null; collectedAt: number | null };
   /** All processes of the last collected inventory (used only when the inventory is current and the server online). */
   processes: ProcessObs[];
@@ -108,8 +113,6 @@ function step(prev: ConditionRow | undefined, c: StepContext, out: Transition[])
   }
 }
 
-const pct = (v: number) => Math.round(v * 10) / 10;
-
 /** Restart samples: baseline, identity/counter reset and the delta inside the window (never the cumulative count). */
 function restartEvidence(prev: ConditionRow | undefined, p: ProcessObs, at: number, t: AlertThresholds): { evidence: Evidence; samples: Sample[]; detail: Detail } {
   if (p.restarts === null) return { evidence: 'skip', samples: prev?.samples ?? [], detail: {} };
@@ -157,17 +160,7 @@ export function evaluate(servers: readonly ServerObs[], previous: readonly Condi
     // Everything below needs an online server; an offline one is covered by the single server_offline incident.
     if (s.status !== 'online') continue;
 
-    // 2. Server memory (OS view: total − free). total = 0 / no snapshot → unknown, never "0 %".
-    const mem = s.memory;
-    const usedPercent = mem && mem.totalBytes > 0 ? pct(((mem.totalBytes - mem.freeBytes) / mem.totalBytes) * 100) : null;
-    apply({
-      key: conditionKey('server_memory', s.id), rule: 'server_memory', server: s, process: null, severity: 'warning',
-      detail: { value: usedPercent, threshold: t.memoryOpenPercent },
-      evidence: usedPercent === null ? 'skip' : usedPercent >= t.memoryOpenPercent ? 'problem' : usedPercent < t.memoryClosePercent ? 'recovery' : 'hold',
-      sampleAt: s.heartbeatAt, confirm: t.confirmSamples, recover: t.recoverSamples,
-    });
-
-    // 3. Inventory stale/unavailable on an online server (not_reported = PM2 inventory not set up: no alert).
+    // 2. Inventory stale/unavailable on an online server (not_reported = PM2 inventory not set up: no alert).
     const inv = s.inventory;
     apply({
       key: conditionKey('inventory_stale', s.id), rule: 'inventory_stale', server: s, process: null, severity: 'warning',
@@ -177,7 +170,7 @@ export function evaluate(servers: readonly ServerObs[], previous: readonly Condi
     });
     if (inv.state !== 'current' || inv.collectedAt === null) continue; // process data not current: suppressed
 
-    // 4–6. Per live process, sampled by the inventory collection time.
+    // 3–5. Per live process, sampled by the inventory collection time.
     const at = inv.collectedAt;
     const seen = new Set<string>();
     for (const p of s.processes) {
@@ -217,6 +210,8 @@ export function evaluate(servers: readonly ServerObs[], previous: readonly Condi
 
   // Servers no longer evaluated (deactivated or deleted): close their incidents as "excluded", drop their state.
   for (const row of previous) {
+    // Retired rules are closed by the store (as "retired", before this pure step); never by this function.
+    if ((RETIRED_RULES as readonly Rule[]).includes(row.rule)) continue;
     if (byId.has(row.serverId) || touched.has(row.key)) continue;
     if ((row.state === 'firing' || row.state === 'recovering') && row.incidentId) {
       transitions.push({ kind: 'resolve', key: row.key, incidentId: row.incidentId, resolution: 'excluded', detail: {}, observedAt: 0 });

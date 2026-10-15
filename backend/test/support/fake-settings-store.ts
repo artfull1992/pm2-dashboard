@@ -33,7 +33,7 @@ export class FakeSettingsStore implements SettingsStore {
     const cur = this.settings;
     if (cur.revision !== expectedRevision) return Promise.resolve({ status: 'conflict' as const });
     const next = { ...cur, ...patch, thresholds: { ...cur.thresholds, ...(patch.thresholds ?? {}) } };
-    if (next.thresholds.cpuClosePercent >= next.thresholds.cpuOpenPercent || next.thresholds.memoryClosePercent >= next.thresholds.memoryOpenPercent) return Promise.resolve({ status: 'invalid' as const });
+    if (next.thresholds.cpuClosePercent >= next.thresholds.cpuOpenPercent) return Promise.resolve({ status: 'invalid' as const });
     if (next.deliveryEnabled && !cur.deliveryEnabled && !this.integration.sealed) return Promise.resolve({ status: 'not_configured' as const });
     const changed = (Object.keys(patch) as (keyof SettingsPatch)[]).filter((k) => JSON.stringify(k === 'thresholds' ? next.thresholds : next[k]) !== JSON.stringify(k === 'thresholds' ? cur.thresholds : cur[k]));
     if (changed.length === 0) return Promise.resolve({ status: 'updated' as const, settings: cur });

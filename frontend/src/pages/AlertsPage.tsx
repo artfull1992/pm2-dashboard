@@ -15,9 +15,12 @@ import { formatDate } from './ServersPage';
 
 const RULE_TITLE: Record<AlertRule, string> = {
   server_offline: 'Сервер не звітує', inventory_stale: 'Дані PM2 неактуальні', process_down: 'PM2-процес не працює',
-  process_cpu: 'Високе CPU процесу (PM2)', server_memory: 'Висока пам’ять ОС', process_restarts: 'Часті рестарти',
+  process_cpu: 'Високе CPU процесу (PM2)', server_memory: 'Висока пам’ять ОС (правило виведено)', process_restarts: 'Часті рестарти',
 };
-const RESOLUTION_TEXT = { recovered: 'Відновлено', process_gone: 'Процес зник з PM2 (відновлення не підтверджено)', excluded: 'Сервер виключено з моніторингу' } as const;
+const RESOLUTION_TEXT = {
+  recovered: 'Відновлено', process_gone: 'Процес зник з PM2 (відновлення не підтверджено)', excluded: 'Сервер виключено з моніторингу',
+  retired: 'Правило виведено з експлуатації (не відновлення)',
+} as const;
 const DELIVERY_TEXT = {
   none: 'Не надсилалось', queued: 'У черзі', sending: 'Надсилається', sent: 'Надіслано', failed: 'Не доставлено',
   unknown: 'Результат невідомий (можливий дублікат)', dropped: 'Відкинуто: черга переповнена',
@@ -101,7 +104,7 @@ function AdminPanel({ a }: { a: NonNullable<AlertsStatus['admin']> }) {
         <dt>Slack webhook</dt><dd>{a.webhookConfigured ? 'Налаштовано (значення не показується)' : 'Не налаштовано'}</dd>
         <dt>Черга</dt><dd>{`у черзі ${String(a.queue.queued)} · надсилається ${String(a.queue.sending)} · надіслано ${String(a.queue.sent)} · не доставлено ${String(a.queue.failed)} · невідомо ${String(a.queue.unknown)} · відкинуто ${String(a.queue.dropped)}`}</dd>
         <dt>Остання доставка</dt><dd>{a.lastSentAt ? formatDate(a.lastSentAt) : '—'}{a.lastDeliveryError ? ` · остання помилка: ${a.lastDeliveryError}` : ''}</dd>
-        <dt>Пороги</dt><dd>{`CPU ≥ ${String(t.cpuOpenPercent)} % (відновлення < ${String(t.cpuClosePercent)} %), пам’ять ОС ≥ ${String(t.memoryOpenPercent)} % (< ${String(t.memoryClosePercent)} %), підтвердження ${String(t.confirmSamples)}/${String(t.recoverSamples)} спостережень; рестарти ≥ ${String(t.restartsThreshold)} за ${String(t.restartsWindowMinutes)} хв`}</dd>
+        <dt>Пороги</dt><dd>{`CPU процесу ≥ ${String(t.cpuOpenPercent)} % (відновлення < ${String(t.cpuClosePercent)} %), підтвердження ${String(t.confirmSamples)}/${String(t.recoverSamples)} зборів; рестарти ≥ ${String(t.restartsThreshold)} за ${String(t.restartsWindowMinutes)} хв`}</dd>
         <dt>Цикл і cooldown</dt><dd>{`перевірка кожні ${String(a.intervalSeconds)} с · cooldown ${String(a.cooldownMinutes)} хв · нагадування ${a.reminderMinutes > 0 ? `кожні ${String(a.reminderMinutes)} хв` : 'вимкнено'} · до ${String(a.maxAttempts)} спроб · черга ≤ ${String(a.queueMax)}`}</dd>
       </dl>
       <p className="hint"><Link to="/settings/integrations">Налаштувати Slack</Link> · <Link to="/settings/rules">Правила сповіщень</Link></p>

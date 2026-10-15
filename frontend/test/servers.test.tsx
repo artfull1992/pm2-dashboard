@@ -9,7 +9,7 @@ const server = (overrides: Record<string, unknown> = {}) => ({
   id: ID, name: 'web-01', isActive: true, createdAt: '2026-10-12T10:00:00.000Z', status: 'online',
   lastSeenAt: '2026-10-12T10:05:00.000Z', hasActiveCredential: true, ...overrides,
 });
-const snapshot = { agentVersion: '0.1.0', hostname: 'web-01.example', platform: 'linux', arch: 'x64', uptimeSeconds: 90_061, cpuCount: 4, loadAverage: [0.5, 0.25, 0.1], memory: { totalBytes: 8 * 1024 ** 3, freeBytes: 2 * 1024 ** 3 } };
+const snapshot = { agentVersion: '0.5.0', hostname: 'web-01.example', platform: 'linux', arch: 'x64', loadAverage: [0.5, 0.25, 0.1] };
 const page = (items: unknown[]) => ({ items, nextAfterId: null, onlineWindowSeconds: 90 });
 
 let storageWrites: string[];
@@ -110,7 +110,7 @@ describe('servers list', () => {
 });
 
 describe('server detail', () => {
-  function backend(role: 'admin' | 'viewer', state: { active: boolean; snapshot: unknown }) {
+  function backend(role: 'admin' | 'viewer', state: { active: boolean; snapshot: unknown; status?: string }) {
     return installFetch((req) => {
       if (req.url === `/api/servers/${ID}/agent-credentials` && req.method === 'POST') {
         const rotated = state.active;
@@ -118,19 +118,35 @@ describe('server detail', () => {
         return json(201, { serverId: ID, token: TOKEN, issuedAt: '2026-10-12T11:00:00.000Z', rotated });
       }
       if (req.url === `/api/servers/${ID}/agent-credentials/revoke`) { state.active = false; return json(200, { serverId: ID, revoked: true }); }
-      if (req.url === `/api/servers/${ID}`) return json(200, { ...server({ hasActiveCredential: state.active }), snapshot: state.snapshot });
+      if (req.url === `/api/servers/${ID}`) return json(200, { ...server({ hasActiveCredential: state.active, status: state.status ?? 'online' }), snapshot: state.snapshot });
       return json(200, session(role));
     });
   }
 
-  it('renders the validated snapshot (load average explained as not CPU %)', async () => {
+  it('renders the current load (explained as not CPU %) and agent identification; no host memory/uptime/CPU count (ADR-023)', async () => {
     backend('viewer', { active: true, snapshot });
     renderApp(`/servers/${ID}`);
     expect(await screen.findByText('web-01.example')).toBeTruthy();
     expect(screen.getByText('linux / x64')).toBeTruthy();
-    expect(screen.getByText('1 д 1 год 1 хв')).toBeTruthy();
+    expect(within(screen.getByRole('group', { name: 'Поточне навантаження' })).getByText('0.50 / 0.25 / 0.10')).toBeTruthy();
     expect(screen.getByText(/не відсоток CPU/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/Пам['’]ять ОС|Аптайм ОС|ядер/);
     expect(screen.queryByRole('button', { name: /ключ/i })).toBeNull();
+  });
+
+  it('offline server: the last load is not shown as current', async () => {
+    backend('viewer', { active: true, snapshot, status: 'offline' });
+    renderApp(`/servers/${ID}`);
+    expect(await screen.findByText(/Поточне навантаження невідоме: сервер не онлайн/)).toBeTruthy();
+    expect(screen.queryByText('0.50 / 0.25 / 0.10')).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Поточне навантаження' })).toBeNull();
+  });
+
+  it('a response with legacy host metrics is rejected by the parser (contract drift is visible, not silently rendered)', async () => {
+    backend('viewer', { active: true, snapshot: { ...snapshot, memory: { totalBytes: 1, freeBytes: 0 } } });
+    renderApp(`/servers/${ID}`);
+    expect(await screen.findByText(/Не вдалося оновити дані/)).toBeTruthy();
+    expect(screen.queryByText('0.50 / 0.25 / 0.10')).toBeNull();
   });
 
   it('no snapshot yet, unknown id and malformed id', async () => {

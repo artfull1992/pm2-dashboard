@@ -1,6 +1,6 @@
 import { insertAudit } from '../auth/store.js';
 import type { Database } from '../database.js';
-import type { ServerSnapshot } from './snapshot.js';
+import { normalizeSnapshot, type ServerSnapshot } from './snapshot.js';
 
 // Server registry SQL (ADR-015). Parameterized only; admin mutations + audit in one transaction.
 
@@ -82,12 +82,13 @@ export function createPgServerStore(db: Database): ServerStore {
     },
 
     async get(id) {
-      const { rows } = await db.query<SummaryRow & { snapshot: ServerSnapshot | null }>(
+      const { rows } = await db.query<SummaryRow & { snapshot: unknown }>(
         `SELECT h.snapshot, ${SUMMARY_COLUMNS} ${SUMMARY_FROM} WHERE s.id = $1`,
         [id],
       );
       const row = rows[0];
-      return row ? { ...toSummary(row), snapshot: row.snapshot } : null;
+      // Rows written before ADR-023 still hold legacy keys (memory, uptime, cpuCount): read through the current contract.
+      return row ? { ...toSummary(row), snapshot: row.snapshot === null ? null : normalizeSnapshot(row.snapshot) } : null;
     },
 
     async create({ name, actorUserId, requestId }) {

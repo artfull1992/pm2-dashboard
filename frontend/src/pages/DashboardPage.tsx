@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { dashboardApi } from '../api/client';
-import type { AttentionReason, DashboardServer, DashboardView, RecentAction } from '../api/types';
+import type { AttentionReason, DashboardView, RecentAction } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
-import { formatMemory, formatUptime, ProcessStatusBadge } from '../components/Inventory';
+import { ProcessStatusBadge } from '../components/Inventory';
 import { ACTION_LABELS } from '../components/ProcessControl';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { PageHeader, Section, StatusIndicator } from '../components/ui';
@@ -44,17 +44,6 @@ function Stat({ label, value, detail, tone }: { label: string; value: string; de
       <span className="metric__label">{label}</span>
       <strong className="metric__value">{value}</strong>
       <span className="metric__detail">{detail}</span>
-    </div>
-  );
-}
-
-function Memory({ m }: { m: NonNullable<DashboardServer['metrics']>['memory'] }) {
-  if (m.totalBytes === 0 || m.usedPercent === null) return <span>—<span className="visually-hidden"> (обсяг пам'яті невідомий)</span></span>;
-  const label = `Зайнято ${String(m.usedPercent)} % (${formatMemory(m.usedBytes)} з ${formatMemory(m.totalBytes)})`;
-  return (
-    <div className="dash-mem">
-      <span className="num">{m.usedPercent} % <span className="secondary">· {formatMemory(m.usedBytes)} / {formatMemory(m.totalBytes)}</span></span>
-      <span className="meter" role="img" aria-label={label}><span className="meter__fill" style={{ width: `${String(Math.min(100, m.usedPercent))}%` }} /></span>
     </div>
   );
 }
@@ -120,16 +109,15 @@ function Overview({ d, outdated }: { d: DashboardView; outdated: boolean }) {
       </div>
 
       {d.serverList.items.length > 0 ? (
-        <Section title="Сервери" titleId="dash-servers-title" meta="Поточні метрики останнього heartbeat"
+        <Section title="Сервери" titleId="dash-servers-title" meta="Стан агента й поточне навантаження; системний моніторинг серверів — у Zabbix"
           actions={<><Link to="/servers">Усі сервери →</Link> <Link to="/applications">Усі застосунки →</Link></>}>
           <div className="table-wrap">
             <table className={`table${outdated ? ' table--outdated dash--outdated' : ''}`}>
-              <caption className="visually-hidden">Активні сервери з поточними метриками останнього heartbeat</caption>
+              <caption className="visually-hidden">Активні сервери: стан агента, останній сигнал, поточний load average і дані PM2</caption>
               <thead>
                 <tr>
-                  <th scope="col">Сервер</th><th scope="col">Стан</th><th scope="col">Останній сигнал</th><th scope="col" className="num">Uptime</th>
-                  <th scope="col" className="num">Load avg 1/5/15</th>
-                  <th scope="col">Пам'ять ОС</th><th scope="col">Сервіси PM2</th>
+                  <th scope="col">Сервер</th><th scope="col">Стан</th><th scope="col">Останній сигнал</th>
+                  <th scope="col" className="num">Load avg 1/5/15</th><th scope="col">Сервіси PM2</th>
                 </tr>
               </thead>
               <tbody>
@@ -138,9 +126,7 @@ function Overview({ d, outdated }: { d: DashboardView; outdated: boolean }) {
                     <th scope="row"><Link to={`/servers/${srv.id}`}>{srv.name}</Link>{srv.metrics ? <span className="cell-meta">{srv.metrics.hostname}</span> : null}</th>
                     <td><StatusBadge status={srv.status} /></td>
                     <td className="date secondary">{srv.lastSeenAt ? formatDate(srv.lastSeenAt) : '—'}</td>
-                    <td className="num">{srv.metrics ? formatUptime(srv.metrics.uptimeSeconds) : '—'}</td>
-                    <td className="num">{srv.metrics ? <>{srv.metrics.loadAverage.map(load).join(' / ')}<span className="cell-meta">{`ядер: ${String(srv.metrics.cpuCount)}`}</span></> : '—'}</td>
-                    <td>{srv.metrics ? <Memory m={srv.metrics.memory} /> : '—'}</td>
+                    <td className="num">{srv.metrics ? srv.metrics.loadAverage.map(load).join(' / ') : '—'}</td>
                     <td>
                       {srv.inventory.state === 'current' && srv.status === 'online'
                         ? <StatusIndicator tone="muted">{INVENTORY_TEXT.current}</StatusIndicator>
@@ -151,7 +137,7 @@ function Overview({ d, outdated }: { d: DashboardView; outdated: boolean }) {
                 ))}
               </tbody>
             </table>
-            <p className="table-note">Метрики — останній heartbeat онлайн-сервера; для офлайн-серверів не показуються. Load avg — довжина черги процесів, не відсоток CPU. Пам'ять ОС: зайнято = всього − вільно (не пам'ять застосунків). «—» — значення невідоме.</p>
+            <p className="table-note">Load avg — довжина черги процесів за 1/5/15 хв, не відсоток CPU; лише з останнього heartbeat онлайн-сервера, для офлайн-серверів не показується. «—» — значення невідоме.</p>
           </div>
           <Partial shown={d.serverList.items.length} total={d.serverList.total} what="активних серверів (за назвою)" />
         </Section>

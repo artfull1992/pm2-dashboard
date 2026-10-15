@@ -6,7 +6,8 @@ import type { DbConfig } from '../../src/config.js';
 import { createDatabase, createPool, type Database } from '../../src/database.js';
 import { migrateUp } from '../../src/migrations.js';
 import { createPgDashboardStore, DASHBOARD_LIMITS, type DashboardStore } from '../../src/servers/dashboard-store.js';
-import { validSnapshot } from '../support/fake-server-store.js';
+import type { ServerSnapshot } from '../../src/servers/snapshot.js';
+import { legacySnapshot, validSnapshot } from '../support/fake-server-store.js';
 import { connectTestClient, createRunSchema, dropRunSchema, newRunSchemaName, readTestDbEnv, testDbConfig } from '../support/test-db.js';
 
 const noLog = { error: () => undefined };
@@ -86,7 +87,7 @@ describe('dashboard aggregate (real SQL)', () => {
     await server(ctx, 'd-inactive', { active: false, ...current(['online', 'errored']) });
     await server(ctx, 'e-stale', { seen: 5, inv: { state: 'ok', collectedAgo: 600 }, procs: ['online'] });
     await server(ctx, 'f-unavailable', { seen: 5, inv: { state: 'unavailable', collectedAgo: null } });
-    await server(ctx, 'g-not-reported', { seen: 5, snapshot: validSnapshot({ memory: { totalBytes: 0, freeBytes: 0 } }) });
+    await server(ctx, 'g-not-reported', { seen: 5, snapshot: legacySnapshot({ memory: { totalBytes: 0, freeBytes: 0 } }) as unknown as ServerSnapshot });
     await server(ctx, 'h-exporter-stale', { seen: 5, inv: { state: 'stale', collectedAgo: 10 }, procs: ['errored'] });
     const d = await ctx.store.dashboard({ actionsFor: null });
     expect(d.servers).toEqual({ total: 8, inactive: 1, active: 7, online: 5, offline: 1, neverConnected: 1 });
@@ -104,11 +105,13 @@ describe('dashboard aggregate (real SQL)', () => {
     ]);
     const list = Object.fromEntries(d.serverList.items.map((s) => [s.name, s]));
     expect(Object.keys(list)).toEqual(['a-live', 'b-offline', 'c-never', 'e-stale', 'f-unavailable', 'g-not-reported', 'h-exporter-stale']);
-    expect(list['a-live']).toMatchObject({ status: 'online', processes: { total: 8, online: 2, problem: 4 }, metrics: { cpuCount: 4, memory: { totalBytes: 8_000_000_000, usedBytes: 6_000_000_000, usedPercent: 75 } } });
+    expect(list['a-live']).toMatchObject({ status: 'online', processes: { total: 8, online: 2, problem: 4 } });
+    expect(list['a-live']?.metrics).toEqual({ hostname: 'node-1.example', loadAverage: [0.5, 0.4, 0.3] }); // only load + identification
     expect(list['b-offline']).toMatchObject({ status: 'offline', metrics: null, processes: null });
     expect(list['b-offline']?.lastSeenAt).not.toBeNull();
     expect(list['c-never']).toMatchObject({ status: 'never_connected', metrics: null, lastSeenAt: null, inventory: { state: 'not_reported' } });
-    expect(list['g-not-reported']?.metrics?.memory).toEqual({ totalBytes: 0, usedBytes: 0, usedPercent: null });
+    // A row written by a 0.4.x Agent (legacy memory/uptime/cpuCount in JSONB) is read through the current contract.
+    expect(list['g-not-reported']?.metrics).toEqual({ hostname: 'node-1.example', loadAverage: [0.5, 0.4, 0.3] });
     expect(list['e-stale']).toMatchObject({ inventory: { state: 'stale' }, processes: null });
   });
 

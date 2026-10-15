@@ -8,13 +8,13 @@ import { expect, type Page, test } from '@playwright/test';
 const strict = process.env.NC_UI_LAYOUT_STRICT !== '0';
 const shots = process.env.NC_UI_SHOTS;
 const ranges = Object.fromEntries(Object.entries({
-  cpuOpenPercent: [1, 10000, 90], cpuClosePercent: [0, 10000, 70], memoryOpenPercent: [1, 100, 90], memoryClosePercent: [0, 100, 80],
+  cpuOpenPercent: [1, 10000, 90], cpuClosePercent: [0, 10000, 70],
   confirmSamples: [1, 20, 3], recoverSamples: [1, 20, 2], statusConfirmSamples: [1, 20, 2], restartsThreshold: [1, 1000, 3], restartsWindowMinutes: [2, 1440, 10],
   intervalSeconds: [10, 600, 30], cooldownMinutes: [0, 1440, 15], reminderMinutes: [1, 10080, 60], httpTimeoutMs: [1000, 30000, 5000], maxAttempts: [1, 15, 6], queueMax: [10, 1000, 100],
 }).map(([k, [min, max, d]]) => [k, { min, max, default: d }]));
 const view = {
   revision: 3, updatedAt: '2026-10-15T09:00:00.000Z', engineEnabled: true, deliveryEnabled: true,
-  rules: { cpuOpenPercent: 90, cpuClosePercent: 70, memoryOpenPercent: 90, memoryClosePercent: 80, confirmSamples: 3, recoverSamples: 2, statusConfirmSamples: 2, restartsThreshold: 3, restartsWindowMinutes: 10 },
+  rules: { cpuOpenPercent: 90, cpuClosePercent: 70, confirmSamples: 3, recoverSamples: 2, statusConfirmSamples: 2, restartsThreshold: 3, restartsWindowMinutes: 10 },
   timing: { intervalSeconds: 30, cooldownMinutes: 15, reminderEnabled: false, reminderMinutes: 60 },
   advanced: { httpTimeoutMs: 5000, maxAttempts: 6, queueMax: 100 }, ranges,
   slack: { state: 'configured', error: null, generation: 1, configuredAt: '2026-10-15T09:10:00.000Z', keyAvailable: true, lastTest: { outcome: 'success', code: null, at: '2026-10-15T09:12:00.000Z' } },
@@ -57,10 +57,10 @@ for (const width of [1440, 390]) {
       if (!strict) return;
 
       // The visible field frame (input + unit suffix) is what must be equal; the bare input shrinks by the suffix width.
-      expect(await page.locator('form input[inputmode="numeric"]').count()).toBe(15);
+      expect(await page.locator('form input[inputmode="numeric"]').count()).toBe(13); // no OS memory thresholds (ADR-023)
       const numeric = page.locator('form .affix');
       const n = await numeric.count();
-      expect(n).toBe(15);
+      expect(n).toBe(13);
       const heights = new Set<number>();
       const widths = new Set<number>();
       for (let i = 0; i < n; i++) {
@@ -76,7 +76,7 @@ for (const width of [1440, 390]) {
       expect([...widths]).toHaveLength(1); // one control width everywhere, single or paired
 
       // Pairs start on one horizontal line, opening before recovery.
-      for (const [a, b] of [[/CPU.*поріг проблеми/, /CPU.*поріг відновлення/], [/Пам’ять.*поріг проблеми/, /Пам’ять.*поріг відновлення/],
+      for (const [a, b] of [[/CPU.*поріг проблеми/, /CPU.*поріг відновлення/],
         [/Підтверджень проблеми/, /Підтверджень відновлення/], [/Рестартів для сповіщення/, /Вікно для рестартів/]] as const) {
         const [ba, bb] = [await box(page, a), await box(page, b)];
         expect(Math.abs(ba.y - bb.y)).toBeLessThanOrEqual(1);

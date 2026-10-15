@@ -75,25 +75,33 @@ describe('configuration', () => {
 
 describe('snapshot', () => {
   const source = (overrides: Partial<Record<keyof OsSource, () => unknown>> = {}): OsSource => ({
-    hostname: () => 'web-01.example', platform: () => 'linux', arch: () => 'x64', uptime: () => 1234.9, cpus: () => [{}, {}],
-    loadavg: () => [0.123, 1.5, 2], totalmem: () => 8e9, freemem: () => 2e9, ...overrides,
+    hostname: () => 'web-01.example', platform: () => 'linux', arch: () => 'x64', loadavg: () => [0.123, 1.5, 2], ...overrides,
   } as OsSource);
 
-  it('contains exactly the contract fields, rounded and bounded', () => {
+  it('contains exactly the contract fields (identification + load average), rounded and bounded', () => {
     const s = collectSnapshot(source());
-    expect(Object.keys(s).sort()).toEqual(['agentVersion', 'arch', 'cpuCount', 'hostname', 'loadAverage', 'memory', 'platform', 'uptimeSeconds']);
-    expect(s).toMatchObject({ hostname: 'web-01.example', uptimeSeconds: 1234, cpuCount: 2, loadAverage: [0.12, 1.5, 2], memory: { totalBytes: 8e9, freeBytes: 2e9 } });
+    expect(Object.keys(s).sort()).toEqual(['agentVersion', 'arch', 'hostname', 'loadAverage', 'platform']);
+    expect(s).toEqual({ agentVersion: '0.5.0', hostname: 'web-01.example', platform: 'linux', arch: 'x64', loadAverage: [0.12, 1.5, 2] });
+  });
+
+  it('does not even read host metrics that belong to Zabbix (memory, OS uptime, CPU count) — ADR-023', () => {
+    const forbidden = () => { throw new Error('host metric must not be read'); };
+    const s = collectSnapshot({ ...source(), uptime: forbidden, cpus: forbidden, totalmem: forbidden, freemem: forbidden } as OsSource);
+    expect(s).not.toHaveProperty('memory');
+    expect(s).not.toHaveProperty('uptimeSeconds');
+    expect(s).not.toHaveProperty('cpuCount');
   });
 
   it('sanitizes unexpected OS values instead of sending them', () => {
-    const s = collectSnapshot(source({ hostname: () => 'bad host; rm -rf', platform: () => 'Weird OS', loadavg: () => [Number.NaN, -1, 1e9], freemem: () => 9e9, cpus: () => [] }));
-    expect(s).toMatchObject({ hostname: 'invalid-hostname', platform: 'unknown', cpuCount: 1, loadAverage: [0, 0, 100_000], memory: { totalBytes: 8e9, freeBytes: 8e9 } });
+    const s = collectSnapshot(source({ hostname: () => 'bad host; rm -rf', platform: () => 'Weird OS', loadavg: () => [Number.NaN, -1, 1e9] }));
+    expect(s).toMatchObject({ hostname: 'invalid-hostname', platform: 'unknown', loadAverage: [0, 0, 100_000] });
   });
 
   it('real host snapshot passes the server-side shape', () => {
     const s = collectSnapshot();
     expect(s.hostname).toMatch(/^[A-Za-z0-9.-]+$/);
-    expect(s.memory.freeBytes).toBeLessThanOrEqual(s.memory.totalBytes);
+    expect(s.loadAverage).toHaveLength(3);
+    for (const v of s.loadAverage) expect(v).toBeGreaterThanOrEqual(0);
   });
 });
 

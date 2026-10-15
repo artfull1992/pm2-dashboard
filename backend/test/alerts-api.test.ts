@@ -32,7 +32,7 @@ class FakeAlerts implements AlertsStore {
   pending: ClaimedItem[] = [];
   finished: string[] = [];
   lastList: { withDelivery: boolean } | null = null;
-  evaluateOnce() { this.evaluations += 1; return Promise.resolve({ skipped: false, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, at: '2026-10-14T10:02:00.000Z' }); }
+  evaluateOnce() { this.evaluations += 1; return Promise.resolve({ skipped: false, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, retired: 0, at: '2026-10-14T10:02:00.000Z' }); }
   claim() { this.claims += 1; return Promise.resolve(this.pending.splice(0)); }
   finish(i: { id: string }, o: { status: string; code?: string }) { this.finished.push(`${i.id}:${o.status}:${o.code ?? ''}`); return Promise.resolve(true); }
   listIncidents(input: { withDelivery: boolean }) {

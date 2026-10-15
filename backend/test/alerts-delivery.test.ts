@@ -112,7 +112,7 @@ class FakeStore implements AlertsStore {
   evaluateOnce() {
     this.evaluations += 1;
     if (this.failEvaluate) return Promise.reject(Object.assign(new Error(`relation secret ${WEBHOOK}`), { code: '57P01' }));
-    return Promise.resolve({ skipped: false, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, at: '2026-10-14T10:00:00.000Z' });
+    return Promise.resolve({ skipped: false, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, retired: 0, at: '2026-10-14T10:00:00.000Z' });
   }
   claimedGenerations: number[] = [];
   claim(limit: number, generation: number) { this.claimedGenerations.push(generation); return Promise.resolve(this.items.splice(0, limit)); }

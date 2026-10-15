@@ -61,7 +61,8 @@ export interface AlertsConfig {
   /** One-time initial values for alert_settings when the row does not exist yet (never overwrite saved settings). */
   readonly defaults: AlertSettingsValues;
   /** Pre-ADR-022 variables still present (ignored; reported once, without values). */
-  readonly legacy: { readonly webhook: boolean; readonly flags: boolean };
+  /** Keys that are ignored with a startup warning (names only). memory: retired server_memory rule (ADR-023). */
+  readonly legacy: { readonly webhook: boolean; readonly flags: boolean; readonly memory: boolean };
 }
 
 export const CONFIG_DEFAULTS = Object.freeze({
@@ -287,7 +288,6 @@ export function loadAlertsConfig(value: (key: string, fallback?: string) => stri
   const R = SETTINGS_RANGES;
   const thresholds: AlertThresholds = {
     cpuOpenPercent: int('ALERTS_CPU_OPEN_PERCENT', R.cpuOpenPercent), cpuClosePercent: int('ALERTS_CPU_CLOSE_PERCENT', R.cpuClosePercent),
-    memoryOpenPercent: int('ALERTS_MEMORY_OPEN_PERCENT', R.memoryOpenPercent), memoryClosePercent: int('ALERTS_MEMORY_CLOSE_PERCENT', R.memoryClosePercent),
     confirmSamples: int('ALERTS_CONFIRM_SAMPLES', R.confirmSamples), recoverSamples: int('ALERTS_RECOVER_SAMPLES', R.recoverSamples),
     statusConfirmSamples: int('ALERTS_STATUS_CONFIRM_SAMPLES', R.statusConfirmSamples),
     restartsThreshold: int('ALERTS_RESTARTS_THRESHOLD', R.restartsThreshold), restartsWindowSeconds: int('ALERTS_RESTARTS_WINDOW_MINUTES', R.restartsWindowMinutes) * 60,
@@ -302,10 +302,12 @@ export function loadAlertsConfig(value: (key: string, fallback?: string) => stri
   };
   const problem = settingsProblem(defaults);
   if (problem === 'cpu') issues.push('ALERTS_CPU_CLOSE_PERCENT must be lower than ALERTS_CPU_OPEN_PERCENT');
-  if (problem === 'memory') issues.push('ALERTS_MEMORY_CLOSE_PERCENT must be lower than ALERTS_MEMORY_OPEN_PERCENT');
   return {
     publicUrl, secretKey: key === 'invalid' ? null : key, defaults,
-    legacy: { webhook: value('ALERTS_SLACK_WEBHOOK_URL') !== '', flags: value('ALERTS_ENABLED') !== '' || value('ALERTS_DELIVERY_ENABLED') !== '' },
+    legacy: {
+      webhook: value('ALERTS_SLACK_WEBHOOK_URL') !== '', flags: value('ALERTS_ENABLED') !== '' || value('ALERTS_DELIVERY_ENABLED') !== '',
+      memory: value('ALERTS_MEMORY_OPEN_PERCENT') !== '' || value('ALERTS_MEMORY_CLOSE_PERCENT') !== '',
+    },
   };
 }
 

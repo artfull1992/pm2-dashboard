@@ -135,14 +135,20 @@ describe('settings persistence (real SQL)', () => {
     const alerts = createPgAlertsStore(ctx.db);
     await store.initialize(ALERTS_DEFAULTS.defaults);
     const sid = ((await ctx.sql("INSERT INTO servers (name) VALUES ('hot') RETURNING id")).rows[0] as { id: string }).id;
-    const hot = JSON.stringify(validSnapshot({ memory: { totalBytes: 1000, freeBytes: 20 } }));
-    await ctx.sql('INSERT INTO server_heartbeats (server_id, received_at, snapshot) VALUES ($1, now(), $2::jsonb)', [sid, hot]);
-    const beat = (s: number) => ctx.sql("UPDATE server_heartbeats SET received_at = now() + make_interval(secs => $2) WHERE server_id = $1", [sid, s]);
+    await ctx.sql('INSERT INTO server_heartbeats (server_id, received_at, snapshot) VALUES ($1, now(), $2::jsonb)', [sid, JSON.stringify(validSnapshot())]);
+    // One live PM2 process at 98 % CPU; each "sample" is a new inventory collection time (the process CPU rule).
+    await ctx.sql(`INSERT INTO server_inventories (server_id, source, state, reason, reported_at, report_captured_at, inventory_captured_at, inventory_collected_at, process_count)
+                   VALUES ($1, 'pm2', 'ok', NULL, now(), now(), now(), now(), 1)`, [sid]);
+    await ctx.sql("INSERT INTO server_applications (server_id, source, pm_id, name, status, restarts, uptime_seconds, cpu_percent, first_seen_at) VALUES ($1, 'pm2', 0, 'api', 'online', 0, 60, 98, now())", [sid]);
+    const beat = async (sec: number) => {
+      await ctx.sql('UPDATE server_heartbeats SET received_at = now() + make_interval(secs => $2) WHERE server_id = $1', [sid, sec]);
+      await ctx.sql('UPDATE server_inventories SET reported_at = now() + make_interval(secs => $2), inventory_collected_at = now() + make_interval(secs => $2) WHERE server_id = $1', [sid, sec]);
+    };
     const run = async () => alerts.evaluateOnce(evaluationConfig(await store.getSettings(), { usable: false, generation: null }));
-    await run(); // memory sample 1 (pending, streak 1)
+    await run(); // CPU sample 1 (pending, streak 1)
     await beat(1);
     await run(); // sample 2 (streak 2)
-    await store.updateSettings({ expectedRevision: 1, patch: { thresholds: { memoryOpenPercent: 95, memoryClosePercent: 85 } }, actor: ctx.actor });
+    await store.updateSettings({ expectedRevision: 1, patch: { thresholds: { cpuOpenPercent: 95, cpuClosePercent: 85 } }, actor: ctx.actor });
     await beat(2);
     expect(await run()).toMatchObject({ opened: 0 }); // without the reset this would be streak 3 → open
     await beat(3);

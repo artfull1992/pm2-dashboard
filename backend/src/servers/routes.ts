@@ -3,7 +3,7 @@ import { type AuthState } from '../auth/plugin.js';
 import { BusyError, createLimiter, type Limiter } from '../auth/password.js';
 import { agentTokenDigest, newAgentToken } from '../auth/tokens.js';
 import { describeError, PublicHttpError } from '../errors.js';
-import { normalizeSnapshot, type ServerSnapshot, snapshotProblem, snapshotSchema } from './snapshot.js';
+import { type IncomingSnapshot, normalizeSnapshot, snapshotProblem, snapshotSchema, snapshotViewSchema } from './snapshot.js';
 import { ONLINE_WINDOW_SECONDS, type ServerStore } from './store.js';
 
 // Browser API for the server registry + the Agent heartbeat machine route (ADR-015).
@@ -21,7 +21,7 @@ const summaryProperties = {
 const summarySchema = { type: 'object', additionalProperties: false, required: Object.keys(summaryProperties), properties: summaryProperties } as const;
 const detailSchema = {
   type: 'object', additionalProperties: false, required: [...Object.keys(summaryProperties), 'snapshot'],
-  properties: { ...summaryProperties, snapshot: { anyOf: [{ type: 'null' }, snapshotSchema] } },
+  properties: { ...summaryProperties, snapshot: { anyOf: [{ type: 'null' }, snapshotViewSchema] } },
 } as const;
 const idParams = { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', pattern: UUID_PATTERN } } } as const;
 
@@ -135,6 +135,12 @@ export function registerServerRoutes(app: FastifyInstance, options: ServerRoutes
   app.post('/api/agent/heartbeat', {
     config: { access: { machine: 'agent' } },
     bodyLimit: HEARTBEAT_BODY_LIMIT,
+    // Ajv coerces "1.5" → 1.5; the load average is the one host metric left (ADR-023) and must be real JSON numbers.
+    preValidation: (request, _reply, done) => {
+      const load = (request.body as { loadAverage?: unknown } | null)?.loadAverage;
+      if (Array.isArray(load) && !load.every((v) => typeof v === 'number')) { done(new PublicHttpError(400, 'Invalid snapshot')); return; }
+      done();
+    },
     schema: {
       body: snapshotSchema,
       response: {
@@ -147,12 +153,15 @@ export function registerServerRoutes(app: FastifyInstance, options: ServerRoutes
   }, async (request) => {
     const agent = request.agent;
     if (!agent) throw new PublicHttpError(401, 'Agent credential missing or invalid');
-    const snapshot = request.body as ServerSnapshot;
-    if (snapshotProblem(snapshot)) throw new PublicHttpError(400, 'Invalid snapshot');
+    const incoming = request.body as IncomingSnapshot;
+    if (snapshotProblem(incoming)) throw new PublicHttpError(400, 'Invalid snapshot');
+    // Only the current fields are stored; legacy fields of older Agents were validated above and are dropped here.
+    const snapshot = normalizeSnapshot(incoming);
+    if (!snapshot) throw new PublicHttpError(400, 'Invalid snapshot');
     let result;
     try {
       // Server identity comes from the credential (agent.tokenHash), never from the payload.
-      result = await heartbeatLimiter.run(() => store.recordHeartbeat({ tokenHash: agent.tokenHash, snapshot: normalizeSnapshot(snapshot) }));
+      result = await heartbeatLimiter.run(() => store.recordHeartbeat({ tokenHash: agent.tokenHash, snapshot }));
     } catch (error) {
       if (error instanceof BusyError) throw unavailable();
       request.log.error({ error: describeError(error) }, 'Heartbeat write failed');

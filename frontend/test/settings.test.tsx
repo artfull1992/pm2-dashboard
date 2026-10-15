@@ -8,14 +8,14 @@ import { CSRF, deferred, installFetch, json, noContent, type RecordedRequest, re
 
 const WEBHOOK = `https://hooks.slack.com/services/T0SYNTH07/B0SYNTH07/${'u'.repeat(24)}`;
 const ranges = Object.fromEntries(Object.entries({
-  cpuOpenPercent: [1, 10000, 90], cpuClosePercent: [0, 10000, 70], memoryOpenPercent: [1, 100, 90], memoryClosePercent: [0, 100, 80],
+  cpuOpenPercent: [1, 10000, 90], cpuClosePercent: [0, 10000, 70],
   confirmSamples: [1, 20, 3], recoverSamples: [1, 20, 2], statusConfirmSamples: [1, 20, 2], restartsThreshold: [1, 1000, 3], restartsWindowMinutes: [2, 1440, 10],
   intervalSeconds: [10, 600, 30], cooldownMinutes: [0, 1440, 15], reminderMinutes: [1, 10080, 60], httpTimeoutMs: [1000, 30000, 5000], maxAttempts: [1, 15, 6], queueMax: [10, 1000, 100],
 }).map(([k, [min, max, d]]) => [k, { min, max, default: d }]));
 function view(over: Record<string, unknown> = {}, slack: Record<string, unknown> = {}) {
   return {
     revision: 1, updatedAt: '2026-10-15T09:00:00.000Z', engineEnabled: false, deliveryEnabled: false,
-    rules: { cpuOpenPercent: 90, cpuClosePercent: 70, memoryOpenPercent: 90, memoryClosePercent: 80, confirmSamples: 3, recoverSamples: 2, statusConfirmSamples: 2, restartsThreshold: 3, restartsWindowMinutes: 10 },
+    rules: { cpuOpenPercent: 90, cpuClosePercent: 70, confirmSamples: 3, recoverSamples: 2, statusConfirmSamples: 2, restartsThreshold: 3, restartsWindowMinutes: 10 },
     timing: { intervalSeconds: 30, cooldownMinutes: 15, reminderEnabled: false, reminderMinutes: 60 },
     advanced: { httpTimeoutMs: 5000, maxAttempts: 6, queueMax: 100 }, ranges,
     slack: { state: 'not_configured', error: null, generation: 0, configuredAt: null, keyAvailable: true, lastTest: null, ...slack },
@@ -164,7 +164,8 @@ describe('rules tab', () => {
     renderApp('/settings/rules');
     const u = userEvent.setup();
     const close = await screen.findByLabelText<HTMLInputElement>('CPU процесу — поріг відновлення, %');
-    expect(screen.getAllByText('Відновлення', { selector: 'label' })).toHaveLength(3); // short visible labels
+    expect(screen.getAllByText('Відновлення', { selector: 'label' })).toHaveLength(2); // short visible labels (CPU, confirmations)
+    expect(screen.queryByLabelText(/Пам[’']ять ОС/)).toBeNull(); // OS memory thresholds are gone (ADR-023)
     expect(close.getAttribute('aria-describedby')).toBeNull();
     expect(screen.queryByText('0–10000, типово 70')).toBeNull();
     const limits = screen.getByRole('button', { name: 'Показати межі й типові' });

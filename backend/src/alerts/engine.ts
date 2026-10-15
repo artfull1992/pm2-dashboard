@@ -151,7 +151,7 @@ export class AlertsEngine {
       this.s.lastEvaluationAt = r.at;
       this.s.lastEvaluationOk = true;
       this.s.lastEvaluationError = null;
-      if (r.opened + r.resolved + r.dropped > 0) this.log.info({ opened: r.opened, resolved: r.resolved, enqueued: r.enqueued, dropped: r.dropped }, 'Alerts evaluated');
+      if (r.opened + r.resolved + r.dropped + r.retired > 0) this.log.info({ opened: r.opened, resolved: r.resolved, enqueued: r.enqueued, dropped: r.dropped, retired: r.retired }, 'Alerts evaluated');
       if (r.dropped > 0) this.log.warn({ dropped: r.dropped, queueMax: config.queueMax }, 'Alert notifications dropped: queue full');
     } catch (error) {
       const meta = describeError(error);
