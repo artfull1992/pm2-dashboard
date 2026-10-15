@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
-// TypeScript only (backend, frontend, e2e); the existing JS setup/deploy scripts are covered by node:test.
+// TypeScript only (backend, frontend, e2e, agent); the existing JS setup/deploy scripts are covered by node:test.
 const strict = {
   extends: [js.configs.recommended, ...tseslint.configs.strictTypeChecked],
   rules: {
