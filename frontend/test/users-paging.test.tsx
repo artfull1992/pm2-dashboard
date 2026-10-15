@@ -6,6 +6,10 @@ import { deferred, installFetch, json, noContent, type RecordedRequest, renderAp
 // Task 011.1: every user is reachable and manageable through bounded keyset pages ("Назад" / "Далі").
 
 const PAGE = 100;
+// Tests that render two or more full 100-row pages are CPU-bound in jsdom: ≈0.65 s alone, but 4–5.3 s when the
+// suite runs in parallel with another one (measured; the same on the revision before ADR-024). The default 5 s test
+// budget is therefore no headroom for their real work; the waits and assertions inside are unchanged.
+const MULTI_PAGE_TEST_MS = 15_000;
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`; // n = 0 → the admin itself
 const mk = (n: number, over: Record<string, unknown> = {}) => ({
   id: id(n), email: n === 0 ? 'admin@example.test' : `user${String(n).padStart(3, '0')}@example.test`, role: n === 0 ? 'admin' : 'viewer', isActive: true,
@@ -70,7 +74,7 @@ describe('user pages', () => {
     await waitFor(() => { expect(rows()[0]).toContain('user100@example.test'); });
     expect(lists(calls).at(-1)).toBe(id(99));
     expect(lists(calls).every((a) => a === null || /^[0-9a-f-]{36}$/.test(a))).toBe(true);
-  });
+  }, MULTI_PAGE_TEST_MS);
 
   it('a late answer for a page the user already left never replaces the current page', async () => {
     const slow = deferred<Response>();
@@ -93,7 +97,7 @@ describe('user pages', () => {
     expect(rows()).toHaveLength(PAGE);
     expect(within(pager()).getByText('Сторінка 1')).toBeTruthy();
     expect(lists(calls).filter((a) => a === id(99))).toHaveLength(1);
-  });
+  }, MULTI_PAGE_TEST_MS);
 
   it('a failed next page shows an error with retry and no rows of the previous page', async () => {
     let fail = true;
@@ -108,7 +112,7 @@ describe('user pages', () => {
     fail = false;
     await u.click(screen.getByRole('button', { name: 'Спробувати ще раз' }));
     await waitFor(() => { expect(rows()[0]).toContain('user100@example.test'); });
-  });
+  }, MULTI_PAGE_TEST_MS);
 
   it('a user on page 2 is managed there; the same page is reloaded after the change', async () => {
     const { calls } = backend(230);
@@ -134,7 +138,7 @@ describe('user pages', () => {
     await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Змінити роль' }));
     expect(await screen.findByText(/Роль user160@example\.test змінено на «Адміністратор»/)).toBeTruthy();
     expect(within(pager()).getByText('Сторінка 2')).toBeTruthy();
-  });
+  }, MULTI_PAGE_TEST_MS);
 
   it('creating a user when page 1 is full: the result says where it is and "Показати" opens the page with it', async () => {
     backend(150);
@@ -155,7 +159,7 @@ describe('user pages', () => {
     expect(screen.getByRole('button', { name: 'Дії: fresh@example.test' })).toBeTruthy();
     await u.click(within(pager()).getByRole('button', { name: 'Назад' }));
     await waitFor(() => { expect(within(pager()).getByText('Сторінка 1')).toBeTruthy(); });
-  });
+  }, MULTI_PAGE_TEST_MS);
 
   it('a failed create shows no invented row', async () => {
     backend(150, (req) => (req.url === '/api/users' && req.method === 'POST' ? json(409, {}) : undefined));

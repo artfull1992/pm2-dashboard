@@ -25,6 +25,9 @@ const view = (cid: string, serverId: string, targetKey: string) => ({
   dispatchedAt: null, completedAt: null, attempts: 0, before: null, after: status.get(cid) === 'succeeded' ? { status: 'online' } : null,
 });
 const meta = new Map<string, { serverId: string; targetKey: string }>();
+/** Commands whose status read fails: HTTP 503 or a rejected fetch (network). Each served failure is recorded. */
+const failing = new Map<string, 'http' | 'network'>();
+let failures: string[] = [];
 
 function backend() {
   return installFetch((r) => {
@@ -40,7 +43,13 @@ function backend() {
       return json(201, view(cid, m?.serverId ?? '', m?.targetKey ?? ''));
     }
     const get = /^\/api\/control-commands\/(.+)$/.exec(r.url);
-    if (get) { const m = meta.get(get[1] ?? ''); return json(200, view(get[1] ?? '', m?.serverId ?? '', m?.targetKey ?? '')); }
+    if (get) {
+      const cid = get[1] ?? '';
+      const mode = failing.get(cid);
+      if (mode) { failures.push(`${cid}:${mode}`); return mode === 'http' ? json(503, {}) : Promise.reject(new TypeError('Failed to fetch')); }
+      const m = meta.get(cid);
+      return json(200, view(cid, m?.serverId ?? '', m?.targetKey ?? ''));
+    }
     return json(404, {});
   });
 }
@@ -59,7 +68,7 @@ function App() { const { state } = useAuth(); return state.status === 'authentic
 
 let user: ReturnType<typeof userEvent.setup>;
 beforeEach(() => {
-  status = new Map(); ids = new Map(); meta.clear(); api.ask = noop;
+  status = new Map(); ids = new Map(); meta.clear(); failing.clear(); failures = []; api.ask = noop;
   vi.useFakeTimers({ shouldAdvanceTime: true });
   user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
 });
@@ -103,9 +112,7 @@ describe('command tracking limits', () => {
     await tick();
     expect(reads(calls, id(1))).toBeGreaterThan(before);
 
-    // Polling errors never free a slot (no invented final status).
-    status.set(id(1), 'queued');
-    expect(screen.getByTestId('limit').textContent).toBe('true');
+    // (A failing status read is covered by its own test below.)
 
     // t0 succeeds → the slot is free → the explicit retry in the same dialog is accepted, once.
     status.set(id(1), 'succeeded');
@@ -118,6 +125,53 @@ describe('command tracking limits', () => {
     expect(lines().filter((l) => l.includes('Виконано'))).toHaveLength(1);
     expect(lines()).toHaveLength(MAX_ACTIVE_COMMANDS + 1);
     expect(screen.getByTestId('limit').textContent).toBe('true');
+  });
+
+  it('a failing status read (HTTP 503, then a rejected fetch) keeps the command tracked, busy and counted; polling resumes; only a server final status frees the slot', async () => {
+    const calls = await mount();
+    for (let i = 0; i < MAX_ACTIVE_COMMANDS; i++) await accept(`t${String(i)}`);
+    const t0 = () => lines().find((l) => l.includes('«t0»')) ?? '';
+
+    // 1. The status read of t0 fails with 503 — wait for exactly such a failed cycle.
+    failing.set(id(1), 'http');
+    await tick();
+    await waitFor(() => { expect(failures).toContain(`${id(1)}:http`); });
+    // 2. Then the fetch itself is rejected (network) — again a real failed cycle.
+    failing.set(id(1), 'network');
+    await tick();
+    await waitFor(() => { expect(failures).toContain(`${id(1)}:network`); });
+
+    // Still tracked, busy, counted; no final status invented.
+    expect(t0()).toMatch(/: У черзі — очікує агента\.$/);
+    expect(api.busy(A, 't0')).toBe(true);
+    expect(screen.getByTestId('limit').textContent).toBe('true');
+    expect(lines()).toHaveLength(MAX_ACTIVE_COMMANDS);
+    // No new POST at the limit while the read keeps failing.
+    act(() => { api.ask(req('t5')); });
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
+    expect(within(dialog).getByRole('alert').textContent).toBe(`${LIMIT_TEXT}. Команду не надіслано.`);
+    expect(posts(calls)).toHaveLength(MAX_ACTIVE_COMMANDS);
+
+    // 3. The read works again: polling goes on (successful reads, still queued).
+    failing.delete(id(1));
+    const failed = failures.length;
+    const before = reads(calls, id(1));
+    await tick();
+    await waitFor(() => { expect(reads(calls, id(1))).toBeGreaterThan(before); });
+    expect(failures).toHaveLength(failed);
+    expect(screen.getByTestId('limit').textContent).toBe('true');
+
+    // 4. The server reports a final status → the slot is free → the same dialog sends its command once.
+    status.set(id(1), 'succeeded');
+    await tick();
+    await waitFor(() => { expect(screen.getByTestId('limit').textContent).toBe('false'); });
+    expect(t0()).toMatch(/Виконано й підтверджено/);
+    expect(api.busy(A, 't0')).toBe(false);
+    await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
+    expect(posts(calls)).toHaveLength(MAX_ACTIVE_COMMANDS + 1);
+    expect(api.busy(A, 't5')).toBe(true);
   });
 
   it('only the finished history is trimmed: active commands always stay', async () => {

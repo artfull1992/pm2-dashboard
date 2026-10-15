@@ -54,9 +54,13 @@ function backend(role: 'operator' | 'viewer' | 'admin', route: Route = () => und
   });
 }
 const creates = (calls: RecordedRequest[]) => calls.filter((c) => c.method === 'POST' && c.url.endsWith('/log-requests'));
+// The row menu exists once the server page has loaded the server, its inventory and log targets and rendered. The
+// first test of this file also pays the worker's cold first render of the whole app (≈250 ms alone, >1 s under a
+// parallel suite — measured), which exceeds findBy's 1 s default; the wait itself is for the right state.
+const PAGE_READY = { timeout: 5_000 };
 async function openLogs() {
   const user = userEvent.setup();
-  await user.click(await screen.findByRole('button', { name: 'Дії: api' }));
+  await user.click(await screen.findByRole('button', { name: 'Дії: api' }, PAGE_READY));
   await user.click(await screen.findByRole('menuitem', { name: 'Переглянути логи' }));
   return { user, dialog: await screen.findByRole('dialog', { name: 'Логи: api' }) };
 }
