@@ -276,7 +276,7 @@ ENV_FILE=<config> npm run db:migrate:up        # явне застосуванн
 | `POST /api/servers/:id/agent-credentials/revoke` | `servers:manage` + Origin + CSRF | `200 {serverId, revoked}` | 401, 403, 404, 503 |
 | `POST /api/agent/heartbeat` (snapshot) | **machine**: `Authorization: Bearer ncag_…` | `200 {status:"accepted", receivedAt (ISO-8601 UTC), intervalSeconds (ціле 5–300)}`; Agent вважає успіхом лише повністю прочитану валідну відповідь (ADR-015) | 400 (snapshot), 401, 403 (браузерний контекст), 413, 429, 503 |
 
-`ServerSummary = {id, name, isActive, createdAt, status: online|offline|never_connected, lastSeenAt, hasActiveCredential}`. `online` — останній прийнятий heartbeat за **серверним** годинником новіший за 90 с. Snapshot: `agentVersion, hostname, platform, arch, uptimeSeconds, cpuCount, loadAverage[3]` (довжина черги, не % CPU), `memory {totalBytes, freeBytes}` — більше нічого.
+`ServerSummary = {id, name, isActive, createdAt, status: online|offline|never_connected, lastSeenAt, hasActiveCredential}`. `online` — останній прийнятий heartbeat за **серверним** годинником новіший за 90 с. Snapshot (ADR-023): `agentVersion, hostname, platform, arch, loadAverage[3]` (довжина черги, не % CPU) — більше нічого; системні метрики (пам'ять, uptime ОС, ядра) не збираються — це Zabbix. Legacy-поля Agent ≤ 0.4.x приймаються в перехідний період, але не зберігаються.
 
 Agent (`agent/`): `ENV_FILE` (600, власник — користувач агента) з `NC_AGENT_API_URL=https://…` (лише origin; HTTP — тільки `NC_AGENT_ALLOW_INSECURE_LOOPBACK=true` на loopback для dev/E2E), `NC_AGENT_TOKEN`, опційно `NC_AGENT_INTERVAL_SECONDS` (5–300), `NC_AGENT_TIMEOUT_SECONDS` (1–60), `NC_AGENT_MAX_BACKOFF_SECONDS` (30–3600). Без inbound-порту, без команд, без DB credentials.
 
@@ -390,7 +390,7 @@ Production-деплой — лише артефактом із запушено�
 
 ## Наступні етапи
 
-1. Узгоджений roadmap: Dashboard → Slack/alerts → історія метрик → фінальна production-підготовка. Jenkins redeploy — далекий backlog.
+1. Узгоджений roadmap: спрощення серверного моніторингу (виконано, ADR-023) → виправлення діалогів frontend → незалежний review Slack/alerts → документація й інсталятори → фінальна production-підготовка. Історія серверних метрик виключена (системний моніторинг — Zabbix); історія метрик застосунків не погоджена. Jenkins redeploy — далекий backlog.
 2. Перед публічним запуском — release blockers (PROJECT_STATUS): мережева політика PostgreSQL, NC-SEC-001, рішення щодо публічного HTTPS-сайту та `AUTH_ALLOWED_ORIGINS`, bootstrap адміністратора.
 3. Довірений TLS-сертифікат для PostgreSQL і звуження мережевої політики.
 

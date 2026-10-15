@@ -440,3 +440,31 @@
 - **Audit (metadata-only):** `settings.alerts_changed` `{revision, changed}`, `settings.delivery_enabled` / `settings.delivery_disabled` `{revision, cancelledItems}`, `integration.slack_configured` `{generation, replaced, cancelledItems}`, `integration.slack_removed` `{generation, cancelledItems}`, `integration.slack_test_requested` / `integration.slack_test_result` `{operationId, generation, code}`.
 - **Вихідна мережа API (Task 013.2).** Unit `node-control-api` мав `IPAddressDeny=any` + `IPAddressAllow=localhost` (Task 003). Через це systemd тихо відкидав з'єднання до Slack, і тест завершувався `unknown/timeout`. За рішенням користувача egress-фільтр знято. Вхідний доступ не змінився: listener лише на 127.0.0.1. Призначення вихідних запитів обмежує код: лише `https://hooks.slack.com/services/…`, `redirect: 'error'`, без адрес із браузера. Фіксовані IP Slack не використовуються, бо це адреси AWS, які змінюються.
 - **Rollback на `e8f61c5`.** Старий реліз читає лише `ALERTS_*` з env, а в production їх немає: його рушій вимкнений, старий webhook не з'являється, доставка не вмикається. Нові таблиці та колонки він ігнорує.
+
+## ADR-023: Серверний моніторинг — лише поточний load average; системні метрики виконує Zabbix
+
+Статус: прийнято (2026-10-15, рішення користувача). Звужує ADR-015 (зміст heartbeat), ADR-020 (метрики Dashboard) і ADR-021 (правило `server_memory`). Історичні записи ADR-015/020/021 вище описують стан на момент їх прийняття.
+
+**Рішення.**
+- Сервери вже моніторяться в Zabbix; Node Control зосереджується на застосунках PM2 і керуванні ними, без дублювання системного моніторингу. Інтеграції із Zabbix немає.
+- Із системних показників лишається тільки **поточний load average за 1/5/15 хв** (довжина черги процесів, не відсоток CPU) і службова доступність Agent: heartbeat, online/offline, останній сигнал, freshness. Для ідентифікації — `agentVersion`, `hostname`, `platform`, `arch`.
+- Прибрано: пам'ять ОС, uptime ОС, кількість ядер — їх збір (Agent ≥ 0.5.0 навіть не читає ці значення з ОС), зберігання, API, UI; правило `server_memory` і пороги пам'яті ОС у налаштуваннях.
+- Не змінюються: CPU/пам'ять/uptime/restarts/статус PM2-застосунків, правила `process_cpu`, `process_down`, `process_restarts`, а також `server_offline` і `inventory_stale` (доступність каналу керування й актуальність даних Node Control).
+- Історія серверних метрик і графіки виключені з roadmap. Історія метрик застосунків не погоджена.
+
+**Сумісність контракту heartbeat (перехідний період).**
+- `POST /api/agent/heartbeat` вимагає `agentVersion, hostname, platform, arch, loadAverage` і **додатково приймає** legacy-поля Agent ≤ 0.4.x (`uptimeSeconds`, `cpuCount`, `memory`) лише в їхній точній старій формі (типи, межі, `additionalProperties: false`, free ≤ total). Вони не зберігаються й не використовуються. Інших полів не приймається. `loadAverage` — лише справжні JSON-числа (без коерції рядків).
+- Збережені до зміни рядки `server_heartbeats.snapshot` (з legacy-ключами) читаються через `normalizeSnapshot`: назовні йдуть лише поточні поля; рядок іншої форми → «немає даних», не помилка 500.
+- Legacy-поля можна прибрати зі схеми окремим завданням, коли на всіх керованих серверах Agent ≥ 0.5.0 (перевірка: `agentVersion` в останньому heartbeat кожного сервера).
+
+**Виведення `server_memory` з експлуатації.**
+- Нова resolution `retired` (міграція `1791900000008`, лише forward: розширення CHECK + одноразові дані): відкриті інциденти закриваються як «правило виведено», **не** як відновлення; recovery-повідомлення не створюються; їхні `queued` (і `sending` із простроченим lease) повідомлення скасовуються з `last_error = rule_retired`; стан умов (`alert_conditions`) видаляється. Історія й audit лишаються.
+- Під час роботи: рушій правило не оцінює; кожне оцінювання ідемпотентно повторює виведення (на випадок, якщо старий API встиг щось створити між міграцією й рестартом); доставка (`claim`) не бере повідомлень виведеного правила й скасовує повернуті в чергу — навіть коли рушій вимкнено. Повідомлення, що доставляється саме в момент зміни, завершується штатно (це повідомлення про проблему/нагадування, не відновлення).
+- `alert_settings.memory_open_percent/close_percent` лишаються в таблиці неактивними (NOT NULL + CHECK, сумісність зі старим релізом): новий рядок отримує 90/80, оновлення їх не змінюють, API їх не показує й не приймає (PATCH з ними → 400). `ALERTS_MEMORY_*` у env ігноруються з попередженням (лише назви ключів).
+
+**Порядок деплою:** API/frontend (з міграцією) → перевірка старого Agent (0.4.x приймається) → новий Agent 0.5.0. Broker/exporter не змінюються.
+
+**Rollback:**
+- Новий Agent 0.5.0 надсилає мінімальний heartbeat, який **старий API відхиляє (400)** — тому спочатку повернути Agent на 0.4.x (`server-release.js rollback --base /opt/goit-node-control-agent` + restart лише Agent), потім за потреби API.
+- Старий API працює з новою схемою (CHECK лише розширено; колонки не видалялись). Інциденти, закриті як `retired`, лишаються закритими; старий frontend не знає `retired` і не розбере сторінку історії, де є такий запис (активні проблеми й решта UI працюють). Після повернення старий рушій може знову відкрити `server_memory`, якщо буде ввімкнений.
+- Схема production не відкочується, БД із backup поверх нових даних не відновлюється.

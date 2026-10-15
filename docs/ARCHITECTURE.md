@@ -88,7 +88,7 @@ API та Agent: Node.js 22 через systemd, без root за замовчув
 
 Frontend збирається у статичні файли (`current/frontend/dist`) й обслуговується host Nginx; окремий production Node.js-процес не потрібен. API — `127.0.0.1:3100`; публічно UI і `/api/` віддає host Nginx на `https://control.example.com` (конфіг і TLS — власник сервера, DEPLOYMENT).
 
-Central API забезпечує RBAC; метрики застосунків включають CPU/RAM, uptime і restart count, серверів — CPU/RAM, диск і навантаження. Slack: також налаштування порогів і захист від alert spam. Використовувати існуючі Jenkins/менеджер секретів через API, не створювати новий Jenkins і не переписувати pipelines без потреби.
+Central API забезпечує RBAC; метрики застосунків (PM2) — CPU, пам'ять, uptime, restart count і статус. Із серверних показників — лише поточний load average і доступність Agent (heartbeat, online/offline, freshness); системний моніторинг серверів виконує Zabbix, історії серверних метрик немає (ADR-023). Slack: пороги застосунків і захист від alert spam.
 
 Новий код — TypeScript зі строгими типами та environment-конфігурацією. Чинні JS-скрипти читають `.env` із checkout; конфігурація майбутніх сервісів ще не реалізована. Безпеку каналу й автентифікації Agent/API окремо спроєктувати та протестувати до production-активації; схема вище не визначає протокол.
 

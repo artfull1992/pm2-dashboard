@@ -420,6 +420,20 @@ journalctl -u node-control-api --since "-1 min" -o cat | grep -o '"alertsSecretK
 
 Вимкнення: «Налаштування» → вимкнути доставку (черга скасовується) і/або рушій. Rollback коду на реліз до 013.1 (`e8f61c5`): він читає лише `ALERTS_*` з env, яких у production немає, тож рушій і доставка там вимкнені, старий webhook не з'являється; нові таблиці лишаються. Перед rollback вимкнути доставку в UI.
 
+### Спрощення серверного моніторингу (ADR-023)
+
+Міграція `1791900000008_retire-server-memory` (forward: розширює CHECK `alert_incidents.resolution` значенням `retired`, закриває відкриті `server_memory`-інциденти як `retired`, скасовує їхні повідомлення в черзі, видаляє стан умов цього правила). Колонки не видаляються.
+
+Порядок:
+1. API/frontend — штатно: backup `node_control_db` → `migrate.js status` → `up` → `status` (pending=0) → activate → restart лише `node-control-api`.
+2. Перевірити, що **старий Agent 0.4.x** і далі приймається: heartbeat `accepted` у журналі Agent, сервер «Онлайн» в UI, load average видно на сторінці сервера.
+3. Новий Agent 0.5.0 (артефакт `node-control-agent-<sha>`): `prepare --no-install` → `activate` → restart лише `node-control-agent`. Broker і exporter не змінюються й не перезапускаються (unit-файли ті самі; їхній код у новому релізі той самий).
+4. Перевірки: heartbeat/inventory/control/log polling у журналі Agent, `agentVersion` 0.5.0 в «Системних подробицях», PM2 PID/час старту/restarts без змін.
+
+Rollback (порядок важливий — старий API відхиляє мінімальний heartbeat Agent 0.5.0):
+1. Agent: `server-release.js rollback --base /opt/goit-node-control-agent` + restart лише Agent (повертає 0.4.x).
+2. За потреби API: `server-release.js rollback` + restart API. Схема не відкочується; закриті як `retired` інциденти лишаються закритими; старий frontend не розбирає сторінку історії з `retired` записом (активні проблеми працюють).
+
 ### Міграції: backup, recovery, rollback
 
 - Перед кожним production `up` — `pg_dump -Fc` лише `node_control_db` у `/root/node-control-backups/` (каталог `700`, файл `600`), перевірка `pg_restore --list`. Не дамп усього кластера.
