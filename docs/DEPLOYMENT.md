@@ -434,24 +434,29 @@ journalctl -u node-control-api --since "-1 min" -o cat | grep -o '"alertsSecretK
 
 Первісний реліз `c016beb` **не є безпечною ціллю**: у БД уже лежать мінімальні snapshot (їх пише ADR-023 API для будь-якої версії Agent), а офлайн/деактивовані ноди не надішлють нового heartbeat. На таких даних `c016beb` повертає 500 на сторінці сервера (serializer вимагає `uptimeSeconds`), 503 на Dashboard, падає в кожному циклі оцінювання сповіщень (`TypeError … totalBytes` — рушій фактично не працює), відхиляє heartbeat Agent 0.5.0 (400), а його UI не розбирає мінімальний snapshot і інциденти `retired`.
 
-Ціль — **compatibility-реліз** гілки `release/monitoring-rollback-compat`, revision `1a6b82c251539aa9348b1fee6b997a0f3a254434` (код `c016beb` + вузькі виправлення):
+Ціль — **compatibility-реліз** гілки `release/monitoring-rollback-compat`, revision `70ddd1f40b205306f0d61eb278cca9646c7e7d87` (код `c016beb` + вузькі виправлення; уточнено 2026-10-15 за другим review Codex P2):
 - приймає heartbeat Agent 0.4.x (повний) і 0.5.0 (мінімальний), невідомі поля → 400;
 - читає мінімальні й повні snapshot: пам'ять/uptime/кількість ядер відсутні → `null` («—», «обсяг невідомий»), не нулі;
 - не оцінює виведене правило `server_memory`; решта правил (offline, inventory, process_*) працює;
+- **не доставляє повідомлення виведеного правила**: `claim` спершу скасовує `queued` і `sending` з протермінованим lease для `server_memory` (`cancelled`, `last_error = rule_retired`), а сам SQL вибірки виключає retired-правила — навіть елемент, що став доступним після cleanup (retry), не буде надіслано; живий lease не перехоплюється, після повернення на retry скасовується наступним `claim`. Працює й з вимкненим рушієм. Історія, надіслані повідомлення й audit не змінюються; recovery для `server_memory` не створюється;
 - UI розбирає мінімальні snapshot та історію з `retired`; неактивні пороги пам'яті ОС приховано (значення зберігаються без змін);
 - містить уже застосовану міграцію `1791900000008` (той самий файл) — `migrate status` чистий, міграцій для застосування немає.
+
+**Не використовувати попередню compat-ревізію `1a6b82c251539aa9348b1fee6b997a0f3a254434`**: у ній `claim` ще видавав елементи outbox правила `server_memory` (наприклад `sending` з протермінованим lease після перерваної доставки) — відомий дефект доставки retired-правила.
+
+Перевірений артефакт `70ddd1f` зібрано штатним `build-release.js` і збережено поза репозиторієм в оператора (каталог `rollback-artifacts/70ddd1f`): `node-control-api-70ddd1f40b205306f0d61eb278cca9646c7e7d87.tar.gz` SHA-256 `fba970acc6b869652e816fe42e120c3199a4765eb5ff9df79ccfd42f073be11e`, `.sha256` і `server-bundle` поруч. Його можна передати замість нової збірки; нова збірка з тієї ж ревізії дає інший SHA-256 tar.gz (час файлів), але ті самі хеші файлів у `RELEASE.json`.
 
 Процедура (API/frontend; Agent і broker/exporter не чіпати — compat приймає обидві версії Agent):
 
 ```bash
 # локально, чистий checkout; походження перевіряє build-release (ревізія має бути в запушеній гілці)
-git fetch origin && git worktree add ../nc-rollback 1a6b82c251539aa9348b1fee6b997a0f3a254434 && cd ../nc-rollback && npm ci
-npx -y node@22 scripts/deploy/build-release.js --revision 1a6b82c251539aa9348b1fee6b997a0f3a254434   --remote-branch origin/release/monitoring-rollback-compat --out <out>
+git fetch origin && git worktree add ../nc-rollback 70ddd1f40b205306f0d61eb278cca9646c7e7d87 && cd ../nc-rollback && npm ci
+npx -y node@22 scripts/deploy/build-release.js --revision 70ddd1f40b205306f0d61eb278cca9646c7e7d87   --remote-branch origin/release/monitoring-rollback-compat --out <out>
 # передати артефакт + .sha256 + server-bundle як для звичайного деплою; на сервері (root):
 sha256sum -c node-control-api-<sha>.tar.gz.sha256
-node server-bundle/server-release.js prepare --artifact … --sha256 … --revision 1a6b82c251539aa9348b1fee6b997a0f3a254434
-# RELEASE.json: revision = 1a6b82c…, 63 файли; migrate.js status з нового релізу: applied=9 pending=0 unknown=0
-node server-bundle/server-release.js activate --revision 1a6b82c251539aa9348b1fee6b997a0f3a254434
+node server-bundle/server-release.js prepare --artifact … --sha256 … --revision 70ddd1f40b205306f0d61eb278cca9646c7e7d87
+# RELEASE.json: revision = 70ddd1f…, 63 файли; migrate.js status з нового релізу: applied=9 pending=0 unknown=0
+node server-bundle/server-release.js activate --revision 70ddd1f40b205306f0d61eb278cca9646c7e7d87
 systemctl restart node-control-api
 ```
 

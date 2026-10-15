@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-15 (безпечний rollback після ADR-023). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-15 (rollback-реліз: retired-правило не доставляється). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Незалежний review Codex — Task 011 (2026-10-14)
 
@@ -184,6 +184,25 @@ Rollback підготовлено до production `up`: код — `server-relea
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
 
+## Rollback-реліз: доставка повідомлень виведеного правила (2026-10-15, другий review Codex P2)
+
+**Зауваження.** У compat-релізі `1a6b82c251539aa9348b1fee6b997a0f3a254434` оцінювання `server_memory` вимкнено, але `claim()` не мав захисту від доставки його outbox. Міграція 8 свідомо не чіпає `sending` із живим lease; якщо доставку перервано й API відкочено, lease спливає вже в compat-релізі — і той надіслав би `server_memory` у Slack. Codex відтворив: `claim` → `{rule: server_memory, resolution: retired, kind: firing}`.
+
+**Захист** (комміт **`70ddd1f40b205306f0d61eb278cca9646c7e7d87`**, `fix(alerts): prevent retired rule delivery in rollback release`, гілка `release/monitoring-rollback-compat`; перенесено з ADR-023 store): явний `RETIRED_RULES = ['server_memory']`; `claim` спершу скасовує `queued` і `sending` з протермінованим lease retired-правил (`cancelled`, `last_error = rule_retired`, параметризований SQL); сам SQL вибірки (`CLAIM_SQL`) містить `NOT EXISTS … rule = ANY($4)` з `FOR UPDATE OF o SKIP LOCKED` — гонку між cleanup і claim закрито. Живий lease не перехоплюється й не позначається недоставленим; повернений `finish()` на retry елемент скасовується наступним `claim`. Не залежить від `evaluateOnce` (рушій може бути вимкнений). Інші правила й доставка Slack загалом не змінені.
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| Новий regression (real DB) `retired-delivery` 6 | на незміненому `1a6b82c251539aa9348b1fee6b997a0f3a254434`: 6/6 падінь (claim видає `server_memory:firing`, reminder/resolved, протермінований `sending`; `CLAIM_SQL` відсутній) — відтворення; після виправлення 6/6: queued firing/reminder/resolved → `cancelled`/`rule_retired`, claim порожній; протермінований `sending` → cancelled; живий lease не змінено → retry → наступний claim скасовує; ідемпотентність; надіслана історія й інцидент без змін; `process_cpu` доставляється; recovery не створено; `CLAIM_SQL` без cleanup не бере retired-рядок |
+| `rollback-compat` 13 | 13/13 |
+| `npm run check:local` | exit 0: node:test 89/89, backend 436/436, smoke 10/10, agent 164/164 (+3 opt-in), frontend 198/198, typecheck, lint, збірки, `check:secrets` OK |
+| Real-DB (`test:backend:db`) | 113/113 |
+| E2E | 19/19 (+1 opt-in), включно з `rollback-compat.spec.ts` |
+| Real-PM2 E2E | 1/1 |
+| `git diff --check`, `check:secrets` | OK |
+| Артефакт | штатний `build-release.js --remote-branch origin/release/monitoring-rollback-compat`: `node-control-api-70ddd1f….tar.gz` SHA-256 `fba970ac…be11e`, `shasum -c` OK; `RELEASE.json` revision `70ddd1f…`, 63 файли, `verifyManifest` 0 помилок, 9 міграцій; `backend/dist` (без source maps), `frontend/dist`, `backend/migrations` побайтово = тестована збірка. Зберігається в оператора поза репозиторієм (`rollback-artifacts/70ddd1f`) |
+
+**Ціль відкату тепер `70ddd1f`.** Ревізія `1a6b82c251539aa9348b1fee6b997a0f3a254434` і її артефакти мають відомий дефект доставки retired-правила й не рекомендовані; розділ нижче — історичний запис її перевірок. Production rollback не виконувався, production не змінювався, реальні Slack-повідомлення не надсилались.
+
 ## Безпечний rollback після ADR-023: compatibility-реліз (2026-10-15, review Codex P2)
 
 **Зауваження.** DEPLOYMENT описував відкат як «старий Agent → старий API `c016beb`». Але ADR-023 API зберігає мінімальні snapshot і для Agent 0.4.x, тож після повернення старого Agent повні дані не відновлюються, а офлайн/деактивовані ноди не надішлють нового heartbeat. Відтворено тестом на коді `c016beb` (БД зі станами, які лишає ADR-023): server detail 500 (serializer вимагає `uptimeSeconds`), Dashboard 503, оцінювання сповіщень `TypeError … reading 'totalBytes'` у кожному циклі, heartbeat Agent 0.5.0 → 400; крім того, старий UI не розбирає мінімальний snapshot і `retired`, а в релізі немає файлу вже застосованої міграції 8.
@@ -201,7 +220,7 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 Адаптовані старі тести compat-гілки: перевірки відкриття `server_memory` замінено перевіркою, що compat його не оцінює; «відсутні дані не закривають інцидент» і скидання серій — на CPU процесу; списки міграцій — з міграцією 8.
 
-**Ціль відкату:** API/frontend `1a6b82c` (Agent 0.4.x і 0.5.0); Agent не відкочувати. Процедура, перевірки й повернення — DEPLOYMENT, «Спрощення серверного моніторингу». Production rollback не виконувався; production не змінювався.
+**Ціль відкату** (історично): API/frontend `1a6b82c` (Agent 0.4.x і 0.5.0) — **замінено на `70ddd1f`** (див. розділ вище: дефект доставки retired-правила); Agent не відкочувати. Процедура, перевірки й повернення — DEPLOYMENT, «Спрощення серверного моніторингу». Production rollback не виконувався; production не змінювався.
 
 ## Спрощення серверного моніторингу: лише поточний load average (2026-10-15, ADR-023)
 
@@ -239,7 +258,7 @@ Rollback підготовлено до production `up`: код — `server-relea
 
 **Rollback** (DEPLOYMENT, ADR-023): спершу Agent → `2fe4d95` + restart лише Agent (старий API не приймає мінімальний heartbeat), потім за потреби API → `c016beb` + restart. Схема не відкочується; backup БД не відновлюється поверх нових даних.
 
-_Уточнення 2026-10-15 (review Codex P2):_ описана тут ціль `c016beb` несумісна з мінімальними snapshot у БД — див. наступний розділ; актуальна ціль відкату — compatibility-реліз `1a6b82c`.
+_Уточнення 2026-10-15 (review Codex P2):_ описана тут ціль `c016beb` несумісна з мінімальними snapshot у БД — див. наступний розділ; актуальна ціль відкату — compatibility-реліз `70ddd1f` (`1a6b82c` має дефект доставки retired-правила).
 
 ## Автозапуск PM2 на керованій ноді після reboot (2026-10-15)
 
