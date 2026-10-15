@@ -430,9 +430,36 @@ journalctl -u node-control-api --since "-1 min" -o cat | grep -o '"alertsSecretK
 3. Новий Agent 0.5.0 (артефакт `node-control-agent-<sha>`): `prepare --no-install` → `activate` → restart лише `node-control-agent`. Broker і exporter не змінюються й не перезапускаються (unit-файли ті самі; їхній код у новому релізі той самий).
 4. Перевірки: heartbeat/inventory/control/log polling у журналі Agent, `agentVersion` 0.5.0 в «Системних подробицях», PM2 PID/час старту/restarts без змін.
 
-Rollback (порядок важливий — старий API відхиляє мінімальний heartbeat Agent 0.5.0):
-1. Agent: `server-release.js rollback --base /opt/goit-node-control-agent` + restart лише Agent (повертає 0.4.x).
-2. За потреби API: `server-release.js rollback` + restart API. Схема не відкочується; закриті як `retired` інциденти лишаються закритими; старий frontend не розбирає сторінку історії з `retired` записом (активні проблеми працюють).
+**Rollback після ADR-023 — лише на compatibility-реліз** (уточнено 2026-10-15 за review Codex; попередня процедура «старий Agent → старий API `c016beb`» була неповною).
+
+Первісний реліз `c016beb` **не є безпечною ціллю**: у БД уже лежать мінімальні snapshot (їх пише ADR-023 API для будь-якої версії Agent), а офлайн/деактивовані ноди не надішлють нового heartbeat. На таких даних `c016beb` повертає 500 на сторінці сервера (serializer вимагає `uptimeSeconds`), 503 на Dashboard, падає в кожному циклі оцінювання сповіщень (`TypeError … totalBytes` — рушій фактично не працює), відхиляє heartbeat Agent 0.5.0 (400), а його UI не розбирає мінімальний snapshot і інциденти `retired`.
+
+Ціль — **compatibility-реліз** гілки `release/monitoring-rollback-compat`, revision `1a6b82c251539aa9348b1fee6b997a0f3a254434` (код `c016beb` + вузькі виправлення):
+- приймає heartbeat Agent 0.4.x (повний) і 0.5.0 (мінімальний), невідомі поля → 400;
+- читає мінімальні й повні snapshot: пам'ять/uptime/кількість ядер відсутні → `null` («—», «обсяг невідомий»), не нулі;
+- не оцінює виведене правило `server_memory`; решта правил (offline, inventory, process_*) працює;
+- UI розбирає мінімальні snapshot та історію з `retired`; неактивні пороги пам'яті ОС приховано (значення зберігаються без змін);
+- містить уже застосовану міграцію `1791900000008` (той самий файл) — `migrate status` чистий, міграцій для застосування немає.
+
+Процедура (API/frontend; Agent і broker/exporter не чіпати — compat приймає обидві версії Agent):
+
+```bash
+# локально, чистий checkout; походження перевіряє build-release (ревізія має бути в запушеній гілці)
+git fetch origin && git worktree add ../nc-rollback 1a6b82c251539aa9348b1fee6b997a0f3a254434 && cd ../nc-rollback && npm ci
+npx -y node@22 scripts/deploy/build-release.js --revision 1a6b82c251539aa9348b1fee6b997a0f3a254434   --remote-branch origin/release/monitoring-rollback-compat --out <out>
+# передати артефакт + .sha256 + server-bundle як для звичайного деплою; на сервері (root):
+sha256sum -c node-control-api-<sha>.tar.gz.sha256
+node server-bundle/server-release.js prepare --artifact … --sha256 … --revision 1a6b82c251539aa9348b1fee6b997a0f3a254434
+# RELEASE.json: revision = 1a6b82c…, 63 файли; migrate.js status з нового релізу: applied=9 pending=0 unknown=0
+node server-bundle/server-release.js activate --revision 1a6b82c251539aa9348b1fee6b997a0f3a254434
+systemctl restart node-control-api
+```
+
+Перевірки після: live/ready 200, сторінки сервера (онлайн/офлайн) і Dashboard без 500/503, `GET /api/alerts?state=resolved` 200, у журналі API немає `Alerts evaluation failed`, heartbeat обох версій Agent приймається.
+
+Повернення на поточний робочий реліз: `server-release.js activate --revision <поточний ADR-023 реліз>` (він лишається підготовленим) + restart API — без міграцій. Записи, які compat зробить за час відкату (повні snapshot від Agent 0.4.x), ADR-023 API читає через `normalizeSnapshot`.
+
+Обмеження: tar.gz не відтворюється побайтово (час файлів) — ідентичність задає revision + `RELEASE.json` (хеші файлів однакові між збірками, перевірено); compat-реліз не показує пороги пам'яті ОС, але й не дає їх змінити через UI; Agent 0.4.x за compat знову надсилає (і compat зберігає) повні snapshot. Схема не відкочується; backup БД поверх нових даних не відновлюється.
 
 ### Міграції: backup, recovery, rollback
 

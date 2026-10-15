@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-15 (спрощення серверного моніторингу, ADR-023). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-15 (безпечний rollback після ADR-023). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Незалежний review Codex — Task 011 (2026-10-14)
 
@@ -184,6 +184,25 @@ Rollback підготовлено до production `up`: код — `server-relea
 3. **Публічний сайт `https://control.example.com`** налаштований власником (Nginx + Let's Encrypt, `conf.d/control.example.com.conf`); задачі Node Control його не змінюють. Рекомендовано власнику до відкриття для користувачів (ADR-013): заголовки безпеки (CSP `default-src 'self'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS), `no-cache` для SPA-маршрутів, `immutable` + `try_files $uri =404` для `/assets/`.
 4. ~~Адміністратора не створено~~ — 2026-10-12 створено першого адміністратора (`admin@example.com`) через bootstrap CLI як `nodecontrol`; пароль згенеровано на сервері (20 символів), передано через stdin і повідомлено користувачу один раз; у репозиторії/логах його немає. Audit: `admin.bootstrap` success. **Потрібна функція зміни пароля** (наступне завдання) — до неї пароль тимчасовий.
 
+## Безпечний rollback після ADR-023: compatibility-реліз (2026-10-15, review Codex P2)
+
+**Зауваження.** DEPLOYMENT описував відкат як «старий Agent → старий API `c016beb`». Але ADR-023 API зберігає мінімальні snapshot і для Agent 0.4.x, тож після повернення старого Agent повні дані не відновлюються, а офлайн/деактивовані ноди не надішлють нового heartbeat. Відтворено тестом на коді `c016beb` (БД зі станами, які лишає ADR-023): server detail 500 (serializer вимагає `uptimeSeconds`), Dashboard 503, оцінювання сповіщень `TypeError … reading 'totalBytes'` у кожному циклі, heartbeat Agent 0.5.0 → 400; крім того, старий UI не розбирає мінімальний snapshot і `retired`, а в релізі немає файлу вже застосованої міграції 8.
+
+**Механізм.** Окремий compatibility-реліз у гілці `release/monitoring-rollback-compat` (від `c016beb`, без переписування історії), commit **`1a6b82c251539aa9348b1fee6b997a0f3a254434`** (`fix(deploy): make monitoring rollback safe for minimal snapshots`). Лише вузькі зміни старого коду: snapshot-контракт приймає обидві версії Agent (legacy-поля строго опційні), Dashboard/детальна сторінка/alerts читають відсутні host-метрики як `null`, `server_memory` не оцінюється, UI розбирає мінімальні snapshot і `retired` та ховає неактивні пороги пам'яті ОС, додано файл міграції 8 (байт-у-байт той самий). Поточний ADR-023 реліз і production не змінювались; deployment tooling не змінювався — збірка штатним `build-release.js --remote-branch origin/release/monitoring-rollback-compat` (перевірка clean + pushed revision збережена).
+
+| Перевірка compat-релізу (Node 22) | Результат |
+|---|---|
+| Regression (real DB) `rollback-compat` 13 | на незміненому `c016beb`: 4 падіння (500/503/TypeError/400) — відтворення; на compat: 13/13 — online/offline/деактивований/never-connected, змішані legacy і мінімальні snapshot, server detail і Dashboard 200 без нових heartbeat, null замість вигаданих метрик, оцінювання без TypeError і без нових `server_memory`/recovery, історія з `retired`, heartbeat 0.4.x і 0.5.0 приймаються, невідомі поля/некоректний load/legacy-форма → 400, без credential → 401, анонімні читання → 401 |
+| `npm run check:local` | exit 0: node:test 89/89, backend 436/436, smoke 10/10, agent 164/164 (+3 opt-in), frontend 198/198 (нові `rollback-compat` 3: мінімальний snapshot, null-метрики Dashboard, `retired` в історії), typecheck, lint, збірки, `check:secrets` OK |
+| Real-DB (`test:backend:db`) | 107/107 |
+| E2E | 19/19 (+1 opt-in), новий `rollback-compat.spec.ts`: Dashboard, сторінка сервера й історія сповіщень з мінімальними snapshot і `retired` — без помилок у браузері |
+| Real-PM2 E2E | 1/1 |
+| Артефакт | `node-control-api-1a6b82c….tar.gz`: `shasum -c` OK; `RELEASE.json` revision `1a6b82c…`, 63 файли, `verifyManifest` 0 помилок, 9 міграцій; `backend/dist` (без source maps), `frontend/dist`, `backend/migrations` побайтово = тестована збірка; повторна збірка — ті самі хеші всіх файлів manifest (API 63, Agent 33), tar.gz SHA-256 відрізняється (час файлів) |
+
+Адаптовані старі тести compat-гілки: перевірки відкриття `server_memory` замінено перевіркою, що compat його не оцінює; «відсутні дані не закривають інцидент» і скидання серій — на CPU процесу; списки міграцій — з міграцією 8.
+
+**Ціль відкату:** API/frontend `1a6b82c` (Agent 0.4.x і 0.5.0); Agent не відкочувати. Процедура, перевірки й повернення — DEPLOYMENT, «Спрощення серверного моніторингу». Production rollback не виконувався; production не змінювався.
+
 ## Спрощення серверного моніторингу: лише поточний load average (2026-10-15, ADR-023)
 
 Перший крок оновленого плану (далі: виправлення діалогів frontend → незалежний review Slack/alerts → документація й інсталятори → фінальна production-підготовка). Сервери моніторить Zabbix; Node Control лишає з системних показників лише поточний load average і службову доступність Agent. Історія серверних метрик виключена з roadmap; історія метрик застосунків не погоджена.
@@ -219,6 +238,8 @@ Rollback підготовлено до production `up`: код — `server-relea
 | PM2 до/після | PID, час старту й restarts усіх 5 застосунків і daemon — без змін; автозапуск `pm2-<owner>` не змінювався (enabled) |
 
 **Rollback** (DEPLOYMENT, ADR-023): спершу Agent → `2fe4d95` + restart лише Agent (старий API не приймає мінімальний heartbeat), потім за потреби API → `c016beb` + restart. Схема не відкочується; backup БД не відновлюється поверх нових даних.
+
+_Уточнення 2026-10-15 (review Codex P2):_ описана тут ціль `c016beb` несумісна з мінімальними snapshot у БД — див. наступний розділ; актуальна ціль відкату — compatibility-реліз `1a6b82c`.
 
 ## Автозапуск PM2 на керованій ноді після reboot (2026-10-15)
 
