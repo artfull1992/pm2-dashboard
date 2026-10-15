@@ -10,6 +10,8 @@
 
 export const RULES = ['server_offline', 'inventory_stale', 'process_down', 'process_cpu', 'server_memory', 'process_restarts'] as const;
 export type Rule = (typeof RULES)[number];
+/** Rules retired by ADR-023: never evaluated here, and their outbox items are never delivered (see store claim). */
+export const RETIRED_RULES = ['server_memory'] as const satisfies readonly Rule[];
 export type Severity = 'critical' | 'warning';
 export type ConditionState = 'ok' | 'pending' | 'firing' | 'recovering';
 export type Resolution = 'recovered' | 'process_gone' | 'excluded';

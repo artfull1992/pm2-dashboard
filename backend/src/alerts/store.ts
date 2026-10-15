@@ -1,7 +1,7 @@
 import type { Database, QueryClient } from '../database.js';
 import { INVENTORY_STATE_SQL, SERVER_STATUS_SQL } from '../servers/inventory-store.js';
 import type { ServerSnapshot } from '../servers/snapshot.js';
-import { type ConditionRow, type Detail, evaluate, type EvaluationResult, type ProcessObs, type Resolution, type Rule, type ServerObs, type Severity, type Transition } from './rules.js';
+import { type ConditionRow, type Detail, evaluate, type EvaluationResult, type ProcessObs, type Resolution, RETIRED_RULES, type Rule, type ServerObs, type Severity, type Transition } from './rules.js';
 import type { MessageIncident } from './slack.js';
 import type { EvaluationConfig } from './settings.js';
 
@@ -185,6 +185,35 @@ async function applyTransitions(tx: QueryClient, result: EvaluationResult, confi
   return { opened: opened.size, resolved, observed, enqueued, dropped };
 }
 
+const RETIRED = [...RETIRED_RULES] as string[];
+
+/**
+ * Cancels undelivered items of retired rules (ADR-023): queued ones and "sending" ones whose lease expired (an
+ * interrupted delivery). A live lease belongs to a running delivery and is left alone; if that delivery returns the
+ * item for a retry, the next call cancels it. Sent history and the incidents themselves are not touched.
+ */
+async function cancelRetiredOutbox(q: QueryClient | Database): Promise<number> {
+  const r = await q.query(
+    `UPDATE alert_outbox o SET status = 'cancelled', finished_at = now(), lease_until = NULL, last_error = 'rule_retired'
+       FROM alert_incidents i
+      WHERE i.id = o.incident_id AND i.rule = ANY($1::text[])
+        AND (o.status = 'queued' OR (o.status = 'sending' AND o.lease_until < now()))`, [RETIRED]);
+  return r.rowCount ?? 0;
+}
+
+/**
+ * The claim statement ($1 limit, $2 lease seconds, $3 generation, $4 retired rules). Retired rules are excluded here
+ * as well, not only by the preceding cleanup: an item may become claimable between the two (e.g. a retry).
+ */
+export const CLAIM_SQL = `WITH picked AS (
+     SELECT o.id FROM alert_outbox o
+      WHERE o.generation = $3 AND ((o.status = 'queued' AND o.next_attempt_at <= now()) OR (o.status = 'sending' AND o.lease_until < now()))
+        AND NOT EXISTS (SELECT 1 FROM alert_incidents i WHERE i.id = o.incident_id AND i.rule = ANY($4::text[]))
+      ORDER BY o.next_attempt_at, o.id LIMIT $1 FOR UPDATE OF o SKIP LOCKED)
+   UPDATE alert_outbox o SET status = 'sending', attempts = LEAST(o.attempts + 1, 20), lease_until = now() + make_interval(secs => $2)
+     FROM picked WHERE o.id = picked.id
+   RETURNING o.id::text AS outbox_id, o.kind, o.attempts, o.incident_id`;
+
 const INCIDENT_COLUMNS = `i.id, i.rule, i.severity, i.status, i.resolution, i.server_id, i.server_name, i.process_name, i.pm_id, i.detail,
        i.opened_at, i.last_observed_at, i.resolved_at, i.notify`;
 
@@ -213,14 +242,8 @@ export function createPgAlertsStore(db: Database): AlertsStore {
     },
 
     async claim(limit, generation) {
-      const { rows } = await db.query(
-        `WITH picked AS (
-           SELECT id FROM alert_outbox
-            WHERE generation = $3 AND ((status = 'queued' AND next_attempt_at <= now()) OR (status = 'sending' AND lease_until < now()))
-            ORDER BY next_attempt_at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
-         UPDATE alert_outbox o SET status = 'sending', attempts = LEAST(o.attempts + 1, 20), lease_until = now() + make_interval(secs => $2)
-           FROM picked WHERE o.id = picked.id
-         RETURNING o.id::text AS outbox_id, o.kind, o.attempts, o.incident_id`, [limit, LEASE_SECONDS, generation]);
+      await cancelRetiredOutbox(db);
+      const { rows } = await db.query(CLAIM_SQL, [limit, LEASE_SECONDS, generation, RETIRED]);
       if (rows.length === 0) return [];
       const incidents = await db.query(`SELECT ${INCIDENT_COLUMNS} FROM alert_incidents i WHERE i.id = ANY($1::uuid[])`, [rows.map((r: Row) => r.incident_id)]);
       const byId = new Map(incidents.rows.map((r: Row) => [String(r.id), toMessage(r)]));
