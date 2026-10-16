@@ -80,13 +80,16 @@ export function registerControlRoutes(app: FastifyInstance, options: ControlRout
     config: { access: { permission: 'monitoring:read' } },
     schema: {
       params: idParams,
-      querystring: { type: 'object', additionalProperties: false, properties: { limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 } } },
+      querystring: {
+        type: 'object', additionalProperties: false,
+        properties: { limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 }, targetKey: { type: 'string', pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' } },
+      },
       response: { 200: { type: 'object', additionalProperties: false, required: ['items'], properties: { items: { type: 'array', items: commandViewSchema } } } },
     },
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const { limit } = request.query as { limit: number };
-    const items = await guarded(request.log, 'Command list', () => store.listCommands(id, limit));
+    const { limit, targetKey } = request.query as { limit: number; targetKey?: string };
+    const items = await guarded(request.log, 'Command list', () => store.listCommands(id, limit, targetKey ?? null));
     if (!items) throw new PublicHttpError(404, 'Server not found');
     return { items };
   });

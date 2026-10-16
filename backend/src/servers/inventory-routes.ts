@@ -1,10 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { BusyError, createLimiter, type Limiter } from '../auth/password.js';
 import { describeError, PublicHttpError } from '../errors.js';
-import {
-  decodeCursor, INVENTORY_BODY_LIMIT, INVENTORY_FRESH_SECONDS, INVENTORY_INTERVAL_SECONDS, inventoryReportSchema,
-  PROCESS_STATUSES, type ProcessStatus, type SchemaValidReport, toInventoryReport,
-} from './inventory.js';
+import { cursorContext, decodeCursor, INVENTORY_BODY_LIMIT, INVENTORY_FRESH_SECONDS, INVENTORY_INTERVAL_SECONDS, inventoryReportSchema, normalizeSearch, PROCESS_STATUSES, type ProcessStatus, type SchemaValidReport, toInventoryReport } from './inventory.js';
 import type { InventoryStore } from './inventory-store.js';
 
 // Read-only PM2 inventory API (ADR-016): one machine route for the Agent, two browser read routes. There are no
@@ -49,6 +46,7 @@ export function registerInventoryRoutes(app: FastifyInstance, options: Inventory
           cursor: { type: 'string', minLength: 1, maxLength: 400, pattern: '^[A-Za-z0-9_-]+$' },
           serverId: { type: 'string', pattern: UUID_PATTERN },
           status: { type: 'string', enum: PROCESS_STATUSES },
+          q: { type: 'string', maxLength: 512 },
         },
       },
       response: {
@@ -59,11 +57,19 @@ export function registerInventoryRoutes(app: FastifyInstance, options: Inventory
       },
     },
   }, async (request) => {
-    const q = request.query as { limit: number; cursor?: string; serverId?: string; status?: ProcessStatus };
+    const q = request.query as { limit: number; cursor?: string; serverId?: string; status?: ProcessStatus; q?: string };
+    const search = normalizeSearch(q.q);
+    if (search === null) throw new PublicHttpError(400, 'Invalid search');
+    const filter = { serverId: q.serverId ?? null, status: q.status ?? null, q: search ?? null };
+    const context = cursorContext(filter);
     const cursor = q.cursor === undefined ? null : decodeCursor(q.cursor);
     if (q.cursor !== undefined && !cursor) throw new PublicHttpError(400, 'Invalid cursor');
+    // A cursor belongs to the filters it was issued for; one of another list is refused (start again from page 1).
+    // Cursors issued before name search existed carry no context and keep working for the same filters.
+    if (cursor?.context && cursor.context !== context) throw new PublicHttpError(400, 'Invalid cursor');
+    if (cursor && !cursor.context && filter.q !== null) throw new PublicHttpError(400, 'Invalid cursor');
     try {
-      const page = await store.listApplications({ limit: q.limit, cursor, serverId: q.serverId ?? null, status: q.status ?? null });
+      const page = await store.listApplications({ limit: q.limit, cursor, ...filter, context });
       return { ...page, freshWindowSeconds: INVENTORY_FRESH_SECONDS };
     } catch (error) {
       request.log.error({ error: describeError(error) }, 'Application list failed');

@@ -49,15 +49,15 @@ export class FakeInventoryStore implements InventoryStore {
     }));
   }
 
-  listApplications({ limit, cursor, serverId, status }: { limit: number; cursor: ApplicationCursor | null; serverId: string | null; status: ProcessStatus | null }) {
+  listApplications({ limit, cursor, serverId, status, q = null, context = null }: { limit: number; cursor: ApplicationCursor | null; serverId: string | null; status: ProcessStatus | null; q?: string | null; context?: string | null }) {
     if (this.failing) return Promise.reject(new Error('synthetic'));
     const all = [...this.rows.entries()].flatMap(([id, row]) => this.items(id, row))
-      .filter((a) => (serverId === null || a.serverId === serverId) && (status === null || a.status === status))
+      .filter((a) => (serverId === null || a.serverId === serverId) && (status === null || a.status === status) && (q === null || a.name.toLowerCase().includes(q.toLowerCase())))
       .sort((a, b) => a.name.localeCompare(b.name) || a.serverId.localeCompare(b.serverId) || a.pmId - b.pmId)
       .filter((a) => !cursor || a.name > cursor.name || (a.name === cursor.name && (a.serverId > cursor.serverId || (a.serverId === cursor.serverId && a.pmId > cursor.pmId))));
     const items = all.slice(0, limit);
     const last = items.at(-1);
-    return Promise.resolve({ items, nextCursor: all.length > limit && last ? encodeCursor({ name: last.name, serverId: last.serverId, pmId: last.pmId }) : null });
+    return Promise.resolve({ items, nextCursor: all.length > limit && last ? encodeCursor({ name: last.name, serverId: last.serverId, pmId: last.pmId, context }) : null });
   }
 
   serverApplications(serverId: string) {

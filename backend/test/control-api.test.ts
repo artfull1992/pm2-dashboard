@@ -42,7 +42,8 @@ class StubControlStore implements ControlStore {
     return Promise.resolve(serverId === SERVER ? { serverId, serverStatus: 'online' as const, broker: null, targets: [] } : null);
   }
   createCommand(input: unknown) { this.check(); this.creates.push(input); return Promise.resolve(this.createResult); }
-  listCommands(serverId: string) { this.check(); return Promise.resolve(serverId === SERVER ? [command()] : null); }
+  lists: { serverId: string; limit: number; targetKey: string | null | undefined }[] = [];
+  listCommands(serverId: string, limit: number, targetKey?: string | null) { this.check(); this.lists.push({ serverId, limit, targetKey }); return Promise.resolve(serverId === SERVER ? [command()] : null); }
   getCommand(id: string) { this.check(); return Promise.resolve(id === SERVER ? command({ id }) : null); }
   poll(input: { report: PollReport; controlEnabled: boolean }) { this.check(); this.polls.push(input); return Promise.resolve(this.pollResult); }
   recordResult(input: { result: ResultReport }) { this.check(); this.results.push(input.result); return Promise.resolve(this.resultStatus); }
@@ -166,6 +167,21 @@ describe('browser: command creation', () => {
     const failed = await post(s, body());
     expect(failed.statusCode).toBe(503);
     expect(logs.text()).not.toContain(SECRET);
+  });
+
+  it('command history of one target: validated targetKey passed to the store with the limit; reads need a session', async () => {
+    build();
+    const viewer = await session('viewer');
+    const get = (qs: string, headers: Record<string, string> = { cookie: viewer.cookie }) => app.inject({ method: 'GET', url: `/api/servers/${SERVER}/control-commands${qs}`, headers });
+    expect((await get('?limit=10&targetKey=api-prod')).statusCode).toBe(200);
+    expect(control.lists.at(-1)).toEqual({ serverId: SERVER, limit: 10, targetKey: 'api-prod' });
+    expect((await get('?limit=10')).statusCode).toBe(200);
+    expect(control.lists.at(-1)?.targetKey).toBeNull();
+    for (const bad of ['?targetKey=API', '?targetKey=-x', `?targetKey=${'a'.repeat(65)}`, "?targetKey=a'or'1", '?targetKey=', '?limit=51']) {
+      expect((await get(bad)).statusCode).toBe(400);
+    }
+    expect((await get('?targetKey=api-prod', {})).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: `/api/servers/${randomUUID()}/control-commands?targetKey=api`, headers: { cookie: viewer.cookie } })).statusCode).toBe(404);
   });
 
   it('command lookups: 404 for unknown, 400 for malformed ids', async () => {

@@ -45,7 +45,8 @@ export interface ApplicationItem {
 
 export interface InventoryStore {
   recordInventory(input: { tokenHash: Buffer; report: InventoryReport }): Promise<{ serverId: string; receivedAt: Date; status: 'accepted' | 'ignored' } | 'unauthorized'>;
-  listApplications(input: { limit: number; cursor: ApplicationCursor | null; serverId: string | null; status: ProcessStatus | null }): Promise<{ items: ApplicationItem[]; nextCursor: string | null }>;
+  /** `q`: case-insensitive literal substring of the name (no wildcards). `context`: written into the next cursor. */
+  listApplications(input: { limit: number; cursor: ApplicationCursor | null; serverId: string | null; status: ProcessStatus | null; q?: string | null; context?: string | null }): Promise<{ items: ApplicationItem[]; nextCursor: string | null }>;
   serverApplications(serverId: string): Promise<{ serverId: string; serverStatus: ServerStatus; inventory: InventoryInfo; items: ApplicationItem[] } | null>;
 }
 
@@ -177,19 +178,21 @@ export function createPgInventoryStore(db: Database): InventoryStore {
       });
     },
 
-    async listApplications({ limit, cursor, serverId, status }) {
+    async listApplications({ limit, cursor, serverId, status, q = null, context = null }) {
+      // strpos: a literal substring — %, _ and backslashes in the search are plain characters (no LIKE patterns).
       const { rows } = await db.query<AppRow>(
         `${APP_SELECT}
           WHERE ($1::uuid IS NULL OR a.server_id = $1::uuid)
             AND ($2::text IS NULL OR a.status = $2::text)
+            AND ($7::text IS NULL OR strpos(lower(a.name), lower($7::text)) > 0)
             AND ($3::text IS NULL OR (a.name, a.server_id, a.pm_id) > ($3::text, $4::uuid, $5::int))
           ORDER BY a.name, a.server_id, a.pm_id
           LIMIT $6`,
-        [serverId, status, cursor?.name ?? null, cursor?.serverId ?? null, cursor?.pmId ?? null, limit + 1],
+        [serverId, status, cursor?.name ?? null, cursor?.serverId ?? null, cursor?.pmId ?? null, limit + 1, q],
       );
       const items = rows.slice(0, limit).map(toItem);
       const last = items.at(-1);
-      return { items, nextCursor: rows.length > limit && last ? encodeCursor({ name: last.name, serverId: last.serverId, pmId: last.pmId }) : null };
+      return { items, nextCursor: rows.length > limit && last ? encodeCursor({ name: last.name, serverId: last.serverId, pmId: last.pmId, context }) : null };
     },
 
     async serverApplications(serverId) {

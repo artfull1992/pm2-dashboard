@@ -229,6 +229,38 @@ describe('browser routes', () => {
     expect((await get('')).body).toContain('<img src=x onerror=alert(1)>');
   });
 
+  it('name search: case-insensitive substring with the other filters; trimmed; empty means none; invalid → 400', async () => {
+    const { admin, a } = await seeded();
+    const names = async (qs: string) => (await app.inject({ method: 'GET', url: `/api/applications${qs}`, headers: { cookie: admin.cookie } }))
+      .json<{ items: { name: string }[] }>().items.map((i) => i.name);
+    const all = await names('');
+    expect(await names('?q=API')).toEqual(all.filter((n) => n.toLowerCase().includes('api')));
+    expect(await names(`?q=${encodeURIComponent('  api ')}&serverId=${a.serverId}`)).toEqual(['api']);
+    expect(await names('?q=api&status=stopped')).toEqual([]);
+    expect(await names(`?q=${encodeURIComponent('   ')}`)).toEqual(all); // whitespace only = no search
+    expect(await names('?q=')).toEqual(all);
+    const status = async (qs: string) => (await app.inject({ method: 'GET', url: `/api/applications${qs}`, headers: { cookie: admin.cookie } })).statusCode;
+    expect(await status(`?q=${'x'.repeat(129)}`)).toBe(400);
+    expect(await status(`?q=${'x'.repeat(128)}`)).toBe(200);
+    expect(await status(`?q=a${encodeURIComponent('\u0001')}b`)).toBe(400);
+    expect(await status(`?q=${'y'.repeat(513)}`)).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/api/applications?q=api' })).statusCode).toBe(401);
+  });
+
+  it('a cursor belongs to its filters: another search/filter → 400; legacy cursors keep working without a search', async () => {
+    const { admin } = await seeded();
+    const get = (qs: string) => app.inject({ method: 'GET', url: `/api/applications${qs}`, headers: { cookie: admin.cookie } });
+    const first = (await get('?limit=1&q=a')).json<{ nextCursor: string }>();
+    expect((await get(`?limit=1&q=a&cursor=${first.nextCursor}`)).statusCode).toBe(200);
+    expect((await get(`?limit=1&q=ap&cursor=${first.nextCursor}`)).statusCode).toBe(400);
+    expect((await get(`?limit=1&cursor=${first.nextCursor}`)).statusCode).toBe(400);
+    expect((await get(`?limit=1&status=online&q=a&cursor=${first.nextCursor}`)).statusCode).toBe(400);
+    const legacy = encodeCursor({ name: 'a', serverId: '11111111-1111-4111-8111-111111111111', pmId: 0 });
+    expect((await get(`?limit=1&cursor=${legacy}`)).statusCode).toBe(200);
+    expect((await get(`?limit=1&status=online&cursor=${legacy}`)).statusCode).toBe(200);
+    expect((await get(`?limit=1&q=a&cursor=${legacy}`)).statusCode).toBe(400);
+  });
+
   it('server applications: unknown server 404, malformed id 400, never reported → not_reported', async () => {
     const { admin } = await seeded();
     const fresh = await provisioned(admin, 'gamma');

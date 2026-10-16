@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 // PM2 inventory contract on the API side (ADR-016). Mirrors agent/src/inventory/contract.ts; both are covered by
 // contract tests. Static JSON schemas only (additionalProperties:false) — no dynamic keys (NC-SEC-001).
 
@@ -105,11 +106,30 @@ export function toInventoryReport(raw: SchemaValidReport): InventoryReport | nul
 }
 
 /** Opaque keyset cursor for the global application list: base64url(JSON [name, serverId, pmId]). */
-export interface ApplicationCursor { name: string; serverId: string; pmId: number }
+/** Keyset position; `context` (cursors issued since name search) binds it to the filters it was issued for. */
+export interface ApplicationCursor { name: string; serverId: string; pmId: number; context?: string | null }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function encodeCursor(c: ApplicationCursor): string {
-  return Buffer.from(JSON.stringify([c.name, c.serverId, c.pmId]), 'utf8').toString('base64url');
+  const tuple = c.context ? [c.name, c.serverId, c.pmId, c.context] : [c.name, c.serverId, c.pmId];
+  return Buffer.from(JSON.stringify(tuple), 'utf8').toString('base64url');
+}
+
+/** Short fingerprint of the list filters a cursor belongs to (not secret; only detects a cursor of another list). */
+export function cursorContext(filter: { serverId: string | null; status: string | null; q: string | null }): string {
+  return createHash('sha256').update(JSON.stringify([filter.serverId, filter.status, filter.q])).digest('base64url').slice(0, 12);
+}
+
+export const SEARCH_MAX_LENGTH = 128;
+/** Name search: trimmed; empty → no search; null for an invalid value (too long or control characters). */
+export function normalizeSearch(raw: string | undefined): string | null | undefined {
+  if (raw === undefined) return undefined;
+  const q = raw.trim();
+  if (q === '') return undefined;
+  let control = false;
+  for (let i = 0; i < q.length; i++) { const c = q.charCodeAt(i); if (c < 0x20 || c === 0x7f) control = true; }
+  if (q.length > SEARCH_MAX_LENGTH || control) return null;
+  return q;
 }
 
 export function decodeCursor(value: string): ApplicationCursor | null {
@@ -119,10 +139,11 @@ export function decodeCursor(value: string): ApplicationCursor | null {
   } catch {
     return null;
   }
-  if (!Array.isArray(parsed) || parsed.length !== 3) return null;
-  const [name, serverId, pmId] = parsed as unknown[];
+  if (!Array.isArray(parsed) || (parsed.length !== 3 && parsed.length !== 4)) return null;
+  const [name, serverId, pmId, context] = parsed as unknown[];
+  if (parsed.length === 4 && (typeof context !== 'string' || !/^[A-Za-z0-9_-]{12}$/.test(context))) return null;
   if (typeof name !== 'string' || name.length < 1 || name.length > 128) return null;
   if (typeof serverId !== 'string' || !UUID_RE.test(serverId)) return null;
   if (typeof pmId !== 'number' || !Number.isSafeInteger(pmId) || pmId < 0 || pmId > 1_000_000) return null;
-  return { name, serverId, pmId };
+  return typeof context === 'string' ? { name, serverId, pmId, context } : { name, serverId, pmId };
 }

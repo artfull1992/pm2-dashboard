@@ -27,7 +27,8 @@ export interface DeliveredCommand { id: string; attempt: number; targetKey: stri
 export interface ControlStore {
   controlView(serverId: string): Promise<ControlView | null>;
   createCommand(input: { serverId: string; targetKey: string; action: ControlAction; idempotencyKey: string; actorUserId: string; requestId: string }): Promise<CreateResult>;
-  listCommands(serverId: string, limit: number): Promise<CommandView[] | null>;
+  /** Newest first; `targetKey` limits it to one allowlist target of this server (filtered before the limit). */
+  listCommands(serverId: string, limit: number, targetKey?: string | null): Promise<CommandView[] | null>;
   getCommand(id: string): Promise<CommandView | null>;
   poll(input: { tokenHash: Buffer; report: PollReport; controlEnabled: boolean }): Promise<{ commands: DeliveredCommand[] } | 'unauthorized'>;
   recordResult(input: { tokenHash: Buffer; result: ResultReport }): Promise<'recorded' | 'duplicate' | 'not_found' | 'conflict' | 'unauthorized'>;
@@ -169,12 +170,14 @@ export function createPgControlStore(db: Database): ControlStore {
       });
     },
 
-    async listCommands(serverId, limit) {
+    async listCommands(serverId, limit, targetKey = null) {
       const exists = await db.query('SELECT 1 FROM servers WHERE id = $1', [serverId]);
       if (exists.rows.length === 0) return null;
       const { rows } = await db.query<CommandRow>(
-        `SELECT ${COMMAND_COLUMNS} FROM control_commands WHERE server_id = $1 ORDER BY requested_at DESC, id LIMIT $2`,
-        [serverId, limit],
+        `SELECT ${COMMAND_COLUMNS} FROM control_commands
+          WHERE server_id = $1 AND ($3::text IS NULL OR target_key = $3::text)
+          ORDER BY requested_at DESC, id LIMIT $2`,
+        [serverId, limit, targetKey],
       );
       return rows.map(toView);
     },
