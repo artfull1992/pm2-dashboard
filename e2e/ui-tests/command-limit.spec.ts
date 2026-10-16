@@ -74,8 +74,12 @@ test('five running commands: the sixth waits with an explanation; a finished one
   expect(posts).toHaveLength(5);
 
   // The first command is still followed, and stays listed.
+  // runFor() returns once the browser ran its timers; the requests they started are handled by the route above
+  // asynchronously. Wait for that read's response (registered before the clock moves), then check the counter.
   const firstReads = reads.get(cmdId(1)) ?? 0;
+  const polled = page.waitForResponse((r) => r.url().endsWith(`/api/control-commands/${cmdId(1)}`));
   await page.clock.runFor(4_500);
+  await polled;
   expect(reads.get(cmdId(1)) ?? 0).toBeGreaterThan(firstReads);
   await expect(page.getByRole('status').filter({ hasText: '«p0»' })).toHaveCount(1);
 
