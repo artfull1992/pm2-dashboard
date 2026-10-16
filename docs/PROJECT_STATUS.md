@@ -1,6 +1,17 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-16 (нейтральна назва Node Control і шляхи встановлення, ADR-025 — готово до review). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-16 (незалежний review ADR-025 — CHANGES REQUIRED). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+
+## Незалежний review Codex — ADR-025: CHANGES REQUIRED (2026-10-16)
+
+Перевірено `14daaca`, `a79b8d9`, `2340c00` і звіт `aa1dcde`; початкове дерево чисте. Відкриті два P2 у новому інструменті міграції:
+
+1. **Rollback затирає зміни env після міграції.** `scripts/deploy/lib/path-migration.js:203` відновлює весь файл із початкового backup. Відтворено в тимчасовому каталозі: apply переписує path у agent.env → синтетичний токен змінено → rollback повертає попередній токен. Це суперечить вимозі зберегти актуальні секрети/нові дані й обіцянці повного rollback у DEPLOYMENT. Потрібне відновлення лише мігрованих посилань зі збереженням інших актуальних значень або явна відмова до перезапису при конфлікті; regression для ротації токена/інших змін env.
+2. **Preflight дозволяє перенести власний журнал.** `scripts/deploy/lib/path-migration.js:141–150` перевіряє для state/backup лише абсолютність. Відтворено `--state` усередині source-каталогу: plan дозволяє, apply переносить каталог і падає з ENOENT при збереженні state; журнал уже не за вказаним шляхом. Потрібно до будь-яких змін відхиляти перетин metadata (state/backup) із move/alias/rewrite targets, урахувати resolved/symlink paths; перевірити відсутність змін після невдалого preflight.
+
+Незалежно на Node.js 22: check:local exit 0 — 104 unit, 446 backend, 10 smoke, 165 Agent (+3 opt-in пропущені), 233 frontend; typecheck/lint/secrets/збірки успішні. У tracked-іменах/вмісті та frontend/dist збігів старого бренду немає. UI Playwright: 18/19; command-limit впав на очікуванні кількості GET після page.clock.runFor (0 замість >0); окремий повтор цього тесту 1/1. Причина нестабільності не встановлена, весь UI-прогін успішним не вважається. Real-DB, real-PM2, Linux migration sandbox та фактичний production rollback у цьому review не виконувались; результати Claude нижче історичні.
+
+Read-only SSH: API і Agent current `2340c00`; API/Nginx та Agent/broker/exporter timer active, API ready успішний. Reviewer не змінював production або функціональний код; два reproduction-сценарії виконано лише в тимчасових каталогах із синтетичними значеннями, каталоги видалено. Змінено лише цей запис review. Наступна функціональність до APPROVED заблокована.
 
 > **Назви й шляхи в історичних записах (2026-10-16, ADR-025).** Продукт перейменовано на Node Control. У записах нижче шляхи встановлення наведено в чинних нейтральних назвах (`/opt/node-control`, `/etc/node-control/…`, `/opt/node-control-agent`, `/var/lib/node-control-pm2…`, `/run/node-control-pm2-broker`); на момент тих подій каталоги мали попередні назви з префіксом колишнього корпоративного бренду — точні значення є в історії Git і в units відповідних релізів. Revisions, результати й факти операцій не змінювались.
 
