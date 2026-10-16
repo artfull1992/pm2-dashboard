@@ -22,7 +22,7 @@
 
 import {
   chmodSync, chownSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync,
-  realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync,
+  readdirSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 
@@ -30,6 +30,15 @@ export class MigrationError extends Error {}
 
 const exists = (path) => {
   try { lstatSync(path); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+};
+/** What is at `path`, for messages (never its content). */
+const kindOf = (path) => {
+  try {
+    const st = lstatSync(path);
+    if (st.isSymbolicLink()) return `a symlink to ${readlinkSync(path)}`;
+    if (st.isDirectory()) return readdirSync(path).length > 0 ? 'a non-empty directory' : 'an empty directory';
+    return st.isFile() ? 'a regular file' : 'a special file';
+  } catch { return 'nothing'; }
 };
 const isAliasTo = (path, target) => {
   try { return lstatSync(path).isSymbolicLink() && resolve(dirname(path), readlinkSync(path)) === target; } catch { return false; }
@@ -291,10 +300,11 @@ function restoreLines(current, changes) {
  * `legacyMaps`: for a state written by the earlier tool version (no recorded line changes, no maps): the same --map
  * pairs as at apply, so the changes can be re-derived from the backup — they are still verified against the file.
  */
-export function rollbackMigration({ stateFile, legacyMaps, dryRun = false, log = () => undefined, beforeWrite }) {
+export function rollbackMigration({ stateFile, legacyMaps, dryRun = false, log = () => undefined, beforeWrite, beforeStep }) {
   const state = loadState(stateFile);
   if (!state) throw new MigrationError(`no state file: ${stateFile}`);
   const pending = [...state.done].reverse().filter((step) => !step.undone);
+  if (pending.length === 0 && state.status === 'rolled-back') { log('already rolled back; nothing to do'); return state; }
   const problems = [];
   const plans = new Map();
   for (const step of pending) {
@@ -329,10 +339,17 @@ export function rollbackMigration({ stateFile, legacyMaps, dryRun = false, log =
         continue;
       }
       plans.set(step, { current, text: restored.text });
+    } else if (step.type === 'alias') {
+      // Only the exact symlink this migration created may be removed; absent is fine (finalize, earlier rollback).
+      if (exists(step.path) && !isAliasTo(step.path, step.target)) {
+        problems.push(`${step.path} is not the alias of this migration but ${kindOf(step.path)} — not removed`);
+      }
     } else if (step.type === 'move') {
-      const fromIsAlias = isAliasTo(step.from, step.to);
-      if (!exists(step.to) && exists(step.from) && !fromIsAlias) continue; // never moved
-      if (exists(step.from) && !fromIsAlias && !pending.some((x) => x.type === 'alias' && x.path === step.from)) problems.push(`cannot move back: both ${step.from} and ${step.to} exist`);
+      // The old path is free only if it is absent or still this migration's alias — by what is on disk, not by the
+      // journal (a pending alias step proves nothing about the object at that path now).
+      const fromFree = !exists(step.from) || isAliasTo(step.from, step.to);
+      if (!fromFree && !exists(step.to)) continue; // never moved (or already moved back)
+      if (!fromFree) problems.push(`cannot move back: ${step.from} is ${kindOf(step.from)}, not the alias of this migration`);
       else if (!exists(step.to)) problems.push(`cannot move back: ${step.to} is missing`);
     }
   }
@@ -345,9 +362,14 @@ export function rollbackMigration({ stateFile, legacyMaps, dryRun = false, log =
     return state;
   }
 
+  // Every destructive step re-checks its precondition right before acting: an object that appeared after the checks
+  // is never removed or renamed over. A change during the run stops it; completed steps stay journaled.
+  const changedDuring = (what) => new MigrationError(`${what} — changed during the rollback; stopped without touching it. Completed steps are journaled: check the object's origin, keep its data, then run the rollback again (DEPLOYMENT)`);
   for (const step of pending) {
+    beforeStep?.(step);
     if (step.type === 'alias') {
       if (isAliasTo(step.path, step.target)) unlinkSync(step.path);
+      else if (exists(step.path)) throw changedDuring(`${step.path} is not the alias of this migration but ${kindOf(step.path)}`);
       log(`↺ removed alias ${step.path}`);
     } else if (step.type === 'rewrite') {
       const plan = plans.get(step);
@@ -362,6 +384,8 @@ export function rollbackMigration({ stateFile, legacyMaps, dryRun = false, log =
       log(`= ${step.from} was not moved (interrupted before the rename)`);
     } else {
       if (isAliasTo(step.from, step.to)) unlinkSync(step.from);
+      // rename(2) would silently replace an empty directory or a file at the old path: never let it.
+      if (exists(step.from)) throw changedDuring(`cannot move back: ${step.from} is ${kindOf(step.from)}`);
       renameSync(step.to, step.from);
       log(`↺ moved ${step.to} → ${step.from}`);
     }
