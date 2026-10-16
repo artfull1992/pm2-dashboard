@@ -1,6 +1,6 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-16 (повторний review ADR-025 — CHANGES REQUIRED). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-16 (ADR-025: перевірка фактичного alias перед rollback — готово до повторного review). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
 
 ## Повторний незалежний review Codex — ADR-025: CHANGES REQUIRED (2026-10-16)
 
@@ -25,6 +25,34 @@ Read-only SSH: API і Agent current `2340c00`; API/Nginx та Agent/broker/expor
 
 > **Назви й шляхи в історичних записах (2026-10-16, ADR-025).** Продукт перейменовано на Node Control. У записах нижче шляхи встановлення наведено в чинних нейтральних назвах (`/opt/node-control`, `/etc/node-control/…`, `/opt/node-control-agent`, `/var/lib/node-control-pm2…`, `/run/node-control-pm2-broker`); на момент тих подій каталоги мали попередні назви з префіксом колишнього корпоративного бренду — точні значення є в історії Git і в units відповідних релізів. Revisions, результати й факти операцій не змінювались.
 
+## ADR-025: перевірка фактичного alias перед rollback (2026-10-16) — готово до повторного review Codex
+
+Статус: **готово до повторного review Codex** (APPROVED не виставлявся). Runtime API/Agent не змінювався; production не змінювався й не передеплоювався (production apply/rollback не виконувались).
+
+**P2 — сторонній об'єкт замість alias — виправлено** (`c2fff84`, `scripts/deploy/lib/path-migration.js`). Причина: preflight кроку move пропускав наявний старий шлях, якщо в журналі був pending alias-крок; самі alias-кроки фактичним станом не перевірялися — rollback переписував env, а `rename` падав `ENOTEMPTY`. Тепер перевірки спираються на диск: alias — лише точно symlink цієї міграції або відсутній (finalize, перерваний rollback); старий шлях переміщення вільний, лише якщо відсутній або цей alias; інакше (каталог, файл, symlink на іншу ціль, «висячий») — відмова до будь-якого unlink/rewrite/rename/запису state, повідомлення з шляхом і типом об'єкта, без значень. Перед кожною деструктивною дією передумова перевіряється повторно: об'єкт, що з'явився під час rollback, не видаляється й не перезаписується (у т.ч. порожній каталог, який `rename(2)` інакше замінив би) — зупинка, виконані кроки в журналі. Повторний rollback відкоченого state нічого не записує. Формат state не змінювався.
+
+| Сценарій (`tests/unit/path-migration-alias.test.js`, 12) | До фікса (`afd23b3`) | Після |
+|---|---|---|
+| alias → непорожній каталог / порожній каталог / звичайний файл / symlink на інший наявний шлях / «висячий» symlink: dry-run і rollback відмовляють; env, state байт-у-байт, дерево (lstat/readlink) і стороння ціль — без змін | 5 × fail | 5 × pass |
+| конфлікт alias виявлено до rewrite інших env-файлів | fail | pass |
+| alias замінено після перевірок — сторонній каталог не видалено, журнал коректний | fail | pass |
+| старий шлях з'явився перед зворотним rename — не перейменовано поверх (дані лишились на новому шляху) | fail | pass |
+| перерваний rollback після видалення alias → продовження; повторний — без змін; ротований токен збережено | fail | pass |
+| очікуваний alias; alias, прибраний finalize; state старого формату з alias | pass | pass |
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| Попередні набори (`path-migration` 14, `path-migration-recovery` 13) на коді до фікса / після | 27/27 / 27/27 |
+| `npm test` | 129/129 |
+| `npm run check:local` | exit 0: node:test 129/129, backend 446/446, smoke 10/10, agent 165/165 (+3 opt-in), frontend 233/233, typecheck, lint, збірки, secrets |
+| `npx playwright test -c e2e/ui.config.ts` | 19/19 |
+| Linux, root, власна тимчасова пісочниця (керована нода; без служб і production-файлів) | apply (move+rewrite+alias) → ротація синтетичного токена → alias замінено непорожнім каталогом: dry-run і rollback відмовили; кожен шлях, тип, власник, права, symlink і SHA-256 файлів (env, state, сторонній) — без змін; після перенесення стороннього каталогу вбік (дані збережено) — rollback: власники/права/setgid ідентичні стану до apply, ротований токен збережено; повторний — «nothing to do». (Під час recovery alias було вручну відтворено — не обов'язково: відсутній шлях теж допустимий.) |
+| `check:secrets`, `git diff --check`, пошук бренду | OK; 0 збігів |
+
+**Рекомендований інструмент.** Артефакти `c2fff84f19fed8c39a587059d9518bf1bafd901d` (штатний `build-release.js`, тимчасовий worktree): API SHA-256 `650527f74e1eeb99cd27a80de526dac501412e64d3b0b598243838d920a2dc64`, Agent SHA-256 `269ee9742883385b5446323a3d763eb843850de4df79c611431960561ab3e4bd`; manifest без помилок (65 / 35); `migrate-paths.js` і `lib/path-migration.js` в обох = протестований код; `server-bundle` = `scripts/deploy` (без `build-release.js`). Зберігаються в оператора поза репозиторієм (`release-artifacts/c2fff84`). Майбутній rollback міграції 2026-10-16 — лише `server-bundle/migrate-paths.js` цієї (чи новішої) ревізії. Історичні, не рекомендовані (артефакти не змінювались): `2340c00` (затирання env, без перевірки state) і `3dcd90b` (не перевіряв фактичний alias).
+
+Межі гарантії: відмова «без жодних змін» — для конфліктів, наявних на момент запуску; одночасна зміна файлової системи під час rollback виявляється на відповідному кроці (без атомарності всього rollback), виконані кроки лишаються в журналі. Recovery стороннього об'єкта — лише після перевірки походження, зі збереженням даних (DEPLOYMENT).
+
 ## ADR-025: безпечний rollback конфігурації й захист журналу міграції (2026-10-16) — готово до review Codex
 
 Статус: **готово до review Codex** (APPROVED не виставлявся). Runtime API/Agent не змінювався — production не передеплоювався; на production нічого не змінено (лише read-only `rollback --dry-run`, нижче).
@@ -44,7 +72,7 @@ Read-only SSH: API і Agent current `2340c00`; API/Nginx та Agent/broker/expor
 | Production state-файли 2026-10-16 (read-only `rollback --dry-run` новою версією з тимчасової копії, потім видалена) | центральний (v1, лише переміщення й alias) — перевірка пройдена, state незмінний (SHA-256); керована нода (v1, 3 rewrite) — без `--legacy-map` відмова для кожного env-файлу; з `--map` apply — перевірка 9 кроків пройдена; state і 3 env-файли незмінні (SHA-256 до/після) |
 | `check:secrets`, `git diff --check`, пошук бренду | OK; 0 збігів |
 
-**Перевірений інструмент.** Артефакти `3dcd90b28637c63995907216b34c782dd781e4c4` (штатний `build-release.js`, тимчасовий worktree): API SHA-256 `75a83fe050bef18c5dbcdbae888b996a83f9472b34bf0c515259f251a85ee1d6`, Agent SHA-256 `f245e582888d9d486b5021d4fbbafa5720f8c36fc596361fff7df41169fac798`; manifest без помилок (65 / 35 файлів); `migrate-paths.js` і `lib/path-migration.js` в обох = закомічене виправлення; `server-bundle` = `scripts/deploy` (без `build-release.js`). Зберігаються в оператора поза репозиторієм (`release-artifacts/3dcd90b`). Для rollback міграції 2026-10-16 використовувати `server-bundle/migrate-paths.js` цієї (чи новішої) ревізії, не копію з `2340c00` або попередніх релізів (відомі дефекти, не рекомендовані; старі артефакти не змінювались).
+_Уточнення (2026-10-16): `3dcd90b` має відомий alias-дефект — не рекомендований; рекомендована версія — розділ вище._ **Перевірений інструмент.** Артефакти `3dcd90b28637c63995907216b34c782dd781e4c4` (штатний `build-release.js`, тимчасовий worktree): API SHA-256 `75a83fe050bef18c5dbcdbae888b996a83f9472b34bf0c515259f251a85ee1d6`, Agent SHA-256 `f245e582888d9d486b5021d4fbbafa5720f8c36fc596361fff7df41169fac798`; manifest без помилок (65 / 35 файлів); `migrate-paths.js` і `lib/path-migration.js` в обох = закомічене виправлення; `server-bundle` = `scripts/deploy` (без `build-release.js`). Зберігаються в оператора поза репозиторієм (`release-artifacts/3dcd90b`). Для rollback міграції 2026-10-16 використовувати `server-bundle/migrate-paths.js` цієї (чи новішої) ревізії, не копію з `2340c00` або попередніх релізів (відомі дефекти, не рекомендовані; старі артефакти не змінювались).
 
 Обмеження: перевірка повноти для state старого формату консервативна — рядки зі шляхами, додані після міграції, блокують автоматичний rollback (ручний recovery); стабільність `command-limit` за будь-якого навантаження не заявляється. Real-DB/real-PM2 не запускались (логіка не змінювалась).
 
