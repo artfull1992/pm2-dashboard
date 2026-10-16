@@ -2,9 +2,11 @@
 // Renames the paths of an existing Node Control installation (run as root on that host, components stopped first —
 // see DEPLOYMENT, "Перейменування шляхів встановлення"). Every old and new path is given explicitly by the operator.
 //
-//   migrate-paths.js plan     --move OLD=NEW […] [--map OLD=NEW …] [--rewrite FILE …] [--alias OLD …]   (dry run, read-only)
+//   migrate-paths.js plan     --move OLD=NEW […] [--map OLD=NEW …] [--rewrite FILE …] [--alias OLD …] [--backup-dir DIR --state FILE]
+//                             (dry run, read-only; with --state/--backup-dir also checks where the metadata will live)
 //   migrate-paths.js apply    (the same options) --backup-dir DIR --state FILE
-//   migrate-paths.js rollback --state FILE
+//   migrate-paths.js rollback --state FILE [--legacy-map OLD=NEW …] [--dry-run]
+//                             (--legacy-map: state of the earlier tool version; --dry-run: checks only, no changes)
 //   migrate-paths.js finalize --state FILE        (removes the temporary aliases once nothing uses the old paths)
 //
 // --rewrite FILE: a config file (given at its NEW location) whose path references to the moved paths are rewritten;
@@ -23,6 +25,8 @@ export function runCli(argv, { log = console.log } = {}) {
     options: {
       move: { type: 'string', multiple: true, default: [] },
       map: { type: 'string', multiple: true, default: [] },
+      'legacy-map': { type: 'string', multiple: true, default: [] },
+      'dry-run': { type: 'boolean', default: false },
       rewrite: { type: 'string', multiple: true, default: [] },
       alias: { type: 'string', multiple: true, default: [] },
       'backup-dir': { type: 'string' },
@@ -45,7 +49,7 @@ export function runCli(argv, { log = console.log } = {}) {
 
   switch (command) {
     case 'plan': {
-      const steps = planMigration(spec());
+      const steps = planMigration({ ...spec(), backupDir: values['backup-dir'], stateFile: values.state });
       for (const s of steps) {
         const what = s.type === 'move' ? `${s.from} → ${s.to}` : s.type === 'rewrite' ? `${s.file} (keys: ${s.keys.join(', ') || '—'})` : `${s.path} → ${s.target}`;
         log(`${s.state === 'done' ? '=' : '+'} ${s.type} ${what}${s.state === 'done' ? ' (already done)' : ''}`);
@@ -58,7 +62,9 @@ export function runCli(argv, { log = console.log } = {}) {
       log(`applied; state: ${values.state ?? ''}`);
       return state;
     }
-    case 'rollback': return rollbackMigration({ stateFile: need('state'), log });
+    case 'rollback': return rollbackMigration({
+      stateFile: need('state'), log, dryRun: values['dry-run'], ...(values['legacy-map'].length > 0 ? { legacyMaps: parseMoves(values['legacy-map']) } : {}),
+    });
     case 'finalize': return finalizeMigration({ stateFile: need('state'), log });
     default: throw new MigrationError('usage: migrate-paths.js plan|apply|rollback|finalize …');
   }
@@ -69,7 +75,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     runCli(process.argv.slice(2));
   } catch (error) {
     console.error(`[migrate-paths] ERROR: ${error instanceof Error ? error.message : String(error)}`);
-    console.error('[migrate-paths] if `apply` failed part-way: run `rollback --state <file>` (completed steps are journaled).');
+    if (process.argv[2] === 'apply') console.error('[migrate-paths] if `apply` failed part-way: run `rollback --state <file> --dry-run`, then without --dry-run (completed steps are journaled).');
     process.exit(1);
   }
 }

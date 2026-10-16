@@ -10,13 +10,19 @@
 //    renamed over it; values are never printed — only the names of the keys that changed;
 //  * every completed step is appended to a state file (fsync) before the next one starts, so a failed run can be
 //    rolled back exactly (`rollbackMigration`), and a repeated run skips completed steps;
+//  * the state file and the backup directory must lie outside every path the migration moves, rewrites or aliases
+//    (checked on resolved paths, before anything is created);
+//  * a rewrite records the exact lines it changed (before → after). Rollback restores ONLY those lines, and only if
+//    each is still found unambiguously; any other content written after the migration (rotated tokens, added or
+//    removed keys) is kept. A migrated line changed by someone else is a conflict: rollback checks all steps first
+//    and refuses before changing anything;
 //  * optional aliases (old path → symlink to the new one) are temporary and removed by `finalizeMigration`;
 //  * `maps` are reference-only renames (nothing is moved), e.g. a systemd RuntimeDirectory under /run that the unit
 //    re-creates under its new name: only the references inside the rewritten files change.
 
 import {
   chmodSync, chownSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync,
-  renameSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync,
+  realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 
@@ -81,11 +87,62 @@ function currentLocation(file, moves) {
   return file;
 }
 
-/** Read-only preflight: what would happen; throws on any conflict before anything is changed. */
-export function planMigration({ moves, maps = [], rewrites = [], aliases = [] }) {
+/** Path as it would resolve: realpath of the nearest existing ancestor + the not-yet-existing remainder. */
+function resolveLoose(path) {
+  let head = path;
+  const rest = [];
+  for (;;) {
+    try { return join(realpathSync(head), ...rest); } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+      if (head === dirname(head)) return join(head, ...rest);
+      rest.unshift(basename(head));
+      head = dirname(head);
+    }
+  }
+}
+const within = (a, b) => a === b || a.startsWith(b.endsWith(sep) ? b : `${b}${sep}`);
+const BACKUP_NAME = /^\d{2,}-.+\.orig$/;
+
+/** The migration's own metadata must not be moved, rewritten or aliased by it (resolved paths, symlinks included). */
+function metadataProblems({ moves, rewrites, aliases, backupDir, stateFile }) {
+  const problems = [];
+  const given = [['--state', stateFile], ['--backup-dir', backupDir]].filter(([, v]) => v !== undefined);
+  for (const [flag, v] of given) {
+    if (!isAbsolute(v) || normalize(v) !== v) problems.push(`${flag} must be a normalized absolute path`);
+  }
+  if (problems.length > 0) return problems;
+  const touched = [
+    ...moves.flatMap((m) => [m.from, m.to]),
+    ...rewrites.flatMap((f) => [f, currentLocation(f, moves)]),
+    ...aliases,
+  ].map((x) => ({ raw: x, real: resolveLoose(x) }));
+  for (const [flag, v] of given) {
+    const real = resolveLoose(v);
+    for (const t of touched) {
+      if (within(real, t.real)) problems.push(`${flag} ${v} lies inside (or is) ${t.raw}, which this migration moves/rewrites/aliases — keep migration metadata elsewhere`);
+      else if (flag === '--backup-dir' && within(t.real, real)) problems.push(`${flag} ${v} contains ${t.raw}, which this migration changes — keep migration metadata elsewhere`);
+    }
+  }
+  if (stateFile !== undefined) {
+    if (exists(stateFile) && !lstatSync(stateFile).isFile()) problems.push(`--state ${stateFile} exists and is not a regular file`);
+    if (backupDir !== undefined && resolveLoose(dirname(stateFile)) === resolveLoose(backupDir) && BACKUP_NAME.test(basename(stateFile))) {
+      problems.push(`--state ${stateFile} collides with the backup file naming in --backup-dir`);
+    }
+    if (backupDir !== undefined && resolveLoose(stateFile) === resolveLoose(backupDir)) problems.push('--state must not be the backup directory');
+    const parent = dirname(stateFile);
+    if (!exists(parent) && (backupDir === undefined || resolveLoose(parent) !== resolveLoose(backupDir))) problems.push(`the directory of --state ${stateFile} does not exist`);
+  }
+  return [...new Set(problems)];
+}
+
+/**
+ * Read-only preflight: what would happen; throws on any conflict before anything is changed. When the state file
+ * and backup directory are given (always for apply), their placement is checked too.
+ */
+export function planMigration({ moves, maps = [], rewrites = [], aliases = [], backupDir, stateFile }) {
   const references = [...moves, ...maps];
   const steps = [];
-  const problems = [];
+  const problems = metadataProblems({ moves, rewrites, aliases, backupDir, stateFile });
   for (const m of moves) {
     const oldExists = exists(m.from);
     const newExists = exists(m.to);
@@ -139,10 +196,10 @@ function saveState(stateFile, state) {
  * `failAfter` (tests only) throws after that many completed steps to exercise partial-failure recovery.
  */
 export function applyMigration({ moves, maps = [], rewrites = [], aliases = [], backupDir, stateFile, log = () => undefined, failAfter }) {
-  if (!isAbsolute(backupDir) || !isAbsolute(stateFile)) throw new MigrationError('--backup-dir and --state must be absolute');
-  const steps = planMigration({ moves, maps, rewrites, aliases });
+  if (typeof backupDir !== 'string' || typeof stateFile !== 'string') throw new MigrationError('--backup-dir and --state are required');
+  const steps = planMigration({ moves, maps, rewrites, aliases, backupDir, stateFile });
   const previous = loadState(stateFile);
-  const state = previous ?? { version: 1, startedAt: new Date().toISOString(), moves, backupDir, done: [] };
+  const state = previous ?? { version: 2, startedAt: new Date().toISOString(), moves, maps, backupDir, done: [] };
   if (previous && JSON.stringify(previous.moves) !== JSON.stringify(moves)) throw new MigrationError('the state file belongs to another migration (different moves)');
   if (previous?.status === 'rolled-back') throw new MigrationError('this migration was rolled back; start a new one with a new state file');
   mkdirSync(backupDir, { recursive: true, mode: 0o700 });
@@ -174,6 +231,8 @@ export function applyMigration({ moves, maps = [], rewrites = [], aliases = [], 
       writeFileSync(backup, original, { mode: 0o600, flag: 'wx' });
       const entry = begin({ type: 'rewrite', file: step.file, backup, mode: st.mode & 0o7777, uid: st.uid, gid: st.gid });
       const { text, changedKeys } = rewriteText(original, [...moves, ...maps]);
+      entry.changes = lineChanges(original, text);
+      saveState(stateFile, state);
       writeAtomic(step.file, text, { mode: st.mode & 0o7777, uid: st.uid, gid: st.gid });
       log(`✓ rewrote ${step.file} (keys: ${changedKeys.join(', ')}; values not shown)`);
       end(entry);
@@ -190,24 +249,119 @@ export function applyMigration({ moves, maps = [], rewrites = [], aliases = [], 
   return state;
 }
 
-/** Undoes the recorded steps in reverse order; safe to repeat. Live data stays — moves are renamed back. */
-export function rollbackMigration({ stateFile, log = () => undefined }) {
+/** Lines that differ between the original and the rewritten text (same line count: rewrites never add lines). */
+function lineChanges(before, after) {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  return a.flatMap((line, i) => (line === b[i] ? [] : [{ before: line, after: b[i] }]));
+}
+
+const keyOf = (line) => /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)?.[1] ?? 'a non-key line';
+const count = (lines, text) => lines.filter((l) => l === text).length;
+
+/**
+ * Restores the migrated lines of one rewritten file in its CURRENT content. Each distinct migrated line must be found
+ * exactly as many times as it was written (then it is restored) or not at all while its original is present
+ * (already restored); anything else is a conflict. Other lines are never touched. Problems name keys, never values.
+ */
+function restoreLines(current, changes) {
+  const lines = current.split('\n');
+  const problems = [];
+  const groups = new Map();
+  for (const c of changes) groups.set(c.after, [...(groups.get(c.after) ?? []), c]);
+  for (const [after, group] of groups) {
+    const found = count(lines, after);
+    if (found === group.length) {
+      let k = 0;
+      for (let i = 0; i < lines.length; i++) if (lines[i] === after) lines[i] = group[k++].before;
+    } else {
+      // Already restored (an interrupted earlier rollback): no migrated line left and every original line present.
+      const restoredBefore = found === 0 && group.every((c) => count(lines, c.before) >= group.filter((x) => x.before === c.before).length);
+      if (!restoredBefore) problems.push(keyOf(group[0].before));
+    }
+  }
+  return { text: lines.join('\n'), problems };
+}
+
+/**
+ * Undoes the recorded steps in reverse order; safe to repeat. Every step is checked first (reverse moves possible,
+ * migrated lines found unambiguously) and nothing is changed if any check fails. Moved data is renamed back; a
+ * rewritten file keeps every change made after the migration except the lines the migration itself wrote.
+ * `dryRun`: only the checks — reports what would be undone, writes nothing (not even the state file).
+ * `legacyMaps`: for a state written by the earlier tool version (no recorded line changes, no maps): the same --map
+ * pairs as at apply, so the changes can be re-derived from the backup — they are still verified against the file.
+ */
+export function rollbackMigration({ stateFile, legacyMaps, dryRun = false, log = () => undefined, beforeWrite }) {
   const state = loadState(stateFile);
   if (!state) throw new MigrationError(`no state file: ${stateFile}`);
-  for (const step of [...state.done].reverse()) {
-    if (step.undone) continue;
+  const pending = [...state.done].reverse().filter((step) => !step.undone);
+  const problems = [];
+  const plans = new Map();
+  for (const step of pending) {
+    if (step.type === 'rewrite') {
+      let changes = step.changes;
+      if (!changes) {
+        if (!legacyMaps) {
+          problems.push(`${step.file}: state written by an earlier version of this tool has no recorded line changes — re-run with the same --legacy-map OLD=NEW pairs as the apply used (none if it had no --map), or recover manually (DEPLOYMENT)`);
+          continue;
+        }
+        if (!exists(step.backup)) { problems.push(`${step.file}: backup ${step.backup} is missing — recover manually (DEPLOYMENT)`); continue; }
+        const original = readFileSync(step.backup, 'utf8');
+        const derived = rewriteText(original, [...state.moves, ...legacyMaps]).text;
+        changes = lineChanges(original, derived);
+        if (changes.length === 0) { problems.push(`${step.file}: the given maps derive no changes from the backup — not the maps of this migration`); continue; }
+        // Completeness without a record: every current line carrying an absolute path must be explained by the
+        // derived result; otherwise a migrated reference may be missing from the maps (or edited) — refuse.
+        if (exists(step.file)) {
+          const expected = new Set(derived.split('\n'));
+          const unexplained = readFileSync(step.file, 'utf8').split('\n').filter((l) => !expected.has(l) && /(^|[="'\s:])\/[A-Za-z0-9._-]/.test(l));
+          if (unexplained.length > 0) {
+            problems.push(`${step.file}: lines with paths not explained by this migration (${[...new Set(unexplained.map((l) => keyOf(l)))].join(', ')}) — check --legacy-map or recover manually (DEPLOYMENT)`);
+            continue;
+          }
+        }
+      }
+      if (!exists(step.file) || !lstatSync(step.file).isFile()) { problems.push(`${step.file}: not found as a regular file`); continue; }
+      const current = readFileSync(step.file, 'utf8');
+      const restored = restoreLines(current, changes);
+      if (restored.problems.length > 0) {
+        problems.push(`${step.file}: migrated line(s) changed after the migration (${restored.problems.join(', ')}) — not restored automatically`);
+        continue;
+      }
+      plans.set(step, { current, text: restored.text });
+    } else if (step.type === 'move') {
+      const fromIsAlias = isAliasTo(step.from, step.to);
+      if (!exists(step.to) && exists(step.from) && !fromIsAlias) continue; // never moved
+      if (exists(step.from) && !fromIsAlias && !pending.some((x) => x.type === 'alias' && x.path === step.from)) problems.push(`cannot move back: both ${step.from} and ${step.to} exist`);
+      else if (!exists(step.to)) problems.push(`cannot move back: ${step.to} is missing`);
+    }
+  }
+  if (problems.length > 0) throw new MigrationError(`rollback refused — nothing was changed:\n  ${problems.join('\n  ')}`);
+  if (dryRun) {
+    for (const step of pending) {
+      log(`would ${step.type === 'alias' ? `remove alias ${step.path}` : step.type === 'rewrite' ? `restore the migrated lines of ${step.file} (other content kept)` : `move ${step.to} → ${step.from}`}`);
+    }
+    log(`rollback check passed: ${String(pending.length)} step(s); nothing changed (--dry-run)`);
+    return state;
+  }
+
+  for (const step of pending) {
     if (step.type === 'alias') {
       if (isAliasTo(step.path, step.target)) unlinkSync(step.path);
       log(`↺ removed alias ${step.path}`);
     } else if (step.type === 'rewrite') {
-      writeAtomic(step.file, readFileSync(step.backup, 'utf8'), { mode: step.mode, uid: step.uid, gid: step.gid });
-      log(`↺ restored ${step.file} from backup`);
+      const plan = plans.get(step);
+      beforeWrite?.(step.file);
+      if (readFileSync(step.file, 'utf8') !== plan.current) {
+        throw new MigrationError(`${step.file} changed during the rollback — not written; run the rollback again (completed steps are kept)`);
+      }
+      const st = statSync(step.file);
+      writeAtomic(step.file, plan.text, { mode: st.mode & 0o7777, uid: st.uid, gid: st.gid });
+      log(`↺ restored the migrated lines of ${step.file} (other content kept)`);
     } else if (!exists(step.to) && exists(step.from) && !isAliasTo(step.from, step.to)) {
       log(`= ${step.from} was not moved (interrupted before the rename)`);
     } else {
-      if (exists(step.from) && !isAliasTo(step.from, step.to)) throw new MigrationError(`cannot move back: both ${step.from} and ${step.to} exist`);
       if (isAliasTo(step.from, step.to)) unlinkSync(step.from);
-      if (!exists(step.to)) throw new MigrationError(`cannot move back: ${step.to} is missing`);
       renameSync(step.to, step.from);
       log(`↺ moved ${step.to} → ${step.from}`);
     }
