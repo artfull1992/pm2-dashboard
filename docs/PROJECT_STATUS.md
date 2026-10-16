@@ -1,6 +1,16 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-16 (ADR-025: перевірка фактичного alias перед rollback — готово до повторного review). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-16 (незалежний review ADR-025 — APPROVED). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+
+## Фінальний незалежний review Codex — ADR-025: APPROVED (2026-10-16)
+
+Перевірено фікс `c2fff84` і документацію `2022a18`; початкове дерево чисте. Попередній alias-P2 закрито: preflight перевіряє фактичний об'єкт і точну ціль symlink, чужі об'єкти відхиляються до змін; перед деструктивними кроками передумови перевіряються повторно. Regression охоплює непорожній/порожній каталог, файл, чужий та dangling symlink, незмінність env/state/layout при відмові, finalize, interrupted/repeated rollback, legacy-state і зміну після перевірки. Попередні фікси збереження env і захисту metadata збережено. Нових зауважень у переглянутому diff не знайдено.
+
+Незалежно на Node.js 22: check:local exit 0 — 129 unit (у т.ч. 39 тестів міграції), 446 backend, 10 smoke, 165 Agent (+3 opt-in пропущені), 233 frontend; typecheck/lint/secrets/збірки успішні. Обидва артефакти `c2fff84` перевірені: SHA-256 збігаються із sidecar і документацією, manifests валідні (API 65, Agent 35), migration tool і бібліотека побайтово відповідають source. Code → Docs / Docs → Code для alias/recovery узгоджені, локальні файлові посилання шести головних документів цілі (anchors не перевірялись); у tracked-іменах/вмісті збігів старого бренду немає.
+
+UI Playwright 19/19 з попереднього незалежного review належать незміненому UI; заново браузерні suite, Linux sandbox, production dry-run, real-DB і real-PM2 в цьому проході не виконувались. Linux і stress-результати Claude нижче не видаються за незалежно повторені. Production не змінювався; runtime API/Agent залишився без змін від alias-фікса. Рекомендований інструмент для майбутнього rollback — `c2fff84`; попередні версії з відомими дефектами не використовувати.
+
+APPROVED закриває ADR-025 і його review-фікси, не загальну production-готовність. Release blockers і окремі дефекти FormDialog лишаються відкритими. Reviewer змінює лише цей запис; функціональний код і production не змінювались. Попередні CHANGES REQUIRED нижче — історія вже виправлених зауважень.
 
 ## Повторний незалежний review Codex — ADR-025: CHANGES REQUIRED (2026-10-16)
 
