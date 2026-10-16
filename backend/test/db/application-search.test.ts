@@ -129,14 +129,17 @@ describe('command history of one control target (real DB)', () => {
     const ctx = await setup();
     const a = await ctx.node('alpha', [proc(1, 'api')]);
     const b = await ctx.node('beta', [proc(1, 'api')]);
-    const insert = (serverId: string, targetKey: string, minutesAgo: number) => ctx.sql(
+    // One statement per group (few round trips): `count` commands, the i-th requested `first + i` minutes ago.
+    const insert = (serverId: string, keyExpr: string, first: number, count: number) => ctx.sql(
       `INSERT INTO control_commands (server_id, target_key, action, status, reason, requested_by, idempotency_key, requested_at, deadline_at, completed_at)
-       VALUES ($1, $2, 'restart', 'succeeded', NULL, $3, gen_random_uuid(), now() - make_interval(mins => $4), now() - make_interval(mins => $4) + interval '2 minutes', now() - make_interval(mins => $4) + interval '1 minute')`,
-      [serverId, targetKey, ctx.userId, minutesAgo]);
+       SELECT $1, ${keyExpr}, 'restart', 'succeeded', NULL, $2, gen_random_uuid(),
+              now() - make_interval(mins => $3 + i), now() - make_interval(mins => $3 + i) + interval '2 minutes', now() - make_interval(mins => $3 + i) + interval '1 minute'
+         FROM generate_series(0, $4 - 1) AS i`,
+      [serverId, ctx.userId, first, count]);
     // 30 newer commands of OTHER targets on alpha, then 3 older ones of api-prod: a "last 10 of the server" list would miss them.
-    for (let i = 0; i < 30; i++) await insert(a, `other-${String(i % 3)}`, i + 1);
-    for (let i = 0; i < 3; i++) await insert(a, 'api-prod', 100 + i);
-    for (let i = 0; i < 5; i++) await insert(b, 'api-prod', i + 1); // same key, other server
+    await insert(a, "'other-' || (i % 3)", 1, 30);
+    await insert(a, "'api-prod'", 100, 3);
+    await insert(b, "'api-prod'", 1, 5); // same key, other server
     const history = await ctx.control.listCommands(a, 10, 'api-prod');
     expect(history?.map((c) => c.targetKey)).toEqual(['api-prod', 'api-prod', 'api-prod']);
     expect(history?.every((c) => c.serverId === a)).toBe(true);
