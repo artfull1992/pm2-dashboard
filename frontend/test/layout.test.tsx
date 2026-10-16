@@ -127,6 +127,26 @@ describe('create dialog lifecycle (servers)', () => {
     expect(calls.some((c) => c.method === 'POST')).toBe(false);
   });
 
+  it('while asking to discard: fields hidden and inert, no submission at all; "back" refocuses the edited field', async () => {
+    const calls = backend('admin');
+    renderApp('/servers');
+    const u = userEvent.setup();
+    await u.click(await screen.findByRole('button', { name: 'Додати сервер' }));
+    const dialog = screen.getByRole('dialog', { name: 'Новий сервер' });
+    const input = within(dialog).getByLabelText<HTMLInputElement>('Назва нового сервера');
+    await u.type(input, 'draft-02');
+    await u.keyboard('{Escape}');
+    expect(input.closest('[hidden]')).not.toBeNull();
+    expect(input.closest('[inert]')).not.toBeNull();
+    act(() => { (dialog.querySelector('form') as HTMLFormElement).requestSubmit(); });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+    await u.click(screen.getByRole('button', { name: 'Повернутися до форми' }));
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe('draft-02');
+    expect(input.closest('[hidden]')).toBeNull();
+  });
+
   it('pending: one request, Escape and Cancel do nothing until the answer; success closes and names the server', async () => {
     const answer = deferred<Response>();
     const calls = backend('admin', (req) => (req.method === 'POST' ? answer.promise : undefined));

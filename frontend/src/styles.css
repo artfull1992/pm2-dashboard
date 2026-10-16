@@ -117,6 +117,8 @@ h1, h2, h3, p { margin: 0; }
 .notice--warning { border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); background: var(--warning-soft); }
 .notice p { margin: 0 0 4px; }
 .notice p:last-child { margin-bottom: 0; }
+/* `hidden` always wins over component display rules (e.g. a hidden .form-grid while a form asks to discard). */
+[hidden] { display: none !important; }
 .form-grid { display: grid; gap: var(--space-4); }
 .form-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 

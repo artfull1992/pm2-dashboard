@@ -72,7 +72,9 @@ export function Dialog({ title, children, onClose, actions, className, dismissib
 /**
  * Create/edit form in a dialog. The form is labelled by the dialog title. While `pending` nothing closes it.
  * Closing with unsaved input (`dirty`) first asks to discard — input is never lost silently. The form stays
- * mounted during that question, so "back" returns to exactly what was typed.
+ * mounted during that question, so "back" returns to exactly what was typed; meanwhile its fields are hidden and
+ * inert and the form cannot be submitted (not even by Enter or requestSubmit). "Back" returns focus to the field that
+ * was focused before the question (or the first field).
  */
 export function FormDialog({ title, submitLabel, pendingLabel, pending, dirty, onSubmit, onClose, children }: {
   title: string;
@@ -86,22 +88,39 @@ export function FormDialog({ title, submitLabel, pendingLabel, pending, dirty, o
 }) {
   const [discard, setDiscard] = useState(false);
   const backRef = useRef<HTMLButtonElement>(null);
+  const fieldsRef = useRef<HTMLDivElement>(null);
+  const returnTo = useRef<HTMLElement | null>(null);
   const request = useCallback(() => {
     if (pending) return;
-    if (dirty) { setDiscard(true); return; }
+    if (dirty) {
+      const active = document.activeElement;
+      returnTo.current = active instanceof HTMLElement && fieldsRef.current?.contains(active) ? active : null;
+      setDiscard(true);
+      return;
+    }
     onClose();
   }, [pending, dirty, onClose]);
-  useEffect(() => { if (discard) backRef.current?.focus(); }, [discard]);
+  const back = useCallback(() => { setDiscard(false); }, []);
+  const asked = useRef(false);
+  useEffect(() => {
+    if (discard) { asked.current = true; backRef.current?.focus(); return; }
+    if (!asked.current) return; // first render: Dialog focuses the first field itself
+    const target = returnTo.current?.isConnected ? returnTo.current
+      : fieldsRef.current?.querySelector<HTMLElement>('input:not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled)');
+    target?.focus();
+    returnTo.current = null;
+  }, [discard]);
 
   return (
     <Dialog title={title} onClose={request} dismissible={!pending}>
-      <form className="form-grid" aria-label={title} noValidate onSubmit={onSubmit}>
-        <div className="form-grid" hidden={discard ? true : undefined}>{children}</div>
+      <form className="form-grid" aria-label={title} noValidate
+        onSubmit={(event) => { if (discard || pending) { event.preventDefault(); return; } onSubmit(event); }}>
+        <div ref={fieldsRef} className="form-grid" hidden={discard ? true : undefined} inert={discard ? true : undefined}>{children}</div>
         {discard ? (
           <>
             <p className="notice notice--warning" role="alert">Введені дані не збережено. Закрити форму й втратити їх?</p>
             <div className="form-actions">
-              <button ref={backRef} type="button" className="button" onClick={() => { setDiscard(false); }}>Повернутися до форми</button>
+              <button ref={backRef} type="button" className="button" onClick={back}>Повернутися до форми</button>
               <button type="button" className="button button--danger" onClick={onClose}>Закрити без збереження</button>
             </div>
           </>

@@ -211,6 +211,42 @@ test('create dialog: background is inert, Escape with input asks first, focus re
   expect(mutations).toEqual([]);
 });
 
+for (const form of [
+  { path: '/servers', opener: 'Додати сервер', title: 'Новий сервер', field: 'Назва нового сервера', value: 'draft-server' },
+  { path: '/users', opener: 'Новий користувач', title: 'Новий користувач', field: 'Email', value: 'draft@example.com' },
+]) {
+  test(`${form.title}: discarding hides the fields, nothing can be submitted, "back" restores data and focus`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const mutations = await api(page);
+    await page.goto(form.path);
+    await page.getByRole('button', { name: form.opener }).click();
+    const dialog = page.getByRole('dialog', { name: form.title });
+    const field = dialog.getByLabel(form.field, { exact: true });
+    await field.fill(form.value);
+    await page.keyboard.press('Escape');
+    await expect(dialog.getByRole('alert')).toContainText('не збережено');
+    // The fields are really hidden and unreachable, not just visually below the question.
+    await expect(field).toBeHidden();
+    expect(await field.evaluate((el) => el.closest('[inert]') !== null)).toBe(true);
+    // No submission while discarding: a programmatic submit and Enter send nothing.
+    await dialog.locator('form').evaluate((f) => { (f as HTMLFormElement).requestSubmit(); });
+    const back = dialog.getByRole('button', { name: 'Повернутися до форми' });
+    await expect(back).toBeFocused();
+    await page.keyboard.press('Enter'); // activates "back" — the only action Enter can reach here
+    // Back: the same data, focus inside the form on the field that was being edited.
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+    await expect(field).toBeVisible();
+    await expect(field).toHaveValue(form.value);
+    await expect(field).toBeFocused();
+    // Escape again → discard closes without any request; focus returns to the opener.
+    await page.keyboard.press('Escape');
+    await dialog.getByRole('button', { name: 'Закрити без збереження' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole('button', { name: form.opener })).toBeFocused();
+    expect(mutations).toEqual([]);
+  });
+}
+
 test('server page: row menu stays open across a polling refresh', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.clock.install();
