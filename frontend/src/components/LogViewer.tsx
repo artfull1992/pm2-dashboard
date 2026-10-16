@@ -5,9 +5,11 @@ import { useAuth } from '../auth/AuthContext';
 import { formatDate } from '../pages/ServersPage';
 import { Dialog } from './Dialog';
 
-// Bounded log tail viewer (ADR-018). Mounted per server + target + session (key): closing it, switching target or
-// server, logout or a new session unmount it — polling stops, in-flight requests are aborted, the text is dropped.
-// The text is rendered as React text (never HTML, ANSI already stripped on the managed server) and never stored.
+// Bounded log tail (ADR-018). `LogTail` holds the one read cycle and the content; `LogViewer` wraps it in a dialog
+// (server page), the applications panel shows `LogTail` inline. Mounted per server + target + session (key): closing,
+// switching target/server/tab, logout or a new session unmount it — polling stops, in-flight requests are aborted,
+// the text is dropped. The text is rendered as React text (never HTML, ANSI already stripped on the managed server)
+// and never stored (no URL, storage, audit or cache).
 
 export const LOG_REFRESH_MS = 5_000;
 
@@ -38,6 +40,17 @@ function errorText(error: unknown): string {
 
 export function LogViewer({ serverId, serverName, targetKey, name, onClose }: {
   serverId: string; serverName: string; targetKey: string; name: string; onClose: () => void;
+}) {
+  return (
+    <Dialog title={`Логи: ${name}`} onClose={onClose} className="dialog--wide"
+      actions={<button type="button" className="button" onClick={onClose}>Закрити</button>}>
+      <LogTail serverId={serverId} serverName={serverName} targetKey={targetKey} name={name} />
+    </Dialog>
+  );
+}
+
+export function LogTail({ serverId, serverName, targetKey, name }: {
+  serverId: string; serverName: string; targetKey: string; name: string;
 }) {
   const { state: auth, sessionExpired } = useAuth();
   const [tab, setTab] = useState<'stdout' | 'stderr'>('stdout');
@@ -113,8 +126,7 @@ export function LogViewer({ serverId, serverName, targetKey, name, onClose }: {
 
   const stream = result ? result[tab] : null;
   return (
-    <Dialog title={`Логи: ${name}`} onClose={onClose} className="dialog--wide"
-      actions={<button type="button" className="button" onClick={onClose}>Закрити</button>}>
+    <div className="log-tail">
       <p className="hint">{`Сервер «${serverName}», сервіс «${name}» (${targetKey}). Показано лише останній фрагмент (до 100 рядків на джерело, до 8 КіБ разом), не повний архів; відомі формати секретів замасковано, але це не гарантія.`}</p>
       <div className="log-toolbar">
         <div role="tablist" aria-label="Джерело логу" id={tabsId} className="log-tabs">
@@ -139,6 +151,6 @@ export function LogViewer({ serverId, serverName, targetKey, name, onClose }: {
           {stream.state === 'ok' ? <pre className="log-text" tabIndex={0} aria-label={`${tab} ${name}`}>{stream.text}</pre> : <p>{STATE_TEXT[stream.state]}</p>}
         </div>
       ) : null}
-    </Dialog>
+    </div>
   );
 }

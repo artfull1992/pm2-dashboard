@@ -282,21 +282,23 @@ describe('applications list: row actions', () => {
     expect(capReads(onlyControl)).toEqual(['A/control']);
   });
 
-  it('logs open in the protected viewer for the row’s server and target', async () => {
+  it('"Переглянути логи" opens the row’s panel on the Logs tab (inline, same protected reader) for its server and target', async () => {
     const calls = backend('operator');
     renderAt();
     const user = userEvent.setup();
     await user.click(await menuOf('beta'));
     await user.click(await screen.findByRole('menuitem', { name: 'Переглянути логи' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Логи: api' });
-    expect(await within(dialog).findByText('beta line')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull(); // no modal in this list
+    const panel = await screen.findByRole('region', { name: 'Деталі: api на beta' });
+    expect(within(panel).getByRole('tab', { name: 'Логи' }).getAttribute('aria-selected')).toBe('true');
+    expect(await within(panel).findByText('beta line')).toBeTruthy();
     const create = calls.find((c) => c.method === 'POST' && c.url.endsWith('/log-requests'));
     expect(create?.url).toBe(`/api/servers/${B}/log-requests`);
     expect(JSON.parse(create?.body ?? '{}')).toEqual({ targetKey: 'api-beta' });
     expect(create?.headers.get('x-csrf-token')).toBe(CSRF);
-    await user.keyboard('{Escape}');
-    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
-    expect(document.activeElement).toBe(await menuOf('beta'));
+    await user.click(within(panel).getByRole('button', { name: 'Згорнути' }));
+    expect(screen.queryByRole('region', { name: 'Деталі: api на beta' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Розгорнути деталі: api на beta' }));
   });
 
   it('filter change while capabilities load: the old row and its menu are gone, the late answer shows nothing', async () => {

@@ -58,7 +58,7 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
     await page.goto('/applications');
     await expect(async () => {
       await page.reload();
-      await expect(page.getByRole('cell', { name: 'e2e-api', exact: true }).or(page.getByRole('rowheader', { name: 'e2e-api', exact: true }))).toBeVisible({ timeout: 2_000 });
+      await expect(page.getByRole('button', { name: /^Розгорнути деталі: e2e-api на / })).toBeVisible({ timeout: 2_000 });
     }).toPass({ timeout: 30_000 });
     const table = page.getByRole('table', { name: 'PM2-процеси' });
     await expect(table.getByText(XSS)).toBeVisible();
@@ -66,6 +66,17 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
     expect(await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
     await expect(table.getByText('Актуально').first()).toBeVisible();
     await expect(page.getByRole('button', { name: /перезап|зупин|запуст|restart|stop/i })).toHaveCount(0);
+
+    // Name search (server-side, real API): case-insensitive, in the URL; then expand the row for its overview.
+    await page.getByLabel('Пошук за назвою').fill('WORKER');
+    await expect(page).toHaveURL(/q=WORKER/);
+    await expect(table.getByText('e2e-api')).toHaveCount(0);
+    await page.getByRole('button', { name: /^Розгорнути деталі: e2e-worker на / }).click();
+    const panel = page.getByRole('region', { name: /^Деталі: e2e-worker на / });
+    await expect(panel.getByRole('tab', { name: 'Огляд' })).toHaveAttribute('aria-selected', 'true');
+    await expect(panel.getByText('PM2 id')).toBeVisible();
+    await page.getByRole('button', { name: 'Очистити' }).click();
+    await expect(table.getByText('e2e-api')).toBeVisible();
 
     // Filter by status keeps only the stopped process.
     await page.getByLabel('Статус процесу').selectOption('stopped');

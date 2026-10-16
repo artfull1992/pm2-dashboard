@@ -225,7 +225,10 @@ export interface ApplicationFilter {
   serverId: string | null;
   status: ProcessStatus | null;
   cursor: string | null;
+  /** Name search (trimmed; empty = none). */
+  q?: string | null;
 }
+export const SEARCH_MAX_LENGTH = 128;
 
 export const applicationsApi = {
   list: (filter: ApplicationFilter, signal?: AbortSignal): Promise<ApplicationPage> => {
@@ -235,6 +238,11 @@ export const applicationsApi = {
       query.set('serverId', filter.serverId);
     }
     if (filter.status !== null) query.set('status', filter.status);
+    const q = filter.q?.trim() ?? '';
+    if (q !== '') {
+      if (q.length > SEARCH_MAX_LENGTH) throw new ApiError('invalid_request');
+      query.set('q', q);
+    }
     if (filter.cursor !== null) query.set('cursor', filter.cursor);
     return apiRequest(`/api/applications?${query.toString()}`, { parse: parseApplicationPage, ...(signal ? { signal } : {}) });
   },
@@ -281,6 +289,18 @@ export const controlApi = {
       parse: (v) => { const r = parseCommandList(v); if (r.some((c) => c.serverId !== serverId)) throw new ContractError(); return r; },
       ...(signal ? { signal } : {}),
     }),
+  /** Recent commands of ONE allowlist target of this server (filtered by the API before its limit). */
+  history: (serverId: string, targetKey: string, signal?: AbortSignal): Promise<CommandView[]> => {
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(targetKey)) throw new ApiError('invalid_request');
+    return apiRequest(`${serverPath(serverId)}/control-commands?limit=10&targetKey=${targetKey}`, {
+      parse: (v) => {
+        const r = parseCommandList(v);
+        if (r.some((c) => c.serverId !== serverId || c.targetKey !== targetKey)) throw new ContractError();
+        return r;
+      },
+      ...(signal ? { signal } : {}),
+    });
+  },
   command: (id: string, signal?: AbortSignal): Promise<CommandView> => {
     if (!UUID_RE.test(id)) throw new ApiError('invalid_request');
     return apiRequest(`/api/control-commands/${id}`, {
