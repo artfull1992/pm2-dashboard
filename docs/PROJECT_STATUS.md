@@ -1,6 +1,16 @@
 # Поточний стан проєкту
 
-Оновлено: 2026-10-16 (ADR-025: безпечний rollback міграції шляхів — готово до review). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+Оновлено: 2026-10-16 (повторний review ADR-025 — CHANGES REQUIRED). Початковий commit: `ccbba13dbea512d962dbea5fbeb8bd1cd8b8a5eb` (`chore: initialize node control infrastructure`), гілка `main`, remote `origin`. Початкове робоче дерево чисте. Перевірка доступної історії охопила один commit; це не підтверджує актуальний стан remote або факт попереднього push.
+
+## Повторний незалежний review Codex — ADR-025: CHANGES REQUIRED (2026-10-16)
+
+Перевірено `d7ee0cc`, `3dcd90b`, `9f7af27`; початкове дерево чисте. Попередні два P2 (затирання незалежних env-змін і перенесення metadata) виправлені в передбачених сценаріях; нові regression перевіряють ці гарантії й legacy-state. Синхронізація browser polling тепер чекає response.
+
+**Новий P2 — змінений alias не розпізнається як конфлікт до rollback.** `scripts/deploy/lib/path-migration.js:335`: перевірка існуючого source пропускає конфлікт, якщо в журналі є alias-крок для цього шляху, навіть коли шлях уже не є очікуваним symlink. Відтворено лише в тимчасовому каталозі: apply із rewrite та alias → alias замінений звичайним непорожнім каталогом → `rollback --dry-run` успішний → реальний rollback змінює env, потім падає з ENOTEMPTY на rename. Сторонній файл не видалено, але конфігурація вже змінена. Потрібно перевіряти фактичний тип і точну ціль усіх alias до будь-яких змін; звичайний каталог/файл/чужий symlink має давати відмову і в dry-run, і в реальному rollback зі збереженням env, журналу та layout. Це також потрібно для відповідності гарантії DEPLOYMENT «за конфлікту — відмова до будь-якої зміни».
+
+Незалежно на Node.js 22: check:local exit 0 — 117 unit, 446 backend, 10 smoke, 165 Agent (+3 opt-in пропущені), 233 frontend; typecheck/lint/secrets/збірки успішні. UI Playwright 19/19. Перевірено обидва артефакти `3dcd90b`: SHA-256 збігаються з sidecar і звітом, manifests валідні (API 65, Agent 35), migration tool та його бібліотека побайтово відповідають source. Перевірено Code → Docs / Docs → Code для recovery й metadata; локальні файлові посилання шести головних документів цілі (anchors не перевірялись). Linux sandbox, stress-серії Claude, production dry-run, real-DB і real-PM2 заново не виконувались; наведені нижче результати Claude не є поточними незалежними перевірками.
+
+Функціональний код і production reviewer не змінював; reproduction використовував лише синтетичні файли, тимчасовий каталог видалено. Змінено лише цей запис. До APPROVED нову функціональність не починати.
 
 ## Незалежний review Codex — ADR-025: CHANGES REQUIRED (2026-10-16)
 
