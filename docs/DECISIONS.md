@@ -384,6 +384,7 @@
   - Задокументовані коди 4xx (`invalid_payload`, `no_service`, `channel_is_archived`, `action_prohibited` тощо) → `failed` без повторів.
   - Тайм-аут або abort після відправлення → результат **невідомий**, запис повторюється.
   - Гарантія — **at-least-once**, можливі дублікати; кожне повідомлення містить короткий id інциденту. Після `ALERTS_MAX_ATTEMPTS` (6) запис стає `failed` (або `unknown`, якщо останній результат невідомий).
+  - _Уточнення (review сповіщень, 2026-10-17):_ мережева помилка класифікується за причиною: «точно не надіслано» (DNS, відмова з'єднання, недосяжна мережа, відмова TLS) → повтор з backoff, на останній спробі `failed`; обрив з'єднання, коли запит міг уже дійти (`UND_ERR_SOCKET`, `ECONNRESET`, причина без коду) → **невідомо** (`connection_lost`): так само повторюється, на останній спробі `unknown`, тестове повідомлення — `unknown`. Recovery «лише для оголошеної проблеми» означає: повідомлення про проблему `queued`/`sending`/`sent`/`unknown`; для `dropped`, `cancelled` (заміна webhook, вимкнення доставки — новий канал проблеми не бачив) і `failed` recovery не створюється.
   - Збій доставки не впливає на API чи моніторинг.
 - **Повідомлення:**
   - лише top-level `text` (Block Kit автоматично розбирає згадки), без `link_names`;
@@ -440,6 +441,7 @@
 - **Audit (metadata-only):** `settings.alerts_changed` `{revision, changed}`, `settings.delivery_enabled` / `settings.delivery_disabled` `{revision, cancelledItems}`, `integration.slack_configured` `{generation, replaced, cancelledItems}`, `integration.slack_removed` `{generation, cancelledItems}`, `integration.slack_test_requested` / `integration.slack_test_result` `{operationId, generation, code}`.
 - **Вихідна мережа API (Task 013.2).** Unit `node-control-api` мав `IPAddressDeny=any` + `IPAddressAllow=localhost` (Task 003). Через це systemd тихо відкидав з'єднання до Slack, і тест завершувався `unknown/timeout`. За рішенням користувача egress-фільтр знято. Вхідний доступ не змінився: listener лише на 127.0.0.1. Призначення вихідних запитів обмежує код: лише `https://hooks.slack.com/services/…`, `redirect: 'error'`, без адрес із браузера. Фіксовані IP Slack не використовуються, бо це адреси AWS, які змінюються.
 - **Rollback на `e8f61c5`.** Старий реліз читає лише `ALERTS_*` з env, а в production їх немає: його рушій вимкнений, старий webhook не з'являється, доставка не вмикається. Нові таблиці та колонки він ігнорує.
+  - _Уточнення (2026-10-17):_ це історичний варіант. Після ADR-023 і перейменування шляхів (ADR-025) реліз `e8f61c5` несумісний із поточною БД і layout — не використовувати; чинні цілі rollback — DEPLOYMENT.
 
 ## ADR-023: Серверний моніторинг — лише поточний load average; системні метрики виконує Zabbix
 
