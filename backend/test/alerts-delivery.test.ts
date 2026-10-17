@@ -88,8 +88,10 @@ describe('sendToSlack (mock transport)', () => {
     expect(await send(reply(403, `secret ${WEBHOOK}`))).toEqual({ kind: 'permanent', code: 'http_403' }); // response text never reflected
   });
 
-  it('network error → retry; timeout or abort after sending → unknown; oversized bodies are bounded; no redirects; no URL in outcomes', async () => {
-    expect(await send(() => Promise.reject(new TypeError(`fetch failed ${WEBHOOK}`)))).toEqual({ kind: 'retry', code: 'network', retryAfterSeconds: null });
+  it('no connection → retry; a lost connection, timeout or abort → unknown; oversized bodies are bounded; no redirects; no URL in outcomes', async () => {
+    const refused = Object.assign(new Error(WEBHOOK), { code: 'ECONNREFUSED' });
+    expect(await send(() => Promise.reject(new TypeError(`fetch failed ${WEBHOOK}`, { cause: refused })))).toEqual({ kind: 'retry', code: 'network', retryAfterSeconds: null });
+    expect(await send(() => Promise.reject(new TypeError(`fetch failed ${WEBHOOK}`)))).toEqual({ kind: 'unknown', code: 'connection_lost' });
     const hang = (_u: unknown, init?: RequestInit) => new Promise<Response>((_r, reject) => { init?.signal?.addEventListener('abort', () => { reject(new Error('aborted')); }); });
     expect(await send(hang as never, 50)).toEqual({ kind: 'unknown', code: 'timeout' });
     const ac = new AbortController();

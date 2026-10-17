@@ -234,7 +234,9 @@ describe('test message', () => {
     ['invalid payload (permanent)', () => Promise.resolve(new Response('invalid_payload', { status: 400 })), 'failed', 'invalid_payload'],
     ['archived channel', () => Promise.resolve(new Response('channel_is_archived', { status: 410 })), 'failed', 'channel_is_archived'],
     ['rate limited', () => Promise.resolve(new Response('', { status: 429, headers: { 'retry-after': '30' } })), 'failed', 'rate_limited'],
-    ['network error', () => Promise.reject(new Error('fetch failed')), 'failed', 'network'],
+    // No connection at all (refused / DNS): certainly not sent → failed. A dropped connection may have delivered it → unknown.
+    ['network error before sending', () => Promise.reject(new TypeError('fetch failed', { cause: Object.assign(new Error('x'), { code: 'ECONNREFUSED' }) })), 'failed', 'network'],
+    ['connection lost (maybe after sending)', () => Promise.reject(new TypeError('fetch failed', { cause: Object.assign(new Error('x'), { code: 'UND_ERR_SOCKET' }) })), 'unknown', 'connection_lost'],
   ])('%s → %s with a safe code, never retried', async (_n, reply, outcome, code) => {
     let calls = 0;
     const { app: a, s } = await configured(() => { calls += 1; return reply(); });

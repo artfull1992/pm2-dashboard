@@ -95,6 +95,18 @@ async function readBounded(res: Response): Promise<string> {
   return Buffer.concat(chunks).toString('utf8').slice(0, MAX_RESPONSE_BYTES);
 }
 
+/**
+ * Error codes that prove the request never left this host: no address, no connection, a refused TLS handshake.
+ * Anything else (a reset or closed socket, a missing code) may happen after the body was sent → "unknown".
+ */
+const NOT_SENT_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_NONAME', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'EADDRNOTAVAIL', 'UND_ERR_CONNECT_TIMEOUT']);
+const TLS_CODE = /^(CERT_|ERR_TLS_|ERR_SSL_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_)/;
+function certainlyNotSent(cause: unknown): boolean {
+  if (cause instanceof AggregateError) return cause.errors.length > 0 && cause.errors.every((e) => certainlyNotSent(e));
+  const code = typeof cause === 'object' && cause !== null && 'code' in cause ? cause.code : undefined;
+  return typeof code === 'string' && (NOT_SENT_CODES.has(code) || TLS_CODE.test(code));
+}
+
 const PERMANENT_CODES = new Set([
   'invalid_payload', 'action_prohibited', 'channel_is_archived', 'no_service', 'no_service_id', 'no_team', 'no_text', 'team_disabled',
   'invalid_token', 'no_active_hooks', 'posting_to_general_channel_denied', 'user_not_found', 'channel_not_found', 'too_many_attachments',
@@ -110,11 +122,12 @@ export async function sendToSlack(webhookUrl: string, text: string, opts: { time
       method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }),
       signal: AbortSignal.any([timeout, opts.signal]),
     });
-  } catch {
-    // Aborted/timed out/connection error: the request may or may not have reached Slack.
+  } catch (error) {
+    // Aborted/timed out/connection lost: the request may or may not have reached Slack.
     if (opts.signal.aborted) return { kind: 'unknown', code: 'aborted' };
     if (timeout.aborted) return { kind: 'unknown', code: 'timeout' };
-    return { kind: 'retry', code: 'network', retryAfterSeconds: null };
+    const cause = error instanceof Error ? error.cause : undefined;
+    return certainlyNotSent(cause) ? { kind: 'retry', code: 'network', retryAfterSeconds: null } : { kind: 'unknown', code: 'connection_lost' };
   }
   const body = (await readBounded(res)).trim();
   if (res.status === 200 && body === 'ok') return { kind: 'sent' };

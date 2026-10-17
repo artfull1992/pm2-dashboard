@@ -178,8 +178,11 @@ async function applyTransitions(tx: QueryClient, result: EvaluationResult, confi
         [t.incidentId, t.resolution, at(t), JSON.stringify(t.detail)]);
       if (upd.rows[0]) {
         resolved += 1;
-        // A recovery is sent only if the problem itself was announced (queued/sent), never for a dropped/suppressed one.
-        const announced = await tx.query("SELECT 1 FROM alert_outbox WHERE incident_id = $1 AND kind = 'firing' AND status <> 'dropped'", [t.incidentId]);
+        // A recovery is sent only if the problem itself was announced: delivered, possibly delivered (unknown) or still
+        // on its way (queued/sending — sent before the recovery, in order). Never for a problem that was dropped,
+        // cancelled (webhook replaced / delivery switched off: the new channel never saw it) or failed permanently.
+        const announced = await tx.query(
+          "SELECT 1 FROM alert_outbox WHERE incident_id = $1 AND kind = 'firing' AND status IN ('queued', 'sending', 'sent', 'unknown')", [t.incidentId]);
         if (upd.rows[0].notify && announced.rows.length > 0) await send(t.incidentId, 'resolved');
       }
     }
