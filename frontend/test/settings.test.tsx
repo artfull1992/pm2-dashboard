@@ -98,6 +98,17 @@ describe('Slack integration tab', () => {
     expect(await screen.findByText(/результат невідомий \(timeout\)/)).toBeTruthy();
   });
 
+  it.each([
+    ['failed', 'network', /не вдалося \(network\)/],
+    ['unknown', 'connection_lost', /результат невідомий \(connection_lost\)/],
+  ] as const)('test outcome %s (%s) is shown as reported, never as success', async (outcome, code, text) => {
+    backend('admin', (req) => (req.url.endsWith('/test') ? json(200, { operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', generation: 1, outcome, code, at: '2026-10-15T09:20:00.000Z', stored: true }) : undefined), () => configured());
+    renderApp('/settings/integrations');
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Надіслати тестове повідомлення' }));
+    expect(await screen.findByText(text)).toBeTruthy();
+    expect(screen.queryByText(/успішно/)).toBeNull();
+  });
+
   it('replace warns that the queue is cancelled; remove asks for confirmation and sends the generation; delivery toggle uses the revision', async () => {
     let state = configured();
     const calls = backend('admin', (req) => {

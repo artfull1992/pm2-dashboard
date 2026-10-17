@@ -117,6 +117,23 @@ describe('process_cpu (PM2 CPU %, not load average)', () => {
     const { transitions } = run([[c(1, 95)], [c(2, null)], [c(3, 95)], [c(4, 99)], [c(5, null)], [c(6, 10)], [c(7, 10)]]);
     expect(kinds(transitions, 'process_cpu')).toEqual([[], [], [], ['open'], [], [], ['resolve:recovered']]);
   });
+
+  it('multi-core: PM2 CPU above 100 % is a valid value; thresholds above 100 % open and resolve normally', () => {
+    const high: AlertThresholds = { ...T, cpuOpenPercent: 300, cpuClosePercent: 150, confirmSamples: 2, recoverSamples: 1 };
+    const c = (t: number, cpu: number) => server(t, { processes: [p({ cpuPercent: cpu })] });
+    const { transitions } = run([[c(1, 250)], [c(2, 350)], [c(3, 420)], [c(4, 120)]], high);
+    expect(kinds(transitions, 'process_cpu')).toEqual([[], [], ['open'], ['resolve:recovered']]);
+  });
+
+  it('hysteresis: a value between the thresholds breaks a pending or recovering streak but never closes a firing incident', () => {
+    const c = (t: number, cpu: number) => server(t, { processes: [p({ cpuPercent: cpu })] });
+    // pending 95, 95, then 80 (band) → streak restarts: 95, 95 is not enough, the third 95 opens.
+    const opening = run([[c(1, 95)], [c(2, 95)], [c(3, 80)], [c(4, 95)], [c(5, 95)], [c(6, 95)]]);
+    expect(kinds(opening.transitions, 'process_cpu')).toEqual([[], [], [], [], [], ['open']]);
+    // firing; 10 (recovering), 80 (band: back to firing, not resolved), 10, 10 → resolved.
+    const closing = run([[c(1, 95)], [c(2, 95)], [c(3, 95)], [c(4, 10)], [c(5, 80)], [c(6, 10)], [c(7, 10)]]);
+    expect(kinds(closing.transitions, 'process_cpu')).toEqual([[], [], ['open'], [], [], [], ['resolve:recovered']]);
+  });
 });
 
 describe('process_restarts (delta between new samples, never the cumulative counter)', () => {
