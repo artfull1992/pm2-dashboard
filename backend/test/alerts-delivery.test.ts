@@ -160,6 +160,17 @@ describe('delivery loop', () => {
     expect(store.finished[0]?.delaySeconds).toBeGreaterThanOrEqual(24);
   });
 
+  // Review 2026-10-19 (second): "ok" followed by more than the response bound is not a confirmation → failed, not sent.
+  it('200 "ok" + an oversized tail: the worker records failed/unexpected_response, never sent', async () => {
+    const store = new FakeStore();
+    store.items = [item('1')];
+    const big = () => Promise.resolve(new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('ok')); c.enqueue(new TextEncoder().encode('x'.repeat(1025))); c.close(); } }), { status: 200 }));
+    const engine = new AlertsEngine(store, source(() => runtime()), null, quiet, { fetchImpl: big as unknown as typeof fetch, sleep: () => Promise.resolve() });
+    await engine.deliverNow();
+    expect(store.finished.map((f) => [f.id, f.status, f.code])).toEqual([['1', 'failed', 'unexpected_response']]);
+    expect(engine.stats().lastDeliveryAt).toBeNull();
+  });
+
   it('backoff: exponential with jitter, capped at 30 min, never below Retry-After', () => {
     expect(backoffSeconds(1, null, () => 0.5)).toBe(30);
     expect(backoffSeconds(3, null, () => 0.5)).toBe(120);

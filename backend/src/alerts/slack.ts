@@ -76,12 +76,16 @@ export type SendOutcome =
 const MAX_RESPONSE_BYTES = 1024;
 
 /**
- * Reads at most MAX_RESPONSE_BYTES. `complete: false` = the body could not be read to its end (connection lost,
- * timeout or abort after the headers): the response is NOT a definite answer. An oversized body is read only up to
- * the bound and then cancelled — that is a complete (unexpected) answer, not a failure.
+ * Reads at most MAX_RESPONSE_BYTES. Three distinct outcomes:
+ *  * complete    — the whole body (≤ the bound) was read: `text` is the full answer;
+ *  * oversized   — the body exceeds the bound (the read stops and the stream is cancelled): a complete but unexpected
+ *                  answer; its prefix is never used (an "ok" followed by more data is not "ok");
+ *  * interrupted — the body could not be read to its end (connection lost, timeout or abort after the headers): NOT a
+ *                  definite answer.
  */
-async function readBounded(res: Response): Promise<{ complete: boolean; text: string }> {
-  if (!res.body) return { complete: true, text: '' };
+type BodyRead = { state: 'complete'; text: string } | { state: 'oversized' | 'interrupted' };
+async function readBounded(res: Response): Promise<BodyRead> {
+  if (!res.body) return { state: 'complete', text: '' };
   const reader = res.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -89,16 +93,15 @@ async function readBounded(res: Response): Promise<{ complete: boolean; text: st
     for (;;) {
       const chunk = await reader.read();
       if (chunk.done) break;
-      const value = chunk.value;
-      size += value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) { await reader.cancel().catch(() => undefined); break; }
-      chunks.push(value);
+      size += chunk.value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) { await reader.cancel().catch(() => undefined); return { state: 'oversized' }; }
+      chunks.push(chunk.value);
     }
   } catch {
     await reader.cancel().catch(() => undefined);
-    return { complete: false, text: '' };
+    return { state: 'interrupted' };
   }
-  return { complete: true, text: Buffer.concat(chunks).toString('utf8').slice(0, MAX_RESPONSE_BYTES) };
+  return { state: 'complete', text: Buffer.concat(chunks).toString('utf8') };
 }
 
 /**
@@ -136,7 +139,7 @@ export async function sendToSlack(webhookUrl: string, text: string, opts: { time
     return certainlyNotSent(cause) ? { kind: 'retry', code: 'network', retryAfterSeconds: null } : { kind: 'unknown', code: 'connection_lost' };
   }
   const read = await readBounded(res);
-  const body = read.text.trim();
+  const body = read.state === 'complete' ? read.text.trim() : '';
   if (res.status === 429) {
     const ra = Number(res.headers.get('retry-after'));
     return { kind: 'retry', code: 'rate_limited', retryAfterSeconds: Number.isFinite(ra) && ra >= 0 ? Math.min(ra, 3600) : null };
@@ -144,12 +147,13 @@ export async function sendToSlack(webhookUrl: string, text: string, opts: { time
   if (res.status >= 500) return { kind: 'retry', code: `http_${String(res.status)}`, retryAfterSeconds: null };
   // The status alone answers 429/5xx (above) and a 4xx rejection (below). A 2xx/3xx whose body was cut is not a
   // definite answer: Slack may have accepted the message ("ok" never fully arrived) → unknown, never sent/failed.
-  if (!read.complete && res.status < 400) {
+  if (read.state === 'interrupted' && res.status < 400) {
     if (opts.signal.aborted) return { kind: 'unknown', code: 'aborted' };
     if (timeout.aborted) return { kind: 'unknown', code: 'timeout' };
     return { kind: 'unknown', code: 'connection_lost' };
   }
-  if (res.status === 200 && body === 'ok') return { kind: 'sent' };
+  // Only a complete body can confirm; an oversized one is "unexpected_response" (2xx) or the status code (4xx).
+  if (res.status === 200 && read.state === 'complete' && body === 'ok') return { kind: 'sent' };
   const code = /^[a-z_]{1,40}$/.test(body) && PERMANENT_CODES.has(body) ? body : res.status >= 200 && res.status < 300 ? 'unexpected_response' : `http_${String(res.status)}`;
   return { kind: 'permanent', code };
 }

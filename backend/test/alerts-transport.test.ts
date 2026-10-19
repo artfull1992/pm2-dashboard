@@ -124,3 +124,50 @@ describe('Slack transport: complete responses (unchanged classification)', () =>
     expect(await send(via(p.url))).toEqual(outcome);
   });
 });
+
+// Review 2026-10-19 (second, P2): the 1 KiB response bound. An oversized body is never a confirmation, whatever its
+// prefix and however it is split into chunks; a cut body stays "unknown". Synthetic streams only.
+describe('Slack transport: response size bound', () => {
+  const enc = new TextEncoder();
+  /** 200 response whose body arrives in the given chunks; `fail` = the stream errors after them (connection lost). */
+  const streamed = (chunks: string[], init: { status?: number; headers?: Record<string, string>; fail?: boolean } = {}) => {
+    let calls = 0;
+    const fetchImpl = (() => {
+      calls += 1;
+      return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+        start(c) { for (const x of chunks) c.enqueue(enc.encode(x)); if (init.fail) c.error(new Error('socket closed')); else c.close(); },
+      }), { status: init.status ?? 200, headers: init.headers ?? {} }));
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls: () => calls };
+  };
+  const oversized = { kind: 'permanent', code: 'unexpected_response' };
+
+  it.each([
+    ['"ok" as its own first chunk, then 1025 × "x"', ['ok', 'x'.repeat(1025)]],
+    ['"ok" + 1023 × "x" (1025 bytes) in one chunk', [`ok${'x'.repeat(1023)}`]],
+    ['the same 1025 bytes split into single bytes', Array.from(`ok${'x'.repeat(1023)}`)],
+    ['"ok", then exactly one byte too many in a later chunk', ['ok', 'x'.repeat(1022), 'x']],
+  ])('%s → never "sent": unexpected_response', async (_n, chunks) => {
+    const s = streamed(chunks);
+    expect(await send(s.fetchImpl)).toEqual(oversized);
+  });
+
+  it('exactly at the bound (1024 bytes) is a complete body: "ok" + padding is not "ok"; plain "ok" in any split is sent', async () => {
+    expect(await send(streamed([`ok${' '.repeat(1022)}`]).fetchImpl)).toEqual({ kind: 'sent' }); // trimmed "ok", 1024 bytes: complete
+    expect(await send(streamed([`ok${'x'.repeat(1022)}`]).fetchImpl)).toEqual(oversized);
+    expect(await send(streamed(['o', 'k']).fetchImpl)).toEqual({ kind: 'sent' });
+    expect(await send(streamed(['ok']).fetchImpl)).toEqual({ kind: 'sent' });
+  });
+
+  it('cut bodies stay unknown (not oversized, not failed): "o" then lost; "ok" then lost', async () => {
+    expect(await send(streamed(['o'], { fail: true }).fetchImpl)).toEqual({ kind: 'unknown', code: 'connection_lost' });
+    expect(await send(streamed(['ok'], { fail: true }).fetchImpl)).toEqual({ kind: 'unknown', code: 'connection_lost' });
+  });
+
+  it('429 / 5xx / 4xx keep their status meaning with an oversized body', async () => {
+    expect(await send(streamed(['x'.repeat(2000)], { status: 429, headers: { 'retry-after': '30' } }).fetchImpl)).toEqual({ kind: 'retry', code: 'rate_limited', retryAfterSeconds: 30 });
+    expect(await send(streamed(['x'.repeat(2000)], { status: 502 }).fetchImpl)).toEqual({ kind: 'retry', code: 'http_502', retryAfterSeconds: null });
+    // A known Slack code followed by more than the bound is not trusted as that code: the status decides.
+    expect(await send(streamed(['channel_not_found', 'x'.repeat(2000)], { status: 404 }).fetchImpl)).toEqual({ kind: 'permanent', code: 'http_404' });
+  });
+});

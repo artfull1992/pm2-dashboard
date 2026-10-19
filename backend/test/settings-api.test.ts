@@ -238,6 +238,8 @@ describe('test message', () => {
     ['network error before sending', () => Promise.reject(new TypeError('fetch failed', { cause: Object.assign(new Error('x'), { code: 'ECONNREFUSED' }) })), 'failed', 'network'],
     ['connection lost (maybe after sending)', () => Promise.reject(new TypeError('fetch failed', { cause: Object.assign(new Error('x'), { code: 'UND_ERR_SOCKET' }) })), 'unknown', 'connection_lost'],
     // Review 2026-10-19: 200 arrived, the body ("ok") was cut — maybe accepted → unknown, not failed, not retried.
+    // Review 2026-10-19 (second): "ok" then more than the 1 KiB bound — not a confirmation → failed, one call only.
+    ['200 "ok" + an oversized tail', () => Promise.resolve(new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('ok')); c.enqueue(new TextEncoder().encode('x'.repeat(1025))); c.close(); } }), { status: 200 })), 'failed', 'unexpected_response'],
     ['200 with a cut body', () => Promise.resolve(new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('o')); c.error(new Error('socket closed')); } }), { status: 200 })), 'unknown', 'connection_lost'],
   ])('%s → %s with a safe code, never retried', async (_n, reply, outcome, code) => {
     let calls = 0;
