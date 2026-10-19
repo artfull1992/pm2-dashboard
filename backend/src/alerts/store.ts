@@ -1,6 +1,6 @@
 import type { Database, QueryClient } from '../database.js';
 import { INVENTORY_STATE_SQL, SERVER_STATUS_SQL } from '../servers/inventory-store.js';
-import { type ConditionRow, type Detail, evaluate, type EvaluationResult, type ProcessObs, type Resolution, RETIRED_RULES, type Rule, type ServerObs, type Severity, type Transition } from './rules.js';
+import { type ConditionRow, type Detail, evaluate, type EvaluationResult, MAX_SAMPLES, type ProcessObs, type Resolution, RETIRED_RULES, type Rule, type ServerObs, type Severity, type Transition } from './rules.js';
 import type { MessageIncident } from './slack.js';
 import type { EvaluationConfig } from './settings.js';
 
@@ -9,7 +9,10 @@ import type { EvaluationConfig } from './settings.js';
 //    evaluations never run concurrently (other API processes/cycles skip); incident transitions, condition state and
 //    outbox rows commit together or not at all;
 //  * delivery: outbox rows claimed with FOR UPDATE SKIP LOCKED + a lease; a result is written only by the claim that
-//    still owns the row (status = 'sending' AND attempts = claimed attempts).
+//    still owns the row (status = 'sending' AND attempts = claimed attempts);
+//  * order within one incident: a recovery/reminder is claimable only after its problem message of the SAME generation
+//    ended as sent or unknown (announced) and nothing older of that incident is still queued/sending; if that problem
+//    can no longer be announced (failed, cancelled, dropped, another generation) the dependant is cancelled.
 
 export const EVALUATION_LOCK = 7_301_013_001; // advisory lock id (bigint) reserved for the alerts evaluator
 export const RETENTION = Object.freeze({ outboxDays: 30, incidentDays: 90, batch: 500 });
@@ -112,6 +115,25 @@ async function cancelRetiredOutbox(q: QueryClient | Database): Promise<number> {
   return r.rowCount ?? 0;
 }
 
+/** The problem message of the same incident AND generation ended as delivered or possibly delivered. */
+const ANNOUNCED = `EXISTS (SELECT 1 FROM alert_outbox f WHERE f.incident_id = o.incident_id AND f.kind = 'firing' AND f.generation = o.generation
+                          AND f.status IN ('sent', 'unknown'))`;
+/** …or may still be: queued/sending in the same generation. */
+const ANNOUNCEABLE = `EXISTS (SELECT 1 FROM alert_outbox f WHERE f.incident_id = o.incident_id AND f.kind = 'firing' AND f.generation = o.generation
+                          AND f.status IN ('queued', 'sending', 'sent', 'unknown'))`;
+
+/**
+ * A recovery/reminder whose problem message can no longer be announced to its channel (failed permanently, cancelled,
+ * dropped, missing or of another generation) is cancelled: never sent alone, never left waiting forever. Idempotent;
+ * a row still leased by a running delivery is left to finish.
+ */
+async function cancelUnannounced(q: QueryClient | Database): Promise<number> {
+  const r = await q.query(
+    `UPDATE alert_outbox o SET status = 'cancelled', finished_at = now(), lease_until = NULL, last_error = 'problem_not_announced'
+      WHERE o.kind <> 'firing' AND (o.status = 'queued' OR (o.status = 'sending' AND o.lease_until < now())) AND NOT ${ANNOUNCEABLE}`);
+  return r.rowCount ?? 0;
+}
+
 /**
  * Takes retired rules out of service inside the evaluation transaction: open incidents are closed as "retired"
  * (no recovery message is queued), their pending notifications are cancelled and their condition state is dropped.
@@ -178,11 +200,17 @@ async function applyTransitions(tx: QueryClient, result: EvaluationResult, confi
         [t.incidentId, t.resolution, at(t), JSON.stringify(t.detail)]);
       if (upd.rows[0]) {
         resolved += 1;
-        // A recovery is sent only if the problem itself was announced: delivered, possibly delivered (unknown) or still
-        // on its way (queued/sending — sent before the recovery, in order). Never for a problem that was dropped,
-        // cancelled (webhook replaced / delivery switched off: the new channel never saw it) or failed permanently.
-        const announced = await tx.query(
-          "SELECT 1 FROM alert_outbox WHERE incident_id = $1 AND kind = 'firing' AND status IN ('queued', 'sending', 'sent', 'unknown')", [t.incidentId]);
+        // A recovery is queued only if the problem was (or may still be) announced to the SAME channel — the generation
+        // the recovery would be sent to: delivered, possibly delivered (unknown) or still on its way (queued/sending;
+        // claim then holds the recovery until the problem has ended). Never for a problem that was dropped, cancelled,
+        // failed permanently or announced to a previous webhook (that channel is no longer ours, the new one never saw it).
+        // A reminder still waiting is obsolete: cancelled, so "still ongoing" never follows "recovered".
+        await tx.query(
+          "UPDATE alert_outbox SET status = 'cancelled', finished_at = now(), lease_until = NULL, last_error = 'superseded' WHERE incident_id = $1 AND kind = 'reminder' AND status = 'queued'",
+          [t.incidentId]);
+        const announced = config.generation === null ? { rows: [] } : await tx.query(
+          "SELECT 1 FROM alert_outbox WHERE incident_id = $1 AND kind = 'firing' AND generation = $2 AND status IN ('queued', 'sending', 'sent', 'unknown')",
+          [t.incidentId, config.generation]);
         if (upd.rows[0].notify && announced.rows.length > 0) await send(t.incidentId, 'resolved');
       }
     }
@@ -195,18 +223,19 @@ async function applyTransitions(tx: QueryClient, result: EvaluationResult, confi
        ON CONFLICT (condition_key) DO UPDATE SET state = EXCLUDED.state, streak = EXCLUDED.streak, last_sample_at = EXCLUDED.last_sample_at,
          samples = EXCLUDED.samples, incident_id = EXCLUDED.incident_id, updated_at = EXCLUDED.updated_at, rules_revision = EXCLUDED.rules_revision`,
       [row.key, row.serverId, row.rule, row.processKey, row.state, Math.min(row.streak, 1000), row.lastSampleAt === null ? null : new Date(row.lastSampleAt),
-        JSON.stringify(row.samples.slice(-64)), incidentId, now, config.rulesRevision]);
+        JSON.stringify(row.samples.slice(-MAX_SAMPLES)), incidentId, now, config.rulesRevision]);
   }
   if (result.deletes.length > 0) await tx.query('DELETE FROM alert_conditions WHERE condition_key = ANY($1::text[])', [result.deletes]);
 
   // Optional reminders for incidents still firing (bounded).
-  if (config.reminderSeconds > 0 && config.deliveryEnabled) {
+  if (config.reminderSeconds > 0 && config.deliveryEnabled && config.generation !== null) {
     const due = await tx.query<{ id: string }>(
       `SELECT i.id FROM alert_incidents i
         WHERE i.status = 'firing' AND i.notify
-          AND EXISTS (SELECT 1 FROM alert_outbox o WHERE o.incident_id = i.id AND o.kind = 'firing' AND o.status <> 'dropped')
+          AND EXISTS (SELECT 1 FROM alert_outbox o WHERE o.incident_id = i.id AND o.kind = 'firing' AND o.generation = $3
+                        AND o.status IN ('queued', 'sending', 'sent', 'unknown'))
           AND NOT EXISTS (SELECT 1 FROM alert_outbox o WHERE o.incident_id = i.id AND o.created_at > $1::timestamptz - make_interval(secs => $2))
-        ORDER BY i.opened_at LIMIT 20`, [now, config.reminderSeconds]);
+        ORDER BY i.opened_at LIMIT 20`, [now, config.reminderSeconds, config.generation]);
     for (const r of due.rows) await send(r.id, 'reminder');
   }
   // Retention: only this feature's own tables, bounded batches.
@@ -245,11 +274,17 @@ export function createPgAlertsStore(db: Database): AlertsStore {
 
     async claim(limit, generation) {
       await cancelRetiredOutbox(db);
+      await cancelUnannounced(db);
+      // Dependency, not just order: a recovery/reminder waits until its problem message (same generation) has ended as
+      // sent/unknown AND no older item of the incident is queued/sending — whatever backoff or lease that item is in.
+      // Checked against committed rows: a concurrent claim that has just taken the problem still sees it queued/sending.
       const { rows } = await db.query(
         `WITH picked AS (
            SELECT o.id FROM alert_outbox o
             WHERE o.generation = $3 AND ((o.status = 'queued' AND o.next_attempt_at <= now()) OR (o.status = 'sending' AND o.lease_until < now()))
               AND NOT EXISTS (SELECT 1 FROM alert_incidents i WHERE i.id = o.incident_id AND i.rule = ANY($4::text[]))
+              AND (o.kind = 'firing' OR (${ANNOUNCED}
+                   AND NOT EXISTS (SELECT 1 FROM alert_outbox e WHERE e.incident_id = o.incident_id AND e.id < o.id AND e.status IN ('queued', 'sending'))))
             ORDER BY o.next_attempt_at, o.id LIMIT $1 FOR UPDATE OF o SKIP LOCKED)
          UPDATE alert_outbox o SET status = 'sending', attempts = LEAST(o.attempts + 1, 20), lease_until = now() + make_interval(secs => $2)
            FROM picked WHERE o.id = picked.id

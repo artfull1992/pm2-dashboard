@@ -28,7 +28,7 @@ afterAll(async () => {
   await admin.end();
 });
 
-async function setup() {
+async function setup(serverCount = 1) {
   const schema = newRunSchemaName();
   schemas.push(schema);
   await createRunSchema(admin, schema);
@@ -46,21 +46,30 @@ async function setup() {
   const actor = { userId, requestId: randomUUID() };
   const configured = await settings.configureSlack({ expectedGeneration: 0, seal: (g) => seal(WEBHOOK(1), g, KEY), actor });
   if (configured.status !== 'configured') throw new Error('setup');
-  const serverId = ((await sql('INSERT INTO servers (name) VALUES ($1) RETURNING id', ['node'])).rows[0] as { id: string }).id;
-  await sql("INSERT INTO server_heartbeats (server_id, received_at, snapshot) VALUES ($1, now() - interval '10 minutes', $2::jsonb)", [serverId, JSON.stringify(validSnapshot())]);
+  const serverIds: string[] = [];
+  for (let n = 0; n < serverCount; n++) {
+    const id = ((await sql('INSERT INTO servers (name) VALUES ($1) RETURNING id', [`node-${String(n)}`])).rows[0] as { id: string }).id;
+    await sql("INSERT INTO server_heartbeats (server_id, received_at, snapshot) VALUES ($1, now() - interval '10 minutes', $2::jsonb)", [id, JSON.stringify(validSnapshot())]);
+    serverIds.push(id);
+  }
   const cfg = (generation: number, deliveryEnabled = true): EvaluationConfig => {
     const d = ALERTS_DEFAULTS.defaults;
     return { thresholds: d.thresholds, cooldownSeconds: 0, reminderSeconds: 0, queueMax: d.queueMax, deliveryEnabled, generation, rulesRevision: 1 };
   };
   const alerts = createPgAlertsStore(db);
   const kinds = async () => (await sql('SELECT kind, status, last_error FROM alert_outbox ORDER BY id')).rows as { kind: string; status: string; last_error: string | null }[];
-  // Server offline → the problem is queued for generation 1.
-  expect(await alerts.evaluateOnce(cfg(1))).toMatchObject({ opened: 1, enqueued: 1 });
-  const recover = async (generation: number) => {
-    await sql('UPDATE server_heartbeats SET received_at = now() WHERE server_id = $1', [serverId]);
+  // Server(s) offline → the problem(s) queued for generation 1.
+  expect(await alerts.evaluateOnce(cfg(1))).toMatchObject({ opened: serverCount, enqueued: serverCount });
+  const recover = async (generation: number, servers: string[] = serverIds.slice(0, 1)) => {
+    await sql('UPDATE server_heartbeats SET received_at = now() WHERE server_id = ANY($1::uuid[])', [servers]);
     return alerts.evaluateOnce(cfg(generation));
   };
-  return { sql, settings, actor, alerts, kinds, recover };
+  /** Outbox row of one kind for a server (its single incident). */
+  const row = async (kind: string, server = serverIds[0]) => (await sql(
+    `SELECT o.id::text AS id, o.status, o.last_error, o.attempts FROM alert_outbox o JOIN alert_incidents i ON i.id = o.incident_id
+      WHERE o.kind = $1 AND i.server_id = $2`, [kind, server])).rows[0] as { id: string; status: string; last_error: string | null; attempts: number } | undefined;
+  const claimed = async (generation = 1) => (await alerts.claim(5, generation)).map((c) => `${c.kind}:${String(serverIds.indexOf(c.incident.serverId))}`);
+  return { sql, settings, actor, alerts, kinds, recover, row, claimed, serverIds, cfg };
 }
 
 describe('recovery only for an announced problem', () => {
@@ -99,5 +108,134 @@ describe('recovery only for an announced problem', () => {
     await t.sql(`UPDATE alert_outbox SET ${set}`);
     expect(await t.recover(1)).toMatchObject({ resolved: 1, enqueued: 1 });
     expect((await t.kinds()).map((k) => k.kind)).toEqual(['firing', 'resolved']);
+  });
+});
+
+// Review 2026-10-19 (P2): the recovery may never overtake its problem message — a dependency enforced by claim
+// (through the real claim/finish path), whatever the backoff, lease or concurrency.
+describe('delivery order of one incident: the recovery waits for its problem message', () => {
+  it('problem deferred by backoff: the recovery is not claimable; after the problem is sent it is', async () => {
+    const t = await setup();
+    await t.sql("UPDATE alert_outbox SET next_attempt_at = now() + interval '10 minutes'");
+    expect(await t.recover(1)).toMatchObject({ resolved: 1, enqueued: 1 });
+    expect(await t.claimed()).toEqual([]);
+    await t.sql("UPDATE alert_outbox SET next_attempt_at = now() WHERE kind = 'firing'");
+    const [firing] = await t.alerts.claim(5, 1);
+    expect(firing?.kind).toBe('firing');
+    expect(await t.claimed()).toEqual([]); // problem in flight
+    if (firing) expect(await t.alerts.finish(firing, { status: 'sent' })).toBe(true);
+    expect(await t.claimed()).toEqual(['resolved:0']);
+    expect(await t.claimed()).toEqual([]); // claimed once
+  });
+
+  it('problem in flight, then its lease expires: only the problem is claimed again, never the recovery first', async () => {
+    const t = await setup();
+    expect(await t.claimed()).toEqual(['firing:0']);
+    expect(await t.recover(1)).toMatchObject({ resolved: 1, enqueued: 1 });
+    expect(await t.claimed()).toEqual([]);
+    await t.sql("UPDATE alert_outbox SET lease_until = now() - interval '1 second' WHERE kind = 'firing'");
+    expect(await t.claimed()).toEqual(['firing:0']);
+  });
+
+  it('problem retried after a transient error and then sent: one recovery, after it', async () => {
+    const t = await setup();
+    const [firing] = await t.alerts.claim(5, 1);
+    if (!firing) throw new Error('no item');
+    expect(await t.recover(1)).toMatchObject({ enqueued: 1 });
+    expect(await t.alerts.finish(firing, { status: 'queued', code: 'http_500', delaySeconds: 0 })).toBe(true);
+    expect(await t.claimed()).toEqual(['firing:0']);
+    await t.sql("UPDATE alert_outbox SET status = 'sent', finished_at = now(), lease_until = NULL WHERE kind = 'firing'");
+    expect(await t.claimed()).toEqual(['resolved:0']);
+  });
+
+  it.each([
+    ['failed permanently', { status: 'failed' as const, code: 'channel_not_found' }],
+    ['ended unknown (may have been delivered)', { status: 'unknown' as const, code: 'timeout' }],
+  ])('problem %s while the recovery waited', async (_name, outcome) => {
+    const t = await setup();
+    const [firing] = await t.alerts.claim(5, 1);
+    if (!firing) throw new Error('no item');
+    expect(await t.recover(1)).toMatchObject({ enqueued: 1 });
+    await t.alerts.finish(firing, outcome);
+    if (outcome.status === 'unknown') {
+      expect(await t.claimed()).toEqual(['resolved:0']);
+    } else {
+      // Never announced → the recovery is cancelled (terminal), not left waiting forever and not sent.
+      expect(await t.claimed()).toEqual([]);
+      expect(await t.row('resolved')).toMatchObject({ status: 'cancelled', last_error: 'problem_not_announced' });
+    }
+  });
+
+  it('problem cancelled while the recovery waited (e.g. an admin path or a retired rule): the recovery is cancelled', async () => {
+    const t = await setup();
+    await t.sql("UPDATE alert_outbox SET next_attempt_at = now() + interval '10 minutes'");
+    expect(await t.recover(1)).toMatchObject({ enqueued: 1 });
+    await t.sql("UPDATE alert_outbox SET status = 'cancelled', finished_at = now(), last_error = 'rule_retired' WHERE kind = 'firing'");
+    expect(await t.claimed()).toEqual([]);
+    expect(await t.row('resolved')).toMatchObject({ status: 'cancelled', last_error: 'problem_not_announced' });
+  });
+
+  it('concurrent claims never hand out a recovery before its problem; an independent incident is not blocked', async () => {
+    const t = await setup(2);
+    // Incident 0: problem deferred, recovery queued. Incident 1: problem already sent, recovery queued.
+    await t.sql(`UPDATE alert_outbox o SET next_attempt_at = now() + interval '10 minutes' FROM alert_incidents i WHERE i.id = o.incident_id AND i.server_id = $1`, [t.serverIds[0]]);
+    await t.sql(`UPDATE alert_outbox o SET status = 'sent', finished_at = now() FROM alert_incidents i WHERE i.id = o.incident_id AND i.server_id = $1`, [t.serverIds[1]]);
+    expect(await t.recover(1, t.serverIds)).toMatchObject({ resolved: 2, enqueued: 2 });
+    const [a, b] = await Promise.all([t.claimed(), t.claimed()]);
+    expect([...a, ...b]).toEqual(['resolved:1']);
+    await t.sql("UPDATE alert_outbox SET next_attempt_at = now() WHERE status = 'queued'");
+    const [c, d] = await Promise.all([t.claimed(), t.claimed()]);
+    expect([...c, ...d]).toEqual(['firing:0']);
+    // Repeated evaluations and claims: no duplicates.
+    expect(await t.recover(1, t.serverIds)).toMatchObject({ resolved: 0, enqueued: 0 });
+    expect((await t.kinds()).length).toBe(4);
+  });
+});
+
+// Review 2026-10-19 (P2): the right to a recovery belongs to the generation the problem was announced in.
+describe('generation scope: a recovery only follows a problem announced to the same channel', () => {
+  it.each([
+    ['sent', "status = 'sent', finished_at = now()"],
+    ['unknown', "status = 'unknown', finished_at = now(), last_error = 'timeout'"],
+  ])('problem %s in generation 1, webhook replaced → no recovery for generation 2; history kept', async (_n, set) => {
+    const t = await setup();
+    await t.sql(`UPDATE alert_outbox SET ${set}`);
+    const replaced = await t.settings.configureSlack({ expectedGeneration: 1, seal: (g) => seal(WEBHOOK(2), g, KEY), actor: t.actor });
+    expect(replaced).toMatchObject({ status: 'configured', generation: 2, cancelled: 0 });
+    expect(await t.recover(2)).toMatchObject({ resolved: 1, enqueued: 0 });
+    expect(await t.claimed(2)).toEqual([]);
+    expect(await t.row('firing')).toMatchObject({ status: _n });
+    expect(await t.recover(2)).toMatchObject({ resolved: 0, enqueued: 0 });
+  });
+
+  it('integration removed and configured again: no recovery for the problem announced to the old channel', async () => {
+    const t = await setup();
+    await t.sql("UPDATE alert_outbox SET status = 'sent', finished_at = now()");
+    expect(await t.settings.removeSlack({ expectedGeneration: 1, actor: t.actor })).toMatchObject({ status: 'removed', generation: 2 });
+    expect(await t.settings.configureSlack({ expectedGeneration: 2, seal: (g) => seal(WEBHOOK(3), g, KEY), actor: t.actor })).toMatchObject({ generation: 3 });
+    expect(await t.recover(3)).toMatchObject({ resolved: 1, enqueued: 0 });
+    expect(await t.claimed(3)).toEqual([]);
+  });
+
+  it('problem in flight when the webhook is replaced: cancelled, and no recovery to the new channel', async () => {
+    const t = await setup();
+    expect(await t.claimed()).toEqual(['firing:0']);
+    expect(await t.settings.configureSlack({ expectedGeneration: 1, seal: (g) => seal(WEBHOOK(2), g, KEY), actor: t.actor })).toMatchObject({ cancelled: 1 });
+    expect(await t.recover(2)).toMatchObject({ resolved: 1, enqueued: 0 });
+    expect(await t.claimed(2)).toEqual([]);
+  });
+
+  it('problem and recovery in the same (new) generation work as usual', async () => {
+    const t = await setup();
+    await t.sql("UPDATE alert_outbox SET status = 'sent', finished_at = now()");
+    await t.settings.configureSlack({ expectedGeneration: 1, seal: (g) => seal(WEBHOOK(2), g, KEY), actor: t.actor });
+    // The first incident recovers silently; a new outage in generation 2 is announced and recovered in generation 2.
+    expect(await t.recover(2)).toMatchObject({ enqueued: 0 });
+    await t.sql("UPDATE server_heartbeats SET received_at = now() - interval '10 minutes'");
+    expect(await t.alerts.evaluateOnce(t.cfg(2))).toMatchObject({ opened: 1, enqueued: 1 });
+    expect(await t.claimed(2)).toEqual(['firing:0']);
+    await t.sql("UPDATE alert_outbox SET status = 'sent', finished_at = now(), lease_until = NULL WHERE generation = 2");
+    expect(await t.recover(2)).toMatchObject({ resolved: 1, enqueued: 1 });
+    expect(await t.claimed(2)).toEqual(['resolved:0']);
   });
 });
