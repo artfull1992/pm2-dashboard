@@ -24,7 +24,7 @@ Auth/RBAC (Task 005): кожен новий `/api`-маршрут деклару
 | `npm run test:integration` | Валідний `.env`, реальна доступна БД; serial suites |
 | `npm run db:check` | SELECT 1 із поточною конфігурацією; без налаштування БД |
 | `npm run check` | Secrets → unit → integration; зупиняється при помилці |
-| `npm run typecheck` / `npm run lint` | TypeScript strict (backend, frontend, e2e, agent) / ESLint `strictTypeChecked` для `backend/`, `frontend/`, `e2e/`, `agent/` |
+| `npm run typecheck` / `npm run lint` | TypeScript strict (backend, frontend, e2e, agent, installer) / ESLint `strictTypeChecked` для `backend/`, `frontend/`, `e2e/`, `agent/`, `installer/` |
 | `npm run test:backend` | Vitest: config, API (inject), database, lifecycle; без мережевої БД |
 | `npm run test:backend:smoke` | Build + запуск скомпільованого API як процесу з контрольованим env |
 | `npm run test:backend:db` | Реальна **тестова** PostgreSQL: міграції (DDL/DML у per-run схемі) + readiness. Лише явні `TEST_DB_*`/`TEST_DB_ENV_FILE`, production-цілі відхиляються |
@@ -36,7 +36,8 @@ Auth/RBAC (Task 005): кожен новий `/api`-маршрут деклару
 | `npm run test:e2e` | Playwright: реальний backend + збірка UI; лише `TEST_DB_*`, per-run схема, без traces/screenshots |
 | `npm run test:agent` / `agent:build` | Vitest для Agent і PM2 exporter (конфіг, snapshot, TLS/redirect, backoff, loop, протокол PM2 на фейковому daemon, санітизація, безпека файлу); збірка `agent/dist` |
 | `npm run test:agent:pm2` | Opt-in: справжній одноразовий PM2 (`pm2@7.0.4` через npx, не залежність проєкту — AGPL) у тимчасовому `PM2_HOME`; доказ відсутності auto-start. Ніколи проти PM2 користувачів чи production |
-| `npm run check:local` | Secrets → старі unit → typecheck → lint → backend → smoke → agent (+ збірка) → frontend (+ збірка); без production-connected тестів |
+| `npm run test:installer` / `installer:build` | Vitest для інсталяторів (ADR-027): змодельований хост (порядок кроків, права, конфлікти, повторні запуски, секрети, без `pm2`), примітиви справжньої файлової системи, відповідність docs/INSTALLATION.md; збірка `installer/dist`. Не замінює наскрізної перевірки на чистій Ubuntu VM; ніколи не запускати інсталятори на production-серверах для тесту |
+| `npm run check:local` | Secrets → старі unit → typecheck → lint → backend → smoke → agent (+ збірка) → frontend (+ збірка) → installer (+ збірка); без production-connected тестів |
 
 Обов'язкова цільова перевірка — Node.js 22 LTS. Старий `tests/integration` (node:test, `.env`, production `node_control_db`) з Task 004 **лише read-only**: перевірки прав #9/#10 виконуються через каталоги PostgreSQL, без CREATE/INSERT/DROP. Тести із записом — тільки `backend/test/db/*` проти `node_control_test_db` у власній схемі `nc_test_<ms>_<hex8>`; cleanup видаляє лише цю схему, ніколи БД. Привілейований suite потребує root на хості PostgreSQL (`runuser`, `psql`, systemd); локально пропускається з поясненням. Успіх локально не замінює серверну перевірку.
 

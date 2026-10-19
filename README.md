@@ -2,9 +2,21 @@
 
 Централізована платформа для моніторингу та керування Node.js-проєктами на декількох серверах.
 
-> Реалізовано (стан на 2026-10-15): Central API (systemd) з auth, RBAC, audit log, міграціями; React/Vite UI; реєстр серверів і Agent heartbeat; PM2 inventory через локальний exporter; керування явно дозволеними PM2-процесами (start/stop/restart) і перегляд їхніх логів через локальний broker — зі сторінки сервера та з розділу «Застосунки» (ADR-017/018/024); користувачі та зміна власного пароля; Dashboard; сповіщення в Slack. Не реалізовано: redeploy через Jenkins, WebSocket, видалення користувачів, інсталятори. Production-готовність не заявляється: відкриті release blockers — у [PROJECT_STATUS](docs/PROJECT_STATUS.md).
+> Реалізовано (стан на 2026-10-15): Central API (systemd) з auth, RBAC, audit log, міграціями; React/Vite UI; реєстр серверів і Agent heartbeat; PM2 inventory через локальний exporter; керування явно дозволеними PM2-процесами (start/stop/restart) і перегляд їхніх логів через локальний broker — зі сторінки сервера та з розділу «Застосунки» (ADR-017/018/024); користувачі та зміна власного пароля; Dashboard; сповіщення в Slack. Не реалізовано: redeploy через Jenkins, WebSocket, видалення користувачів. Інсталятори первинного встановлення додано 2026-10-20 (наскрізно на чистій VM ще не перевірені). Production-готовність не заявляється: відкриті release blockers — у [PROJECT_STATUS](docs/PROJECT_STATUS.md).
 
 Task 001 підтверджений файлами та локальними unit-тестами, але серверний стан незалежно не підтверджено. Актуальні результати й проблеми — [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
+
+## Встановлення
+
+Node Control — self-hosted панель для серверів із PM2-застосунками: центральний сервер (Central API + веб-інтерфейс, host PostgreSQL і Nginx) і легкий Agent на кожному сервері (лише вихідний HTTPS; список PM2-процесів, керування й логи — тільки явно увімкнені).
+
+Передумови: Ubuntu із systemd, root, Node.js 22 у `/usr/bin/node`; на центральному сервері — PostgreSQL і Nginx, домен і TLS-сертифікат.
+
+1. Зібрати артефакти з запушеного commit: `npx -y node@22 scripts/deploy/build-release.js` → передати `node-control-api-<sha>.tar.gz`, `node-control-agent-<sha>.tar.gz` (з `.sha256`) і `server-bundle/`.
+2. Центральний сервер: підготувати БД → `node server-bundle/install/server.js plan …` → `apply …` → Nginx (`server.js nginx-config`) → перший адміністратор.
+3. Кожен сервер: UI «Додати сервер» → «Видати ключ» → `node server-bundle/install/agent.js plan …` → `apply …` (за потреби `--pm2-owner/--pm2-home`, `--enable-control`).
+
+Повна інструкція (команди, що змінюється, діагностика, відновлення, секрети) — [docs/INSTALLATION.md](docs/INSTALLATION.md). Оновлення й rollback наявних інсталяцій — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Межі: інші ОС і Docker не підтримуються; PM2 і його автозапуск Node Control не налаштовує; наскрізна перевірка інсталяторів на чистій Ubuntu VM ще попереду.
 
 ## Постійний контекст розробки
 
@@ -12,6 +24,7 @@ Task 001 підтверджений файлами та локальними uni
 - [Архітектура](docs/ARCHITECTURE.md) — фактичні компоненти й ціль MVP1.
 - [Стан проєкту](docs/PROJECT_STATUS.md) — перевірки, проблеми та наступний етап.
 - [Рішення](docs/DECISIONS.md), [правила розробки](docs/DEVELOPMENT_RULES.md), [AI workflow](docs/AI_WORKFLOW.md).
+- [Встановлення](docs/INSTALLATION.md) — первинне встановлення інсталяторами.
 - [Деплой і rollback](docs/DEPLOYMENT.md) — чинна процедура деплою, перевірок і rollback; історичні процедури позначені окремо.
 
 ## Архітектурні принципи
@@ -38,6 +51,7 @@ Task 001 підтверджений файлами та локальними uni
 ├── backend/          # Central API: TypeScript + Fastify (src/, test/, dist/ — збірка, не в Git)
 │   └── migrations/   # версійні SQL-міграції (node-pg-migrate)
 ├── frontend/         # React + Vite UI (src/, test/, dist/ — збірка, не в Git)
+├── installer/        # інсталятори API й Agent (TypeScript, plan/apply; dist/ → server-bundle/install/)
 ├── e2e/              # Playwright E2E (реальний backend + UI, тестова БД)
 ├── deploy/           # systemd/ (unit)
 ├── docs/
@@ -225,7 +239,7 @@ npm run typecheck           # tsc --noEmit, strict (src + test)
 npm run lint                # ESLint + typescript-eslint strictTypeChecked: backend, frontend, e2e, agent
 npm run test:backend        # Vitest: config, API через inject, database, lifecycle — без мережевої БД
 npm run test:backend:smoke  # збирає dist і запускає скомпільований API як процес
-npm run check:local         # secrets + node:test unit + typecheck + lint + test:backend + smoke + agent + frontend + збірки
+npm run check:local         # secrets + node:test unit + typecheck + lint + test:backend + smoke + agent + frontend + installer + збірки
 ```
 
 `check:local` не запускає production-connected тести (`test:integration`, `test:backend:db`). Старий `npm run check` не змінено.

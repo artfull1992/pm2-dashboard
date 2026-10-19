@@ -94,7 +94,7 @@ Central API забезпечує RBAC; метрики застосунків (PM
 
 Після MVP, успішних тестів і стабілізації production окремо розглянути Docker для API/Agents за новим завданням. Зараз не створювати Dockerfile/Compose, контейнерні залежності чи контейнери. PostgreSQL і Nginx залишаються на хості; їх перенесення не погоджено.
 
-Деплой і невизначені параметри — [DEPLOYMENT](DEPLOYMENT.md).
+Деплой і невизначені параметри — [DEPLOYMENT](DEPLOYMENT.md); первинне встановлення інсталяторами (`installer/`, ADR-027) — [INSTALLATION](INSTALLATION.md).
 
 ## PM2 inventory (Task 008, ADR-016)
 
