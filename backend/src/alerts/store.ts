@@ -134,6 +134,21 @@ async function cancelUnannounced(q: QueryClient | Database): Promise<number> {
   return r.rowCount ?? 0;
 }
 
+/** A reminder ("still ongoing") of an incident that is no longer firing: its future attempts are obsolete. */
+const OBSOLETE_REMINDER = `o.kind = 'reminder' AND EXISTS (SELECT 1 FROM alert_incidents r WHERE r.id = o.incident_id AND r.status = 'resolved')`;
+
+/**
+ * Reminders of resolved incidents never start another attempt: queued ones and ones whose lease expired are cancelled
+ * (`superseded`). A reminder still leased by a running delivery finishes that one attempt (its HTTP request may already
+ * be out and cannot be recalled); finish() then cancels it instead of re-queueing. Idempotent.
+ */
+async function cancelObsoleteReminders(q: QueryClient | Database): Promise<number> {
+  const r = await q.query(
+    `UPDATE alert_outbox o SET status = 'cancelled', finished_at = now(), lease_until = NULL, last_error = 'superseded'
+      WHERE ${OBSOLETE_REMINDER} AND (o.status = 'queued' OR (o.status = 'sending' AND o.lease_until < now()))`);
+  return r.rowCount ?? 0;
+}
+
 /**
  * Takes retired rules out of service inside the evaluation transaction: open incidents are closed as "retired"
  * (no recovery message is queued), their pending notifications are cancelled and their condition state is dropped.
@@ -274,6 +289,7 @@ export function createPgAlertsStore(db: Database): AlertsStore {
 
     async claim(limit, generation) {
       await cancelRetiredOutbox(db);
+      await cancelObsoleteReminders(db);
       await cancelUnannounced(db);
       // Dependency, not just order: a recovery/reminder waits until its problem message (same generation) has ended as
       // sent/unknown AND no older item of the incident is queued/sending — whatever backoff or lease that item is in.
@@ -283,6 +299,7 @@ export function createPgAlertsStore(db: Database): AlertsStore {
            SELECT o.id FROM alert_outbox o
             WHERE o.generation = $3 AND ((o.status = 'queued' AND o.next_attempt_at <= now()) OR (o.status = 'sending' AND o.lease_until < now()))
               AND NOT EXISTS (SELECT 1 FROM alert_incidents i WHERE i.id = o.incident_id AND i.rule = ANY($4::text[]))
+              AND NOT (${OBSOLETE_REMINDER})
               AND (o.kind = 'firing' OR (${ANNOUNCED}
                    AND NOT EXISTS (SELECT 1 FROM alert_outbox e WHERE e.incident_id = o.incident_id AND e.id < o.id AND e.status IN ('queued', 'sending'))))
             ORDER BY o.next_attempt_at, o.id LIMIT $1 FOR UPDATE OF o SKIP LOCKED)
@@ -304,8 +321,15 @@ export function createPgAlertsStore(db: Database): AlertsStore {
         return ((await db.query(`UPDATE alert_outbox SET status = 'sent', finished_at = now(), lease_until = NULL, last_error = NULL WHERE ${owned}`, [item.id, item.attempts])).rowCount ?? 0) > 0;
       }
       if (outcome.status === 'queued') {
+        // A retry of a reminder whose incident has meanwhile been resolved is not scheduled: the reminder ends here
+        // (cancelled/superseded) and no longer holds the recovery back. Decided in the same statement as the ownership.
         return ((await db.query(
-          `UPDATE alert_outbox SET status = 'queued', lease_until = NULL, last_error = $3, next_attempt_at = now() + make_interval(secs => $4) WHERE ${owned}`,
+          `UPDATE alert_outbox o SET
+                  status = CASE WHEN ${OBSOLETE_REMINDER} THEN 'cancelled' ELSE 'queued' END,
+                  finished_at = CASE WHEN ${OBSOLETE_REMINDER} THEN now() ELSE NULL END,
+                  last_error = CASE WHEN ${OBSOLETE_REMINDER} THEN 'superseded' ELSE $3 END,
+                  lease_until = NULL, next_attempt_at = now() + make_interval(secs => $4)
+            WHERE o.id = $1::bigint AND o.status = 'sending' AND o.attempts = $2`,
           [item.id, item.attempts, outcome.code, outcome.delaySeconds])).rowCount ?? 0) > 0;
       }
       return ((await db.query(`UPDATE alert_outbox SET status = $3, finished_at = now(), lease_until = NULL, last_error = $4 WHERE ${owned}`,

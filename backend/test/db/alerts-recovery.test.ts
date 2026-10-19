@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { seal } from '../../src/alerts/secret.js';
 import type { EvaluationConfig } from '../../src/alerts/settings.js';
 import { createPgSettingsStore } from '../../src/alerts/settings-store.js';
+import { AlertsEngine } from '../../src/alerts/engine.js';
 import { createPgAlertsStore } from '../../src/alerts/store.js';
 import { ALERTS_DEFAULTS, type DbConfig } from '../../src/config.js';
 import { createDatabase, createPool, type Database } from '../../src/database.js';
@@ -52,9 +53,9 @@ async function setup(serverCount = 1) {
     await sql("INSERT INTO server_heartbeats (server_id, received_at, snapshot) VALUES ($1, now() - interval '10 minutes', $2::jsonb)", [id, JSON.stringify(validSnapshot())]);
     serverIds.push(id);
   }
-  const cfg = (generation: number, deliveryEnabled = true): EvaluationConfig => {
+  const cfg = (generation: number, deliveryEnabled = true, reminderSeconds = 0): EvaluationConfig => {
     const d = ALERTS_DEFAULTS.defaults;
-    return { thresholds: d.thresholds, cooldownSeconds: 0, reminderSeconds: 0, queueMax: d.queueMax, deliveryEnabled, generation, rulesRevision: 1 };
+    return { thresholds: d.thresholds, cooldownSeconds: 0, reminderSeconds, queueMax: d.queueMax, deliveryEnabled, generation, rulesRevision: 1 };
   };
   const alerts = createPgAlertsStore(db);
   const kinds = async () => (await sql('SELECT kind, status, last_error FROM alert_outbox ORDER BY id')).rows as { kind: string; status: string; last_error: string | null }[];
@@ -237,5 +238,113 @@ describe('generation scope: a recovery only follows a problem announced to the s
     await t.sql("UPDATE alert_outbox SET status = 'sent', finished_at = now(), lease_until = NULL WHERE generation = 2");
     expect(await t.recover(2)).toMatchObject({ resolved: 1, enqueued: 1 });
     expect(await t.claimed(2)).toEqual(['resolved:0']);
+  });
+});
+
+// Review 2026-10-19 (second, P2): a reminder ("still ongoing") of an incident that has been resolved never starts a new
+// delivery attempt — not after a retryable result, not after an expired lease — and never holds the recovery back by its
+// retries. The attempt already in flight is not recalled (its HTTP request may be out); only future attempts stop.
+describe('reminder of a resolved incident: no further attempts', () => {
+  /** Problem sent, then a due reminder of the same generation queued (server still offline). */
+  async function withReminder(servers = 1) {
+    const t = await setup(servers);
+    await t.sql("UPDATE alert_outbox SET status = 'sent', finished_at = now(), created_at = now() - interval '2 hours'");
+    expect(await t.alerts.evaluateOnce(t.cfg(1, true, 60))).toMatchObject({ enqueued: servers });
+    return t;
+  }
+  const claimOne = async (t: Awaited<ReturnType<typeof withReminder>>, kind: string) => {
+    const items = await t.alerts.claim(5, 1);
+    const found = items.find((i) => i.kind === kind);
+    if (!found) throw new Error(`no ${kind} claimed`);
+    return found;
+  };
+
+  it.each([0, 600])('in flight during the resolve, then a retryable result (delay %i s): cancelled, the recovery is free at once', async (delaySeconds) => {
+    const t = await withReminder();
+    const reminder = await claimOne(t, 'reminder');
+    expect(await t.recover(1)).toMatchObject({ resolved: 1, enqueued: 1 });
+    expect(await t.claimed()).toEqual([]); // the current attempt is still in flight: the recovery waits for it only
+    expect(await t.alerts.finish(reminder, { status: 'queued', code: 'http_500', delaySeconds })).toBe(true);
+    expect(await t.row('reminder')).toMatchObject({ status: 'cancelled', last_error: 'superseded' });
+    expect(await t.claimed()).toEqual(['resolved:0']);
+    expect(await t.claimed()).toEqual([]);
+  });
+
+  it('in flight during the resolve, lease expired: not reclaimed; cancelled; a late finish does not revive it', async () => {
+    const t = await withReminder();
+    const reminder = await claimOne(t, 'reminder');
+    expect(await t.recover(1)).toMatchObject({ enqueued: 1 });
+    await t.sql("UPDATE alert_outbox SET lease_until = now() - interval '1 second' WHERE kind = 'reminder'");
+    expect(await t.claimed()).toEqual(['resolved:0']);
+    expect(await t.row('reminder')).toMatchObject({ status: 'cancelled', last_error: 'superseded' });
+    for (const outcome of [{ status: 'queued' as const, code: 'http_500', delaySeconds: 0 }, { status: 'sent' as const }]) {
+      expect(await t.alerts.finish(reminder, outcome)).toBe(false); // ownership: the claim no longer owns it
+    }
+    expect(await t.row('reminder')).toMatchObject({ status: 'cancelled' });
+    expect(await t.claimed()).toEqual([]);
+  });
+
+  it.each([
+    ['sent', { status: 'sent' as const }],
+    ['unknown (last attempt)', { status: 'unknown' as const, code: 'timeout' }],
+    ['failed', { status: 'failed' as const, code: 'channel_not_found' }],
+  ])('in flight during the resolve, final result %s: recorded as is (the attempt happened), the recovery follows', async (_n, outcome) => {
+    const t = await withReminder();
+    const reminder = await claimOne(t, 'reminder');
+    expect(await t.recover(1)).toMatchObject({ enqueued: 1 });
+    expect(await t.alerts.finish(reminder, outcome)).toBe(true);
+    expect(await t.row('reminder')).toMatchObject({ status: outcome.status });
+    expect(await t.claimed()).toEqual(['resolved:0']);
+  });
+
+  it('controlled order: retry recorded BEFORE the resolve → the resolve cancels the queued reminder; reclaim never happens', async () => {
+    const t = await withReminder();
+    const reminder = await claimOne(t, 'reminder');
+    expect(await t.alerts.finish(reminder, { status: 'queued', code: 'http_500', delaySeconds: 0 })).toBe(true);
+    expect(await t.row('reminder')).toMatchObject({ status: 'queued' });
+    expect(await t.recover(1)).toMatchObject({ enqueued: 1 });
+    expect(await t.row('reminder')).toMatchObject({ status: 'cancelled', last_error: 'superseded' });
+    expect(await t.claimed()).toEqual(['resolved:0']);
+  });
+
+  it('controlled order: a queued reminder whose incident was resolved behind the cleanup (e.g. by an older release) is cancelled by claim', async () => {
+    const t = await withReminder();
+    await t.sql("UPDATE alert_incidents SET status = 'resolved', resolution = 'recovered', resolved_at = now()");
+    expect(await t.claimed()).toEqual([]);
+    expect(await t.row('reminder')).toMatchObject({ status: 'cancelled', last_error: 'superseded' });
+  });
+
+  it('a reminder of an ACTIVE incident is delivered and retried as usual; another incident is never blocked', async () => {
+    const t = await withReminder(2);
+    const first = await t.alerts.claim(5, 1);
+    expect(first.map((i) => i.kind).sort()).toEqual(['reminder', 'reminder']);
+    // Incident 0 recovers while its reminder is in flight; incident 1 stays active.
+    expect(await t.recover(1)).toMatchObject({ resolved: 1, enqueued: 1 });
+    for (const i of first) expect(await t.alerts.finish(i, { status: 'queued', code: 'http_500', delaySeconds: 0 })).toBe(true);
+    expect(await t.row('reminder', t.serverIds[0])).toMatchObject({ status: 'cancelled', last_error: 'superseded' });
+    expect(await t.row('reminder', t.serverIds[1])).toMatchObject({ status: 'queued', last_error: 'http_500' });
+    expect((await t.claimed()).sort()).toEqual(['reminder:1', 'resolved:0']);
+  });
+
+  it('worker: a reminder answered 500 while the incident resolves → no second reminder request; the recovery is sent next', async () => {
+    const t = await withReminder();
+    const texts: string[] = [];
+    const fetchImpl = (async (_u: unknown, init?: RequestInit) => {
+      const text = (JSON.parse(init?.body as string) as { text: string }).text;
+      texts.push(text.split('\n')[0] ?? '');
+      if (text.includes('Досі триває')) { await t.recover(1); return new Response('', { status: 500 }); }
+      return new Response('ok');
+    }) as unknown as typeof fetch;
+    const webhook = WEBHOOK(1);
+    const rt = { load: async () => ({ settings: { ...(await t.settings.getSettings()), deliveryEnabled: true, maxAttempts: 6 }, integration: { generation: 1, state: 'configured' as const, error: null, webhook } }) };
+    const engine = new AlertsEngine(t.alerts, rt, null, { info: () => undefined, warn: () => undefined, error: () => undefined }, { fetchImpl, sleep: () => Promise.resolve() });
+    await engine.deliverNow();
+    await engine.deliverNow();
+    await engine.deliverNow();
+    expect(texts).toHaveLength(2);
+    expect(texts[0]).toMatch(/Досі триває/);
+    expect(texts[1]).toMatch(/Відновлено/);
+    expect(await t.row('reminder')).toMatchObject({ status: 'cancelled', last_error: 'superseded' });
+    expect(await t.row('resolved')).toMatchObject({ status: 'sent' });
   });
 });
