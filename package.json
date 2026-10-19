@@ -20,9 +20,9 @@
     "test:backend": "vitest run --config backend/vitest.config.ts",
     "test:backend:smoke": "npm run backend:build && BACKEND_TEST_SUITE=smoke vitest run --config backend/vitest.config.ts",
     "test:backend:db": "BACKEND_TEST_SUITE=db vitest run --config backend/vitest.config.ts",
-    "lint": "eslint backend frontend e2e agent",
-    "typecheck": "tsc -p backend/tsconfig.json && tsc -p frontend/tsconfig.json && tsc -p e2e/tsconfig.json && tsc -p agent/tsconfig.json",
-    "check:local": "npm run check:secrets && npm test && npm run typecheck && npm run lint && npm run test:backend && npm run test:backend:smoke && npm run test:agent && npm run agent:build && npm run test:frontend && npm run frontend:build",
+    "lint": "eslint backend frontend e2e agent installer",
+    "typecheck": "tsc -p backend/tsconfig.json && tsc -p frontend/tsconfig.json && tsc -p e2e/tsconfig.json && tsc -p agent/tsconfig.json && tsc -p installer/tsconfig.json",
+    "check:local": "npm run check:secrets && npm test && npm run typecheck && npm run lint && npm run test:backend && npm run test:backend:smoke && npm run test:agent && npm run agent:build && npm run test:frontend && npm run frontend:build && npm run test:installer && npm run installer:build",
     "db:migrate:status": "node backend/dist/migrate.js status",
     "db:migrate:up": "node backend/dist/migrate.js up",
     "test-db:setup": "node scripts/setup-test-db.js",
@@ -34,6 +34,8 @@
     "test:e2e:pm2": "npm run backend:build && npm run agent:build && npm run frontend:build && NC_E2E_REAL_PM2=1 playwright test -c e2e/playwright.config.ts control.spec.ts",
     "agent:build": "rm -rf agent/dist && tsc -p agent/tsconfig.build.json",
     "test:agent": "vitest run --config agent/vitest.config.ts",
+    "installer:build": "rm -rf installer/dist && tsc -p installer/tsconfig.build.json",
+    "test:installer": "vitest run --config installer/vitest.config.ts",
     "test:agent:pm2": "NC_TEST_REAL_PM2=1 vitest run --config agent/vitest.config.ts test/pm2-real.test.ts test/pm2-control-real.test.ts"
   },
   "dependencies": {

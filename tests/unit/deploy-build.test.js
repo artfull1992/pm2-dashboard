@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { AGENT_ARTIFACT_PATHS, ARTIFACT_PATHS, assertBundleClean, resolveDeployableRevision, stageArtifact } from '../../scripts/deploy/build-release.js';
+import { AGENT_ARTIFACT_PATHS, ARTIFACT_PATHS, assertBundleClean, resolveDeployableRevision, stageArtifact, stageServerBundle } from '../../scripts/deploy/build-release.js';
 import { listFiles } from '../../scripts/deploy/lib/manifest.js';
 
 const SHA = 'c'.repeat(40);
@@ -52,6 +52,8 @@ test('stageArtifact copies only runtime files: no sources, tests, maps, .env or 
     'deploy/nginx/site.conf': '', 'frontend/dist/index.html': '<html>', 'frontend/dist/assets/index-abc.js': '',
     'frontend/dist/assets/index-abc.js.map': '', 'frontend/src/main.tsx': '', 'frontend/test/app.test.tsx': '', 'e2e/tests/auth.spec.ts': '',
     'scripts/deploy/lib/manifest.js': '', 'scripts/setup-postgres.js': '', 'node_modules/pg/index.js': '',
+    'installer/dist/server.js': '', 'installer/dist/agent.js': '', 'installer/dist/server.js.map': '', 'installer/package.json': '{}',
+    'installer/src/server.ts': '', 'installer/test/server.test.ts': '',
   };
   for (const [file, content] of Object.entries(files)) {
     mkdirSync(join(src, file, '..'), { recursive: true });
@@ -65,6 +67,9 @@ test('stageArtifact copies only runtime files: no sources, tests, maps, .env or 
     'deploy/systemd/node-control-api.service',
     'frontend/dist/assets/index-abc.js',
     'frontend/dist/index.html',
+    'installer/dist/agent.js',
+    'installer/dist/server.js',
+    'installer/package.json',
     'package-lock.json',
     'package.json',
     'scripts/deploy/lib/manifest.js',
@@ -120,6 +125,7 @@ test('agent artifact contains only the compiled agent, its package.json, unit an
     'deploy/systemd/node-control-pm2-exporter@.service': '', 'deploy/systemd/node-control-pm2-exporter@.timer': '',
     'deploy/systemd/node-control-pm2-broker@.service': '',
     'scripts/deploy/server-release.js': '', 'scripts/deploy/migrate-paths.js': '', 'scripts/deploy/lib/manifest.js': '', 'backend/dist/main.js': '', 'frontend/dist/index.html': '',
+    'installer/dist/agent.js': '', 'installer/package.json': '{}', 'installer/src/agent.ts': '',
   };
   for (const [file, content] of Object.entries(files)) {
     mkdirSync(join(src, file, '..'), { recursive: true });
@@ -133,8 +139,22 @@ test('agent artifact contains only the compiled agent, its package.json, unit an
     'deploy/systemd/node-control-pm2-broker@.service',
     'deploy/systemd/node-control-pm2-exporter@.service',
     'deploy/systemd/node-control-pm2-exporter@.timer',
+    'installer/dist/agent.js',
+    'installer/package.json',
     'scripts/deploy/lib/manifest.js',
     'scripts/deploy/migrate-paths.js',
     'scripts/deploy/server-release.js',
   ]);
+});
+
+test('server-bundle: release tooling at the top, installers in install/ with their package.json (ESM)', () => {
+  const stage = mkdtempSync(join(tmpdir(), 'nc-stage-'));
+  const out = mkdtempSync(join(tmpdir(), 'nc-bundle-'));
+  dirs.push(stage, out);
+  for (const file of ['scripts/deploy/server-release.js', 'scripts/deploy/lib/manifest.js', 'installer/dist/server.js', 'installer/dist/agent.js', 'installer/package.json']) {
+    mkdirSync(join(stage, file, '..'), { recursive: true });
+    writeFileSync(join(stage, file), file.endsWith('package.json') ? '{"type":"module"}' : '');
+  }
+  stageServerBundle(stage, join(out, 'server-bundle'));
+  assert.deepEqual(listFiles(join(out, 'server-bundle')), ['install/agent.js', 'install/package.json', 'install/server.js', 'lib/manifest.js', 'server-release.js']);
 });

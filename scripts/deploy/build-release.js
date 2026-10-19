@@ -2,7 +2,7 @@
 // Builds a release artifact from a committed, pushed revision — never from the working directory.
 //   node scripts/deploy/build-release.js [--revision HEAD] [--out <dir>] [--remote-branch origin/main]
 // Output: <out>/node-control-api-<sha>.tar.gz (API + frontend/dist + systemd unit), .sha256,
-// and server-bundle/ (server-release.js, migrate-paths.js + lib) for transfer. Backend and UI are activated together via `current`.
+// and server-bundle/ (server-release.js, migrate-paths.js + lib, install/ = host installers) for transfer. Backend and UI are activated together via `current`.
 
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -23,6 +23,8 @@ export const ARTIFACT_PATHS = Object.freeze([
   'scripts/deploy/server-release.js',
   'scripts/deploy/migrate-paths.js',
   'scripts/deploy/lib',
+  'installer/dist',
+  'installer/package.json',
 ]);
 
 export function git(args, cwd) {
@@ -42,6 +44,8 @@ export const AGENT_ARTIFACT_PATHS = Object.freeze([
   'scripts/deploy/server-release.js',
   'scripts/deploy/migrate-paths.js',
   'scripts/deploy/lib',
+  'installer/dist',
+  'installer/package.json',
 ]);
 
 // Server-side names and secret shapes that must never appear in the public browser bundle.
@@ -96,6 +100,13 @@ export function stageArtifact(sourceRoot, stageDir, paths = ARTIFACT_PATHS) {
   }
 }
 
+/** server-bundle/ = scripts/deploy (release tooling) + install/ (host installers, ESM: their package.json comes along). */
+export function stageServerBundle(stage, bundleDir) {
+  cpSync(join(stage, 'scripts', 'deploy'), bundleDir, { recursive: true });
+  cpSync(join(stage, 'installer', 'dist'), join(bundleDir, 'install'), { recursive: true });
+  cpSync(join(stage, 'installer', 'package.json'), join(bundleDir, 'install', 'package.json'));
+}
+
 function run(command, args, cwd, env = process.env) {
   const result = spawnSync(command, args, { cwd, stdio: 'inherit', env });
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed`);
@@ -116,6 +127,7 @@ export function buildRelease({ revision, out, remoteBranch, cwd = process.cwd() 
     run('npm', ['run', 'backend:build'], work);
     run('npm', ['run', 'frontend:build'], work);
     run('npm', ['run', 'agent:build'], work);
+    run('npm', ['run', 'installer:build'], work);
     assertBundleClean(join(work, 'frontend', 'dist'));
 
     const stage = join(outDir, 'stage');
@@ -128,7 +140,7 @@ export function buildRelease({ revision, out, remoteBranch, cwd = process.cwd() 
     run('tar', ['-czf', artifact, '-C', stage, ...readdirSync(stage)], outDir, { ...process.env, COPYFILE_DISABLE: '1' });
     const digest = sha256File(artifact);
     writeFileSync(`${artifact}.sha256`, `${digest}  node-control-api-${sha}.tar.gz\n`);
-    cpSync(join(stage, 'scripts', 'deploy'), join(outDir, 'server-bundle'), { recursive: true });
+    stageServerBundle(stage, join(outDir, 'server-bundle'));
 
     const agentStage = join(outDir, 'agent-stage');
     stageArtifact(work, agentStage, AGENT_ARTIFACT_PATHS);

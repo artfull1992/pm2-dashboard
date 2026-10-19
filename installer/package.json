@@ -1,0 +1,8 @@
+{
+  "name": "node-control-installer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node Control host installers (Central API, Agent): preflight, plan and resumable apply on top of the existing release tooling; Node.js built-ins only",
+  "type": "module",
+  "engines": { "node": ">=22" }
+}
