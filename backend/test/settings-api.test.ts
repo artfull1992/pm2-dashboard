@@ -237,6 +237,8 @@ describe('test message', () => {
     // No connection at all (refused / DNS): certainly not sent → failed. A dropped connection may have delivered it → unknown.
     ['network error before sending', () => Promise.reject(new TypeError('fetch failed', { cause: Object.assign(new Error('x'), { code: 'ECONNREFUSED' }) })), 'failed', 'network'],
     ['connection lost (maybe after sending)', () => Promise.reject(new TypeError('fetch failed', { cause: Object.assign(new Error('x'), { code: 'UND_ERR_SOCKET' }) })), 'unknown', 'connection_lost'],
+    // Review 2026-10-19: 200 arrived, the body ("ok") was cut — maybe accepted → unknown, not failed, not retried.
+    ['200 with a cut body', () => Promise.resolve(new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('o')); c.error(new Error('socket closed')); } }), { status: 200 })), 'unknown', 'connection_lost'],
   ])('%s → %s with a safe code, never retried', async (_n, reply, outcome, code) => {
     let calls = 0;
     const { app: a, s } = await configured(() => { calls += 1; return reply(); });

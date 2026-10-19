@@ -75,8 +75,13 @@ export type SendOutcome =
 
 const MAX_RESPONSE_BYTES = 1024;
 
-async function readBounded(res: Response): Promise<string> {
-  if (!res.body) return '';
+/**
+ * Reads at most MAX_RESPONSE_BYTES. `complete: false` = the body could not be read to its end (connection lost,
+ * timeout or abort after the headers): the response is NOT a definite answer. An oversized body is read only up to
+ * the bound and then cancelled — that is a complete (unexpected) answer, not a failure.
+ */
+async function readBounded(res: Response): Promise<{ complete: boolean; text: string }> {
+  if (!res.body) return { complete: true, text: '' };
   const reader = res.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -86,13 +91,14 @@ async function readBounded(res: Response): Promise<string> {
       if (chunk.done) break;
       const value = chunk.value;
       size += value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) { await reader.cancel(); break; }
+      if (size > MAX_RESPONSE_BYTES) { await reader.cancel().catch(() => undefined); break; }
       chunks.push(value);
     }
   } catch {
-    return '';
+    await reader.cancel().catch(() => undefined);
+    return { complete: false, text: '' };
   }
-  return Buffer.concat(chunks).toString('utf8').slice(0, MAX_RESPONSE_BYTES);
+  return { complete: true, text: Buffer.concat(chunks).toString('utf8').slice(0, MAX_RESPONSE_BYTES) };
 }
 
 /**
@@ -129,13 +135,21 @@ export async function sendToSlack(webhookUrl: string, text: string, opts: { time
     const cause = error instanceof Error ? error.cause : undefined;
     return certainlyNotSent(cause) ? { kind: 'retry', code: 'network', retryAfterSeconds: null } : { kind: 'unknown', code: 'connection_lost' };
   }
-  const body = (await readBounded(res)).trim();
-  if (res.status === 200 && body === 'ok') return { kind: 'sent' };
+  const read = await readBounded(res);
+  const body = read.text.trim();
   if (res.status === 429) {
     const ra = Number(res.headers.get('retry-after'));
     return { kind: 'retry', code: 'rate_limited', retryAfterSeconds: Number.isFinite(ra) && ra >= 0 ? Math.min(ra, 3600) : null };
   }
   if (res.status >= 500) return { kind: 'retry', code: `http_${String(res.status)}`, retryAfterSeconds: null };
+  // The status alone answers 429/5xx (above) and a 4xx rejection (below). A 2xx/3xx whose body was cut is not a
+  // definite answer: Slack may have accepted the message ("ok" never fully arrived) → unknown, never sent/failed.
+  if (!read.complete && res.status < 400) {
+    if (opts.signal.aborted) return { kind: 'unknown', code: 'aborted' };
+    if (timeout.aborted) return { kind: 'unknown', code: 'timeout' };
+    return { kind: 'unknown', code: 'connection_lost' };
+  }
+  if (res.status === 200 && body === 'ok') return { kind: 'sent' };
   const code = /^[a-z_]{1,40}$/.test(body) && PERMANENT_CODES.has(body) ? body : res.status >= 200 && res.status < 300 ? 'unexpected_response' : `http_${String(res.status)}`;
   return { kind: 'permanent', code };
 }

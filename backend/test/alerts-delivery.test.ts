@@ -148,6 +148,18 @@ describe('delivery loop', () => {
     expect(engine.stats().lastDeliveryAt).not.toBeNull();
   }, 15_000);
 
+  // Review 2026-10-19: a cut response body is "unknown" — the worker retries it under the bounded policy (at-least-once,
+  // a duplicate is possible) and records "unknown" at the last attempt; never "failed", never "sent".
+  it('200 with a cut body: unknown → re-queued with backoff, at max attempts → unknown', async () => {
+    const store = new FakeStore();
+    store.items = [item('1'), item('2', 6)];
+    const cut = () => Promise.resolve(new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('o')); c.error(new Error('socket closed')); } }), { status: 200 }));
+    const engine = new AlertsEngine(store, source(() => runtime({ maxAttempts: 6 })), null, quiet, { fetchImpl: cut as unknown as typeof fetch, sleep: () => Promise.resolve() });
+    await engine.deliverNow();
+    expect(store.finished.map((f) => [f.id, f.status, f.code])).toEqual([['1', 'queued', 'connection_lost'], ['2', 'unknown', 'connection_lost']]);
+    expect(store.finished[0]?.delaySeconds).toBeGreaterThanOrEqual(24);
+  });
+
   it('backoff: exponential with jitter, capped at 30 min, never below Retry-After', () => {
     expect(backoffSeconds(1, null, () => 0.5)).toBe(30);
     expect(backoffSeconds(3, null, () => 0.5)).toBe(120);
