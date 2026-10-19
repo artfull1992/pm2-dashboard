@@ -57,7 +57,8 @@ export type Transition =
 export interface EvaluationResult { upserts: ConditionRow[]; deletes: string[]; transitions: Transition[] }
 
 export const PROBLEM_PROCESS_STATUSES = ['stopped', 'errored'] as const;
-const MAX_SAMPLES = 64;
+/** Restart points kept per process (stored as jsonb, ≈ 50 bytes each): the bound for any window length. */
+export const MAX_SAMPLES = 64;
 
 export const processKeyOf = (p: Pick<ProcessObs, 'source' | 'pmId' | 'name'>) => `${p.source}:${String(p.pmId)}:${p.name}`;
 export const conditionKey = (rule: Rule, serverId: string, processKey: string | null = null) => (processKey === null ? `${rule}:${serverId}` : `${rule}:${serverId}:${processKey}`);
@@ -113,6 +114,28 @@ function step(prev: ConditionRow | undefined, c: StepContext, out: Transition[])
   }
 }
 
+/**
+ * Bounds the restart points to MAX_SAMPLES without losing the time span: while there are too many, the interior point
+ * whose neighbours are closest together is dropped (the oldest = anchor and the newest are always kept). The counter
+ * never decreases within one baseline, so a dropped point only makes the anchor of a later window start up to one
+ * merged gap older — at most ≈ 2·span/(MAX_SAMPLES − 1), about 3 % of the window: restarts up to that much before the
+ * window may still be counted, and a recovery may come up to that much later. Short windows (≤ MAX_SAMPLES samples)
+ * are never thinned: exact.
+ */
+function thin(points: Sample[]): Sample[] {
+  const kept = [...points];
+  while (kept.length > MAX_SAMPLES) {
+    let drop = 1;
+    let best = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < kept.length - 1; i++) {
+      const gap = (kept[i + 1]?.t ?? 0) - (kept[i - 1]?.t ?? 0);
+      if (gap < best) { best = gap; drop = i; }
+    }
+    kept.splice(drop, 1);
+  }
+  return kept;
+}
+
 /** Restart samples: baseline, identity/counter reset and the delta inside the window (never the cumulative count). */
 function restartEvidence(prev: ConditionRow | undefined, p: ProcessObs, at: number, t: AlertThresholds): { evidence: Evidence; samples: Sample[]; detail: Detail } {
   if (p.restarts === null) return { evidence: 'skip', samples: prev?.samples ?? [], detail: {} };
@@ -125,10 +148,11 @@ function restartEvidence(prev: ConditionRow | undefined, p: ProcessObs, at: numb
   }
   const windowMs = t.restartsWindowSeconds * 1000;
   const all = [...(prev?.samples ?? []), current];
-  // Keep the samples inside the window plus the newest one before it (the anchor for the window start).
+  // Keep the samples inside the window plus the newest one before it (the anchor for the window start), thinned to
+  // MAX_SAMPLES points over the WHOLE window (never just the newest ones: the anchor must survive).
   let firstInside = all.findIndex((s) => s.t >= at - windowMs);
   if (firstInside < 0) firstInside = all.length - 1;
-  const kept = all.slice(Math.max(0, firstInside - 1)).slice(-MAX_SAMPLES);
+  const kept = thin(all.slice(Math.max(0, firstInside - 1)));
   const anchor = kept[0] ?? current;
   const delta = current.r - anchor.r;
   const spanSeconds = Math.round((current.t - anchor.t) / 1000);
