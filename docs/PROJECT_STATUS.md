@@ -1,5 +1,31 @@
 # Поточний стан проєкту
 
+## Сповіщення: два залишкові дефекти за повторним review (2026-10-19) — готово до повторного review Codex
+
+Статус: **готово до повторного review Codex** (APPROVED не виставлявся). База: `daa6337`, гілка `main`. Production не змінювався; справжні Slack-повідомлення не надсилались (синтетичні потоки, mock-транспорт, синтетичні webhook). Міграцій, залежностей, змін frontend, Agent/broker і алгоритму рестартів немає.
+
+| # | Причина | Виправлення | Файли | Regression (старий код → новий) |
+|---|---|---|---|---|
+| P2 oversized | `readBounded` після перевищення 1 KiB повертав `complete` з префіксом, тож `ok` + понад 1024 байт давало `sent` | три результати читання: complete, oversized, interrupted; `sent` — лише повне 200 `ok`; oversized 2xx → `failed`/`unexpected_response`, 4xx → `http_<status>` (код Slack із завеликого тіла не довіряється); interrupted 2xx → `unknown`; 429/5xx — за статусом | `slack.ts` | transport (окремий chunk `ok` + 1025, один chunk, побайтово, рівно 1024 / 1025, повні `ok`, обрив після `o`/`ok`, 429/502/404), worker (`failed`, не `sent`), API тест (`failed`, 1 виклик): 4 падали → проходять |
+| P2 reminder | при resolve скасовувались лише queued reminders; reminder у польоті після retry повертався в чергу й видавався знову, а recovery чекав його повторів | `claim` не видає reminder закритого інциденту й скасовує queued і протерміновані (`superseded`); `finish` з повтором для такого reminder у тому самому операторі, що й перевірка володіння, робить `cancelled`/`superseded` | `store.ts` | real-DB через справжні claim/finish: retry 0 і 600 с, протермінований lease + запізнілий finish, cleanup без участі evaluation, активний reminder і незалежний інцидент, worker з реальним store: 6 падали → проходять; фінальні sent/unknown/failed і «retry до resolve» — проходили й раніше (закріплення) |
+
+**Семантика.** Oversized — повна, але неочікувана відповідь, а не мережевий збій. Reminder після resolve: нова спроба не починається, але поточна HTTP-спроба не відкликається — її фінальний результат записується як є, і recovery чекає лише на неї (≤ lease чи HTTP-тайм-аут). Межа гарантії: claim, що почався після коміту resolve, reminder закритого інциденту не видає; claim, конкурентний із комітом, може почати одну спробу, яка вважається поточною. Коди `cancelled` для діагностики — у DEPLOYMENT.
+
+**Сумісність і rollback.** Нових статусів чи колонок немає; `cancelled`/`superseded` існували раніше. Попередній реліз (`4ca012d` / production `b8959a7`) читає ці записи як звичайні термінальні. Після rollback повертається поведінка з дефектами: `ok` + oversized → `sent`; reminder у польоті після resolve може повторюватись.
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| `npm run check:local` | перший прогін **exit 1**: lint (`no-base-to-string`) у новому real-DB тесті, виправлено; повтор exit 0: node:test 129/129, backend 500/500, smoke 10/10, agent 165/165 (+3 opt-in), frontend 247/247, typecheck, lint, збірки, secrets |
+| `npm run test:backend:db` (ізольована тестова БД, тимчасові схеми) | 129/129; після lint-правки `alerts-recovery` окремо 28/28; залишкових схем `nc_test_*` — 0 |
+| `npx playwright test -c e2e/ui.config.ts` | 26/26 (frontend не змінювався; прогнано для повноти) |
+| `npm run test:e2e` (ізольований backend, включно з `alerts.spec`, без Slack) | 18/18 (+1 opt-in) |
+| `npm run test:integration` | не запускався: PostgreSQL на локальному `127.0.0.1:5432` відсутній (порт закритий) |
+| `git diff --check`, `check:secrets` | OK |
+
+**Деплой не виконувався.** План (після APPROVED): штатний versioned artifact `build-release.js` для фінальної revision → `sha256sum -c`, manifest → `prepare` → `migrate status` (pending=0) → `activate` → restart лише `node-control-api` → systemd active, live/ready 200, журнал без нових `error`/`fatal` і без секретів, черга в UI без помилок. Rollback: `server-release.js rollback` на `b8959a7` + restart `node-control-api`; БД не відкочується; обмеження — абзац вище.
+
+Ризики: recovery може затримуватись на одну поточну спробу reminder (≤ HTTP-тайм-аут, на практиці ≤ lease 60 с); конкурентна з евалюацією зміна того самого рядка outbox може дати serialization failure у REPEATABLE READ — evaluation повторюється наступним тактом (поведінка не нова).
+
 ## Повторний незалежний review Codex — Slack/alerts: CHANGES REQUIRED (2026-10-19)
 
 Перевірено `e74979c`, `1d36be0`, `58d32c6`, `4ca012d` від бази `bd62f64`; початкове дерево чисте. Попередні сценарії виправлено: backoff/lease більше не дають recovery обігнати firing, announced обмежено generation, обрив тіла після headers оброблено як unknown, довгі вікна рестартів зберігають span у bounded samples, неточність про повтор unknown уточнено. Перевірено документацію Code → Docs / Docs → Code, опис thinning, формату стану й обмежень rollback. Залишились два відтворені дефекти:
