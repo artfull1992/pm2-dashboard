@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, chownSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, type Stats, writeSync } from 'node:fs';
 import { createConnection } from 'node:net';
@@ -17,6 +17,18 @@ export interface RunOptions {
   interactive?: boolean;
   cwd?: string;
 }
+/** Bounded streaming read of a command's stdout: lines are handed over one by one, nothing else is kept. */
+export interface ScanOptions {
+  /** Deadline for the whole command; on expiry the child is killed (SIGKILL). */
+  timeoutMs: number;
+  /** stdout larger than this → the child is killed, result "limit". */
+  maxBytes: number;
+  /** Longer lines are skipped (never accumulated beyond this). */
+  maxLineChars: number;
+  onLine(line: string): void;
+}
+export type ScanResult = { status: 'exit'; code: number } | { status: 'timeout' } | { status: 'limit' } | { status: 'error' };
+
 export interface UserInfo { name: string; uid: number; gid: number; home: string; shell: string }
 export interface GroupInfo { name: string; gid: number; members: string[] }
 
@@ -34,6 +46,8 @@ export interface Host {
   /** One directory level; the parent must exist; fails if the path exists. */
   mkdir(path: string, owner: Owner): void;
   run(command: string, args: readonly string[], options?: RunOptions): RunResult;
+  /** Streams stdout line by line within ScanOptions limits (stderr is discarded — never captured or printed). */
+  scan(command: string, args: readonly string[], options: ScanOptions): Promise<ScanResult>;
   user(name: string): UserInfo | null;
   group(name: string): GroupInfo | null;
   /** Supplementary + primary group names of a user ([] if the user is missing). */
@@ -104,6 +118,56 @@ export const realHost: Host = {
     }
     const r = spawnSync(command, args, { encoding: 'utf8', cwd: options.cwd ?? '/', input: options.input ?? '', stdio: ['pipe', 'pipe', 'pipe'] });
     return { code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr };
+  },
+  scan(command, args, o) {
+    return new Promise<ScanResult>((resolve) => {
+      const child = spawn(command, args, { cwd: '/', stdio: ['ignore', 'pipe', 'ignore'] });
+      let bytes = 0;
+      let partial = '';
+      let skipping = false;
+      let settled = false;
+      const finish = (result: ScanResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const stop = (result: ScanResult) => {
+        child.stdout.destroy();
+        child.kill('SIGKILL');
+        finish(result);
+      };
+      const timer = setTimeout(() => { stop({ status: 'timeout' }); }, o.timeoutMs);
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => {
+        if (settled) return;
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > o.maxBytes) { stop({ status: 'limit' }); return; }
+        let start = 0;
+        for (;;) {
+          const nl = chunk.indexOf('\n', start);
+          if (nl < 0) {
+            if (!skipping) {
+              partial += chunk.slice(start);
+              if (partial.length > o.maxLineChars) { partial = ''; skipping = true; }
+            }
+            return;
+          }
+          if (!skipping) {
+            const text = partial + chunk.slice(start, nl);
+            if (text.length <= o.maxLineChars) o.onLine(text);
+          }
+          partial = '';
+          skipping = false;
+          start = nl + 1;
+        }
+      });
+      child.on('error', () => { finish({ status: 'error' }); });
+      child.on('close', (code) => {
+        if (!settled && !skipping && partial !== '') o.onLine(partial);
+        finish({ status: 'exit', code: code ?? 1 });
+      });
+    });
   },
   user(name) {
     const f = getent('passwd', name);

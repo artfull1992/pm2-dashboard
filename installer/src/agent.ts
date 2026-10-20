@@ -187,7 +187,6 @@ function allowlistStep(owner: string): Step {
   };
 }
 
-const lastLine = (text: string, msg: string) => text.split('\n').filter((l) => l.includes(`"msg":"${msg}"`)).at(-1) ?? null;
 const field = (line: string, name: string) => new RegExp(`"${name}":"([a-z_]+)"`).exec(line)?.[1] ?? null;
 
 /** InvocationID of the running Agent process (systemd: a new one for every start/restart); null if not running. */
@@ -197,10 +196,27 @@ function currentInvocation(host: Host): string | null {
   return r.code === 0 && /^[0-9a-zA-Z_-]{1,64}$/.test(id) ? id : null;
 }
 
-/** Journal of ONE Agent run only (by its InvocationID) — never records of earlier runs. null = journal not readable. */
-function journalOf(host: Host, invocation: string): string | null {
-  const r = host.run('journalctl', [`_SYSTEMD_INVOCATION_ID=${invocation}`, '-o', 'cat', '--no-pager']);
-  return r.code === 0 ? r.stdout : null;
+/** Bounds of one journal read (the Agent writes short JSON lines; its journal per run is normally kilobytes). */
+export const JOURNAL_LIMITS = Object.freeze({ timeoutMs: 10_000, maxBytes: 64 * 1024 * 1024, maxLineChars: 8 * 1024 });
+
+interface RunEvidence { heartbeat: string | null; inventory: { outcome: string | null; state: string | null } | null }
+
+/**
+ * The journal of ONE Agent run (by its InvocationID), streamed: only the outcome of the LAST heartbeat line and of the
+ * last inventory line are kept — never the raw text. Memory: one line (≤ maxLineChars) + two short values; time:
+ * timeoutMs, then the child is killed. No match → nulls (not "accepted"). An error/timeout/limit is reported as such.
+ */
+async function journalOf(host: Host, invocation: string): Promise<RunEvidence | 'error' | 'timeout' | 'limit'> {
+  const evidence: RunEvidence = { heartbeat: null, inventory: null };
+  const result = await host.scan('journalctl', [`_SYSTEMD_INVOCATION_ID=${invocation}`, '-o', 'cat', '--no-pager', '-q'], {
+    ...JOURNAL_LIMITS,
+    onLine(text) {
+      if (text.includes('"msg":"heartbeat"')) evidence.heartbeat = field(text, 'outcome');
+      else if (text.includes('"msg":"inventory"')) evidence.inventory = { outcome: field(text, 'outcome'), state: field(text, 'state') };
+    },
+  });
+  if (result.status === 'exit') return result.code === 0 ? evidence : 'error';
+  return result.status;
 }
 
 /**
@@ -218,17 +234,21 @@ export async function verifyAgent(ctx: Context, o: AgentOptions): Promise<boolea
   if (!active) return false;
   let invocation = currentInvocation(host);
   let outcome: string | null = null;
-  let log = '';
+  let evidence: RunEvidence = { heartbeat: null, inventory: null };
+  const failure: Record<string, string> = {
+    error: 'не вдалося прочитати журнал Agent (journalctl)',
+    timeout: `читання журналу Agent не завершилось за ${String(JOURNAL_LIMITS.timeoutMs / 1000)} с`,
+    limit: `журнал поточного запуску Agent більший за ${String(JOURNAL_LIMITS.maxBytes / 1024 / 1024)} MiB`,
+  };
   for (let i = 0; i < 15 && outcome === null; i++) {
     const now = currentInvocation(host);
     if (now === null) { out.error(`  ✗ Agent зупинився під час перевірки (journalctl -u ${AGENT.unit} -n 20 -o cat)`); return false; }
     if (now !== invocation) { out.line('  ! Agent перезапустився під час перевірки — чекаємо звіт нового запуску'); invocation = now; }
-    const text = journalOf(host, now);
-    if (text === null) { out.error(`  ✗ не вдалося прочитати журнал Agent (journalctl): зв'язок не підтверджено`); return false; }
+    const read = await journalOf(host, now);
+    if (typeof read === 'string') { out.error(`  ✗ ${failure[read] ?? read}: зв'язок не підтверджено (journalctl -u ${AGENT.unit} -n 20 -o cat)`); return false; }
     if (currentInvocation(host) !== now) continue; // the run changed while reading: its records do not count
-    log = text;
-    const line = lastLine(text, 'heartbeat');
-    outcome = line ? field(line, 'outcome') : null;
+    evidence = read;
+    outcome = read.heartbeat;
     if (outcome === null) await host.sleep(5000);
   }
   const advice: Record<string, string> = {
@@ -241,10 +261,10 @@ export async function verifyAgent(ctx: Context, o: AgentOptions): Promise<boolea
   else if (outcome === null) out.error(`  ✗ зв'язок Agent НЕ підтверджено: поточний запуск не звітував про heartbeat за 75 с (journalctl -u ${AGENT.unit} -n 20 -o cat)`);
   else out.error(`  ✗ зв'язок Agent НЕ підтверджено (${outcome}): ${advice[outcome] ?? `journalctl -u ${AGENT.unit} -n 20 -o cat`}`);
   if (o.pm2) {
-    const inv = lastLine(log, 'inventory');
+    const inv = evidence.inventory;
     const snapshot = host.stat(AGENT.snapshotFile);
     out.line(snapshot ? '  ✓ snapshot PM2 inventory створено exporter-ом' : `  ! snapshot ще не створено (journalctl -u node-control-pm2-exporter@${o.pm2.owner} -n 5 -o cat)`);
-    out.line(inv ? `  ${field(inv, 'outcome') === 'accepted' ? '✓' : '!'} inventory: ${field(inv, 'outcome') ?? '?'}, стан ${field(inv, 'state') ?? '?'}` : '  ! inventory поточного запуску ще не надсилався (перший звіт — протягом хвилини)');
+    out.line(inv ? `  ${inv.outcome === 'accepted' ? '✓' : '!'} inventory: ${inv.outcome ?? '?'}, стан ${inv.state ?? '?'}` : '  ! inventory поточного запуску ще не надсилався (перший звіт — протягом хвилини)');
   }
   return outcome === 'accepted';
 }
