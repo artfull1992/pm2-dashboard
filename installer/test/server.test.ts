@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SecretInput } from '../src/secrets.js';
 import { API, serverMain } from '../src/server.js';
-import { capture, FakeHost, REV } from './fake-host.js';
+import { capture, FakeHost, REV, UNIT_TEXT } from './fake-host.js';
 
 // Central API installer against an in-memory host (FakeHost): order of changes, owners/modes, preflight before any
 // change, plan without changes, conflicts, resumable apply after a failure, secrets never printed or put in argv.
@@ -187,14 +187,20 @@ describe('server installer: conflicts are never overwritten', () => {
     expect(h.changes).toEqual([]);
   });
 
-  it('a different unit file already installed: stop before activation, the file is untouched', async () => {
+  it('a different unit file already installed: stop BEFORE any change (compared with the unit inside the artifact)', async () => {
+    // Ubuntu run 2026-10-20: the conflict was found only at the unit step, after user, release, config and migrations.
     const h = host();
     h.file('/etc/systemd/system/node-control-api.service', '[Service]\nExecStart=/custom\n');
     const r = await run(h, ['apply', ...ARGS]);
     expect(r.code).toBe(1);
-    expect(r.all).toMatch(/відрізняється від unit у релізі/);
+    expect(r.all).toMatch(/node-control-api\.service відрізняється від unit в артефакті/);
+    expect(r.all).toMatch(/Зупинено до будь-яких змін/);
     expect(h.text('/etc/systemd/system/node-control-api.service')).toBe('[Service]\nExecStart=/custom\n');
-    expect(h.changes.some((c) => c.startsWith('activate'))).toBe(false);
+    expect(h.changes).toEqual([]);
+    // The same unit as in the artifact (an earlier, interrupted attempt) is fine.
+    const same = host();
+    same.file('/etc/systemd/system/node-control-api.service', UNIT_TEXT('node-control-api.service'));
+    expect((await run(same, ['apply', ...ARGS])).code).toBe(0);
   });
 
   it('a database that already holds a schema is an upgrade: no migration by the installer', async () => {

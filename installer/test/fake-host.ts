@@ -185,6 +185,11 @@ export class FakeHost implements Host {
       }
       case 'id': return ok(`${[...this.groups.values()].find((g) => g.gid === this.users.get(args[1] ?? '')?.gid)?.name ?? ''}\n`);
       case 'ss': return ok('');
+      case 'tar': { // tar -xzOf <artifact> deploy/systemd/<unit> → the unit as the release would contain it
+        if (args[0] !== '-xzOf' || !this.files.has(args[1] ?? '')) return { code: 2, stdout: '', stderr: 'tar: cannot open' };
+        const unit = basename(args[2] ?? '');
+        return RELEASE_UNITS.includes(unit) ? ok(UNIT_TEXT(unit)) : { code: 2, stdout: '', stderr: 'tar: not found in archive' };
+      }
       case 'systemd-analyze': return ok();
       case 'journalctl': return this.journalctl(args);
       case 'systemctl': {

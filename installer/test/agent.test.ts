@@ -195,6 +195,17 @@ describe('agent installer: PM2 inventory and control (explicit)', () => {
     expect(h.changes.filter((c) => c.startsWith('write /etc/node-control-agent/agent.env.bak-'))).toHaveLength(1);
   });
 
+  it('a foreign unit (agent or the units of the requested capabilities) stops BEFORE any change', async () => {
+    for (const unit of ['node-control-agent.service', 'node-control-pm2-exporter@.timer', 'node-control-pm2-broker@.service']) {
+      const h = host();
+      h.file(`/etc/systemd/system/${unit}`, '[Service]\nExecStart=/custom\n');
+      const r = await run(h, ['apply', ...BASE, ...PM2, '--enable-control']);
+      expect(r.code, unit).toBe(1);
+      expect(r.all).toMatch(/відрізняється від unit в артефакті/);
+      expect(h.changes, unit).toEqual([]);
+    }
+  });
+
   it('a different exporter config is a conflict (kept), not overwritten', async () => {
     const h = host();
     h.dir('/etc/node-control-pm2-exporter');
