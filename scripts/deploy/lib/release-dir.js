@@ -73,6 +73,27 @@ export function ownTree(dir, { uid = 0, gid = 0, lchown = lchownSync } = {}) {
 }
 
 /**
+ * Creates `dir` and every missing parent (like recursive mkdir, so a nested --base keeps working), each NEW level with
+ * exactly `mode` — mkdir applies the operator's umask (077 would make the release unreadable for the service users
+ * and Nginx). Existing ancestors (and symlink targets) are never changed. A non-directory in the path is refused.
+ */
+export function ensureDirTree(dir, mode = 0o755) {
+  const missing = [];
+  let current = dir;
+  while (!existsSync(current)) {
+    missing.unshift(current);
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  if (existsSync(current) && !statSync(current).isDirectory()) throw new Error(`${current} exists and is not a directory`);
+  for (const path of missing) {
+    mkdirSync(path, { mode });
+    chmodSync(path, mode);
+  }
+}
+
+/**
  * Verifies the artifact checksum, extracts into a staging dir, verifies the manifest, installs production
  * dependencies and only then renames staging → releases/<sha>. Any failure leaves no release directory behind.
  */
@@ -89,11 +110,7 @@ export function prepareRelease({ base, artifact, artifactSha256, revision, insta
     return { status: 'already-prepared', dir: target };
   }
 
-  // Modes are set explicitly: mkdir applies the operator's umask (077 would make the release unreadable for the
-  // service users and Nginx). Only directories created here are touched.
-  for (const dir of [base, releases]) {
-    if (!existsSync(dir)) { mkdirSync(dir, { mode: 0o755 }); chmodSync(dir, 0o755); }
-  }
+  ensureDirTree(releases);
   const staging = join(releases, `.staging-${revision}-${process.pid}`);
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { mode: 0o755 });
