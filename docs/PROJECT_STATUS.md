@@ -1,5 +1,15 @@
 # Поточний стан проєкту
 
+## Повторний незалежний review Codex — ADR-027: CHANGES REQUIRED (2026-10-20)
+
+Перевірено `b819cac` і `84814f7` від бази `0fb6501`, новий state, порядок intent/change/reload/restart/clear, verification Agent, account preflight, тести й документацію в обох напрямках. Початкове дерево чисте. Попередні три P2 закриті в перевірених сценаріях: pending дії переживають помилки, daemon-reload відновлюється, UID/GID 0 відхиляються до мутацій, записи попередніх invocation не підтверджують новий Agent. Документація описує state, відновлення та обмеження старого інсталятора. Залишилось нове зауваження:
+
+**P2 — читання всього журналу invocation переповнює буфер verification.** `installer/src/agent.ts:200–203` викликає journalctl без ліміту кількості/обсягу та без фільтра лише потрібних повідомлень. `installer/src/host.ts:105–106` використовує spawnSync з типовим maxBuffer. На довгому запуску Agent його журнал може перевищити цей ліміт, і повторний apply справної інсталяції помилково завершиться exit 1 «не вдалося прочитати журнал». Відтворено локально без systemd: verifyAgent бачить active і стабільний InvocationID; підставний journalctl через справжній realHost.run запускає дочірній Node, який друкує синтетичний accepted і 2 MiB заповнення. Команда повертає code=1, захоплено 1114112 байт, verification=false. Потрібно bounded читання/вибір потрібних подій і обмеження часу subprocess, зі збереженням правильної останньої heartbeat-події поточного invocation. Просто збільшити maxBuffer або обрізати загальний tail недостатньо: steady accepted пишеться один раз і може бути старішим за багато інших записів. Regression: великий журнал з раннім accepted, останній unauthorized після accepted, багато сторонніх подій, зміна invocation, bounded ресурси/час і жодних сирих журналів у звіті.
+
+**Незалежно на Node.js 22:** check:local exit 0 — 130 unit, 500 backend, 10 smoke, 165 Agent (3 opt-in пропущені), 247 frontend, 91 installer, typecheck/lint/secrets/збірки. Додаткове відтворення — тимчасовий TS-сценарій поза репозиторієм, FakeHost для systemd metadata + справжній realHost.run для переповнення stdout. Системні служби, користувачі й конфігурації хоста не змінювались.
+
+**Межі:** чиста Ubuntu VM, справжні systemd InvocationID/journal-фільтри та повний Linux install досі не перевірені; INSTALLATION і звіт Claude це чесно позначають. Backend DB/E2E/UI Playwright не повторювались, runtime продукту не змінювався. Production, БД, Nginx, PM2 reviewer не змінював, інсталятори на чинних серверах не запускав; функціональний код не редагував. До закриття зауваження нових функцій і production-встановлення не починати.
+
 ## ADR-027: виправлення за review Codex (2026-10-20) — готово до повторного review Codex
 
 Статус: **готово до повторного review Codex** (APPROVED не виставлявся). База: `0fb6501`, гілка `main`. Production, сервери, БД, Nginx, PM2 не змінювались; інсталятори на реальних серверах не запускались.
