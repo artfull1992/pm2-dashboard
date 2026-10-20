@@ -1,5 +1,6 @@
 import { type Context, type Mode, type Preflight, type Reporter, reportPreflight, runSteps, safeMessage, type Step } from './engine.js';
 import type { Host } from './host.js';
+import type { PendingStore } from './state.js';
 import { InputError } from './validate.js';
 
 // Shared CLI plumbing: exit codes, platform checks every installer needs, and the run sequence.
@@ -29,7 +30,7 @@ export function usage(text: string, out: Reporter): number {
   return EXIT.ok;
 }
 
-export interface Plan { preflight: Preflight; steps: Step[]; verify?: (ctx: Context) => Promise<boolean>; next?: string[] }
+export interface Plan { preflight: Preflight; pending: PendingStore; steps: Step[]; verify?: (ctx: Context) => Promise<boolean>; next?: string[] }
 
 /** preflight → steps → (apply) verification → next steps. Never prints secrets: only titles, states and key names. */
 export async function execute(host: Host, mode: Mode, out: Reporter, build: () => Promise<Plan> | Plan): Promise<number> {
@@ -41,7 +42,8 @@ export async function execute(host: Host, mode: Mode, out: Reporter, build: () =
     return error instanceof InputError ? EXIT.usage : EXIT.failed;
   }
   if (!reportPreflight(out, plan.preflight)) return EXIT.failed;
-  const ctx: Context = { host, mode, effects: new Set(), out };
+  const effects = new Set(plan.pending.effects);
+  const ctx: Context = { host, mode, effects, out, persist: mode === 'apply' ? () => { plan.pending.persist(effects); } : () => undefined };
   const result = await runSteps(ctx, plan.steps);
   if (!result.ok) return EXIT.failed;
   if (mode === 'plan') {

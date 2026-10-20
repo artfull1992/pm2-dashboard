@@ -15,9 +15,20 @@ export type StepState =
 export interface Context {
   host: Host;
   mode: Mode;
-  /** Effects of steps that changed (apply) or would change (plan) something, e.g. "restart-api". */
+  /**
+   * Effects (e.g. "restart-api", "daemon-reload") that changes made necessary and that are not confirmed yet:
+   * loaded from the durable state, added by steps that change (apply) or would change (plan) something.
+   */
   readonly effects: Set<string>;
+  /** apply: writes `effects` to the durable state (intent before a change; removal after the confirmed action). plan: no-op. */
+  persist(): void;
   readonly out: Reporter;
+}
+
+/** Removes an effect once its action (reload/restart) has succeeded, and records that durably. */
+export function confirmEffect(ctx: Context, effect: string): void {
+  if (!ctx.effects.delete(effect)) return;
+  ctx.persist();
 }
 
 export interface Step {
@@ -70,13 +81,16 @@ export async function runSteps(ctx: Context, steps: readonly Step[]): Promise<Ru
       if (!plan) reportStop(out, changed);
       return { ok: false, changed, failedStep: step.id };
     }
-    for (const e of step.effects ?? []) ctx.effects.add(e);
+    const added = (step.effects ?? []).filter((e) => !ctx.effects.has(e));
+    for (const e of added) ctx.effects.add(e);
     if (plan) {
       out.line(`  • [${n}] ${step.title}: буде виконано — ${state.detail}`);
       continue;
     }
     out.line(`  → [${n}] ${step.title}: ${state.detail}`);
     try {
+      // Intent first: the reload/restart this change will need is recorded BEFORE the change.
+      if (added.length > 0) ctx.persist();
       await step.apply(ctx);
       const after = await step.check(ctx);
       if (after.state !== 'done') throw new Error(`після виконання стан не підтверджено (${after.state === 'conflict' ? after.detail : after.detail})`);

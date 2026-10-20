@@ -20,15 +20,27 @@ export class FakeHost implements Host {
   groups = new Map<string, GroupInfo>();
   units = new Map<string, { enabled: boolean; active: boolean }>();
   calls: Call[] = [];
-  /** Ordered list of changes ("mkdir /x", "write /y", "useradd z", "systemctl start u"). */
+  /** Ordered list of system changes ("mkdir /x", "write /y", "useradd z", "systemctl start u"); installer state excluded. */
   changes: string[] = [];
+  /** Writes of the installer's own pending state (/var/lib/node-control-install), with the system change count at that moment. */
+  stateOps: { op: string; at: number; content: string }[] = [];
   /** Commands that fail: predicate on "command args…" → exit code 1 with this stderr. */
   failures: { match: (line: string) => boolean; stderr: string; once?: boolean }[] = [];
   migrations = { applied: 0, pending: 9, unknown: 0, reachable: true };
   admins = 0;
   http = new Map<string, number | null>();
   tcp = true;
-  agentJournal = '';
+  /** Journal records: unit, the invocation (process run) that wrote them, the line (JSON as the Agent logs it). */
+  journal: { unit: string; invocation: string; line: string }[] = [];
+  /** Current InvocationID per unit (a new one on every start/restart). */
+  invocations = new Map<string, string>();
+  /** Called on every journal read: may log a line for the Agent's current invocation (null = nothing new yet). */
+  agentLogs: ((invocation: string, read: number) => string | null) | null = null;
+  journalFails = false;
+  private journalReads = 0;
+  private nextInvocation = 1;
+  /** Writes that fail (path predicate); once = only the first matching write. */
+  writeFailures: { match: (path: string) => boolean; once: boolean }[] = [];
   euidValue = 0;
   clock = new Date('2026-10-20T10:00:00.000Z');
   private nextUid = 990;
@@ -84,18 +96,30 @@ export class FakeHost implements Host {
   }
   readlink(path: string): string | null { const n = this.files.get(path); return n?.kind === 'symlink' ? n.target ?? null : null; }
   sha256File(path: string): string { return createHash('sha256').update(this.readFile(path)).digest('hex'); }
+  failWrite(match: string | RegExp, once = true): void {
+    this.writeFailures.push({ match: (p) => (typeof match === 'string' ? p === match : match.test(p)), once });
+  }
+  /** A historical journal line of a previous Agent run (not the current invocation). */
+  historical(line: string): void { this.journal.push({ unit: 'node-control-agent.service', invocation: 'old-run', line }); }
   writeFileAtomic(path: string, content: string, owner: Owner): void {
+    const failure = this.writeFailures.find((f) => f.match(path));
+    if (failure) {
+      if (failure.once) this.writeFailures.splice(this.writeFailures.indexOf(failure), 1);
+      throw new Error(`EIO: write ${path}`);
+    }
     const existing = this.files.get(path);
     if (existing && existing.kind !== 'file') throw new Error(`${path} exists and is not a regular file`);
     if (this.files.get(dirname(path))?.kind !== 'dir') throw new Error(`ENOENT: ${dirname(path)}`);
     this.files.set(path, { kind: 'file', content, ...owner });
-    this.changes.push(`write ${path}`);
+    if (path.startsWith('/var/lib/node-control-install/')) this.stateOps.push({ op: `write ${path}`, at: this.changes.length, content });
+    else this.changes.push(`write ${path}`);
   }
   mkdir(path: string, owner: Owner): void {
     if (this.files.has(path)) throw new Error(`EEXIST: ${path}`);
     if (this.files.get(dirname(path))?.kind !== 'dir') throw new Error(`ENOENT: ${dirname(path)}`);
     this.files.set(path, { kind: 'dir', ...owner });
-    this.changes.push(`mkdir ${path}`);
+    if (path === '/var/lib/node-control-install') this.stateOps.push({ op: `mkdir ${path}`, at: this.changes.length, content: '' });
+    else this.changes.push(`mkdir ${path}`);
   }
   user(name: string): UserInfo | null { return this.users.get(name) ?? null; }
   group(name: string): GroupInfo | null { return this.groups.get(name) ?? null; }
@@ -160,11 +184,15 @@ export class FakeHost implements Host {
       case 'id': return ok(`${[...this.groups.values()].find((g) => g.gid === this.users.get(args[1] ?? '')?.gid)?.name ?? ''}\n`);
       case 'ss': return ok('');
       case 'systemd-analyze': return ok();
-      case 'journalctl': return ok(this.agentJournal);
+      case 'journalctl': return this.journalctl(args);
       case 'systemctl': {
         const [verb, ...rest] = args;
         if (verb === 'is-active') return ok(`${this.unit(rest[0] ?? '').active ? 'active' : 'inactive'}\n`);
         if (verb === 'is-enabled') return ok(`${this.unit(rest[0] ?? '').enabled ? 'enabled' : 'disabled'}\n`);
+        if (verb === 'show') {
+          const unit = rest.at(-1) ?? '';
+          return ok(`${this.unit(unit).active ? this.invocations.get(unit) ?? '' : ''}\n`);
+        }
         this.changes.push(`systemctl ${args.join(' ')}`);
         if (verb === 'daemon-reload') return ok();
         if (verb === 'enable' && rest[0] === '--now') { const u = this.unit(rest[1] ?? ''); u.enabled = true; u.active = true; return ok(); }
@@ -172,6 +200,7 @@ export class FakeHost implements Host {
         if (verb === 'start' || verb === 'restart') {
           const name = rest[0] ?? '';
           if (!name.includes('exporter@') || name.endsWith('.timer')) this.unit(name).active = true;
+          this.invocations.set(name, `run-${String(this.nextInvocation++)}`);
           return ok();
         }
         return ok();
@@ -180,6 +209,18 @@ export class FakeHost implements Host {
       case 'runuser': return this.runuser(args, options);
       default: return { code: 127, stdout: '', stderr: `${command}: not simulated` };
     }
+  }
+
+  /** journalctl -u <unit> … → every run of the unit (like the real journal); _SYSTEMD_INVOCATION_ID=<id> → that run only. */
+  private journalctl(args: string[]): RunResult {
+    if (this.journalFails) return { code: 1, stdout: '', stderr: 'Failed to open journal' };
+    const unit = 'node-control-agent.service';
+    const current = this.invocations.get(unit);
+    const line = current && this.agentLogs ? this.agentLogs(current, this.journalReads++) : null;
+    if (current && line) this.journal.push({ unit, invocation: current, line });
+    const byInvocation = args.find((a) => a.startsWith('_SYSTEMD_INVOCATION_ID='))?.split('=')[1];
+    const rows = this.journal.filter((r) => (byInvocation === undefined ? r.unit === unit : r.invocation === byInvocation));
+    return { code: 0, stdout: rows.map((r) => `${r.line}\n`).join(''), stderr: '' };
   }
 
   private node(args: string[]): RunResult {

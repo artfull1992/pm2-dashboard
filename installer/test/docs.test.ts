@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AGENT, AGENT_USAGE } from '../src/agent.js';
 import { API, SERVER_USAGE } from '../src/server.js';
+import { STATE_DIR } from '../src/state.js';
 
 // Code ↔ Docs: every option of the installers is documented in docs/INSTALLATION.md, and every installer command
 // line in that document uses only options the code accepts; documented paths are the ones the code uses.
@@ -27,7 +28,7 @@ describe('docs/INSTALLATION.md matches the installers', () => {
   });
 
   it('documented paths and accounts are the ones the installers use', () => {
-    for (const value of [API.user, API.base, API.config, API.unit, AGENT.user, AGENT.base, AGENT.config, AGENT.unit, AGENT.snapshotDir, AGENT.inventoryGroup, AGENT.controlGroup, AGENT.brokerConfigDir]) {
+    for (const value of [API.user, API.base, API.config, API.unit, AGENT.user, AGENT.base, AGENT.config, AGENT.unit, AGENT.snapshotDir, AGENT.inventoryGroup, AGENT.controlGroup, AGENT.brokerConfigDir, STATE_DIR, `${STATE_DIR}/server.json`]) {
       expect(DOC, value).toContain(value);
     }
   });

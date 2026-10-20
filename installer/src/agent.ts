@@ -7,7 +7,8 @@ import { consoleReporter, type Context, mustRun, type Preflight, type Reporter, 
 import { appendMissing, missingKeys, parseEnvText, renderEnv } from './envfile.js';
 import { type Host, realHost } from './host.js';
 import { activateStep, checkArtifact, checkBase, checkNotOtherRelease, defaultReleaseTool, prepareStep } from './release.js';
-import { directory, exactFile, membership, service, systemGroup, systemUser, unitFile } from './resources.js';
+import { DAEMON_RELOAD, directory, exactFile, membership, service, serviceAccountPreflight, systemGroup, systemUser, unitFile } from './resources.js';
+import { loadPending } from './state.js';
 import { processInput, type SecretInput, secretFileProblems, singleLine } from './secrets.js';
 import { artifactRef, filePath, httpsOrigin, InputError, linuxName, safeAbsolutePath } from './validate.js';
 
@@ -189,18 +190,46 @@ function allowlistStep(owner: string): Step {
 const lastLine = (text: string, msg: string) => text.split('\n').filter((l) => l.includes(`"msg":"${msg}"`)).at(-1) ?? null;
 const field = (line: string, name: string) => new RegExp(`"${name}":"([a-z_]+)"`).exec(line)?.[1] ?? null;
 
+/** InvocationID of the running Agent process (systemd: a new one for every start/restart); null if not running. */
+function currentInvocation(host: Host): string | null {
+  const r = host.run('systemctl', ['show', '--property=InvocationID', '--value', AGENT.unit]);
+  const id = r.stdout.trim();
+  return r.code === 0 && /^[0-9a-zA-Z_-]{1,64}$/.test(id) ? id : null;
+}
+
+/** Journal of ONE Agent run only (by its InvocationID) — never records of earlier runs. null = journal not readable. */
+function journalOf(host: Host, invocation: string): string | null {
+  const r = host.run('journalctl', [`_SYSTEMD_INVOCATION_ID=${invocation}`, '-o', 'cat', '--no-pager']);
+  return r.code === 0 ? r.stdout : null;
+}
+
+/**
+ * The connection is confirmed only by the CURRENT run of the Agent: the last heartbeat outcome logged by the process
+ * with the current InvocationID. The Agent logs every change of outcome, so that line is its present state; records of
+ * earlier runs (another key or configuration) never count. A run started by this apply has no record yet → bounded
+ * wait (15 × 5 s). If the run changes meanwhile (crash + systemd restart), the evidence is discarded and the new run
+ * is awaited. "active" alone is never a confirmation.
+ */
 export async function verifyAgent(ctx: Context, o: AgentOptions): Promise<boolean> {
   const { host, out } = ctx;
   out.line('\nПеревірка результату:');
   const active = systemctlState(host, 'is-active', AGENT.unit) === 'active';
   out.line(active ? `  ✓ служба ${AGENT.unit} запущена` : `  ✗ служба ${AGENT.unit} не запущена (journalctl -u ${AGENT.unit} -n 20 -o cat; exit 2 — конфігурація)`);
   if (!active) return false;
-  let heartbeat: string | null = null;
-  for (let i = 0; i < 15 && (heartbeat === null || heartbeat === 'pending'); i++) {
-    const log = host.run('journalctl', ['-u', AGENT.unit, '-n', '200', '-o', 'cat', '--no-pager']).stdout;
-    const line = lastLine(log, 'heartbeat');
-    heartbeat = line ? field(line, 'outcome') ?? 'pending' : 'pending';
-    if (heartbeat === 'pending') await host.sleep(5000);
+  let invocation = currentInvocation(host);
+  let outcome: string | null = null;
+  let log = '';
+  for (let i = 0; i < 15 && outcome === null; i++) {
+    const now = currentInvocation(host);
+    if (now === null) { out.error(`  ✗ Agent зупинився під час перевірки (journalctl -u ${AGENT.unit} -n 20 -o cat)`); return false; }
+    if (now !== invocation) { out.line('  ! Agent перезапустився під час перевірки — чекаємо звіт нового запуску'); invocation = now; }
+    const text = journalOf(host, now);
+    if (text === null) { out.error(`  ✗ не вдалося прочитати журнал Agent (journalctl): зв'язок не підтверджено`); return false; }
+    if (currentInvocation(host) !== now) continue; // the run changed while reading: its records do not count
+    log = text;
+    const line = lastLine(text, 'heartbeat');
+    outcome = line ? field(line, 'outcome') : null;
+    if (outcome === null) await host.sleep(5000);
   }
   const advice: Record<string, string> = {
     unauthorized: 'API відхилив ключ: перевірте, що його видано саме для цього сервера й не відкликано; новий ключ — UI «Видати новий ключ», далі ротація за docs/INSTALLATION.md',
@@ -208,15 +237,16 @@ export async function verifyAgent(ctx: Context, o: AgentOptions): Promise<boolea
     timeout: 'API не відповів вчасно: перевірте мережу й стан API',
     unavailable: 'API відповів помилкою 5xx: перевірте node-control-api на центральному сервері',
   };
-  if (heartbeat === 'accepted') out.line('  ✓ зв\'язок Agent підтверджено: heartbeat прийнято API');
-  else out.error(`  ✗ зв'язок Agent НЕ підтверджено (${heartbeat ?? 'немає записів'}): ${advice[heartbeat ?? ''] ?? `journalctl -u ${AGENT.unit} -n 20 -o cat`}`);
+  if (outcome === 'accepted') out.line('  ✓ зв\'язок Agent підтверджено: поточний запуск Agent отримав підтвердження heartbeat від API');
+  else if (outcome === null) out.error(`  ✗ зв'язок Agent НЕ підтверджено: поточний запуск не звітував про heartbeat за 75 с (journalctl -u ${AGENT.unit} -n 20 -o cat)`);
+  else out.error(`  ✗ зв'язок Agent НЕ підтверджено (${outcome}): ${advice[outcome] ?? `journalctl -u ${AGENT.unit} -n 20 -o cat`}`);
   if (o.pm2) {
-    const inv = lastLine(host.run('journalctl', ['-u', AGENT.unit, '-n', '200', '-o', 'cat', '--no-pager']).stdout, 'inventory');
+    const inv = lastLine(log, 'inventory');
     const snapshot = host.stat(AGENT.snapshotFile);
     out.line(snapshot ? '  ✓ snapshot PM2 inventory створено exporter-ом' : `  ! snapshot ще не створено (journalctl -u node-control-pm2-exporter@${o.pm2.owner} -n 5 -o cat)`);
-    out.line(inv ? `  ${field(inv, 'outcome') === 'accepted' ? '✓' : '!'} inventory: ${field(inv, 'outcome') ?? '?'}, стан ${field(inv, 'state') ?? '?'}` : '  ! inventory ще не надсилався (перший звіт — протягом хвилини)');
+    out.line(inv ? `  ${field(inv, 'outcome') === 'accepted' ? '✓' : '!'} inventory: ${field(inv, 'outcome') ?? '?'}, стан ${field(inv, 'state') ?? '?'}` : '  ! inventory поточного запуску ще не надсилався (перший звіт — протягом хвилини)');
   }
-  return heartbeat === 'accepted';
+  return outcome === 'accepted';
 }
 
 export async function buildAgentPlan(host: Host, o: AgentOptions, input: SecretInput): Promise<Plan> {
@@ -227,6 +257,8 @@ export async function buildAgentPlan(host: Host, o: AgentOptions, input: SecretI
   if (host.stat(o.releaseTool)?.kind !== 'file') p.errors.push(`не знайдено server-release.js (${o.releaseTool}): запускайте інсталятор із переданого server-bundle`);
   checkBase(host, AGENT.base, p);
   checkNotOtherRelease(host, AGENT.base, ref.revision, p);
+  serviceAccountPreflight(host, AGENT.user, p);
+  const pending = loadPending(host, 'agent', [RESTART, DAEMON_RELOAD], p);
 
   // Configuration and the key: needed only to create agent.env; an existing file is never rewritten.
   const envExists = host.stat(AGENT.config) !== null;
@@ -333,7 +365,7 @@ export async function buildAgentPlan(host: Host, o: AgentOptions, input: SecretI
       '  3. На центральному сервері: PM2_CONTROL_ENABLED=true (install/server.js apply … --enable-pm2-control).',
     );
   }
-  return { preflight: p, steps, verify: (ctx) => verifyAgent(ctx, o), next };
+  return { preflight: p, pending, steps, verify: (ctx) => verifyAgent(ctx, o), next };
 }
 
 export async function agentMain(argv: readonly string[], deps: { host?: Host; out?: Reporter; input?: SecretInput; cwd?: string; releaseTool?: string } = {}): Promise<number> {

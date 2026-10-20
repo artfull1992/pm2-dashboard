@@ -7,7 +7,17 @@ import { capture, FakeHost, REV } from './fake-host.js';
 // PM2 is never invoked; existing configuration and allowlists are never rewritten; the key is never printed.
 
 const TOKEN = `ncag_${'T'.repeat(43)}`;
-const ACCEPTED = '{"level":"info","msg":"heartbeat","outcome":"accepted","nextInSeconds":30}\n{"level":"info","msg":"inventory","outcome":"accepted","state":"ok"}\n';
+const heartbeat = (outcome: string) => `{"level":"info","time":"2026-10-20T10:00:00.000Z","msg":"heartbeat","outcome":"${outcome}","nextInSeconds":30}`;
+const INVENTORY_OK = '{"level":"info","msg":"inventory","outcome":"accepted","state":"ok"}';
+/** The Agent's log per run: the given lines, one per journal read, starting with the run's first read. */
+function logs(...lines: string[]) {
+  const seen = new Map<string, number>();
+  return (invocation: string) => {
+    const n = seen.get(invocation) ?? 0;
+    seen.set(invocation, n + 1);
+    return lines[n] ?? null;
+  };
+}
 const input = (over: Partial<SecretInput> = {}): SecretInput => ({ isTTY: false, readAll: () => Promise.resolve(''), hidden: () => Promise.reject(new Error('no tty')), ...over });
 
 function host(): FakeHost {
@@ -15,7 +25,7 @@ function host(): FakeHost {
   h.artifact('agent');
   h.file('/root/agent.token', `${TOKEN}\n`, 0o600);
   h.http.set('https://control.example.com/api/auth/me', 401);
-  h.agentJournal = ACCEPTED;
+  h.agentLogs = logs(`${heartbeat('accepted')}\n${INVENTORY_OK}`);
   const deploy = h.addUser('deploy', 1000);
   h.dir('/home/deploy', 0o750, deploy.uid, deploy.gid);
   h.dir('/home/deploy/.pm2', 0o775, deploy.uid, deploy.gid);
@@ -114,7 +124,7 @@ describe('agent installer: heartbeat only (default)', () => {
     ['network', /немає з'єднання з API/],
   ])('heartbeat %s → installed but connection NOT confirmed, exit 1 with advice', async (outcome, advice) => {
     const h = host();
-    h.agentJournal = `{"level":"warn","msg":"heartbeat","outcome":"${outcome}"}\n`;
+    h.agentLogs = logs(heartbeat(outcome));
     const r = await run(h, ['apply', ...BASE]);
     expect(r.code).toBe(1);
     expect(r.all).toMatch(/✓ служба node-control-agent\.service запущена/);

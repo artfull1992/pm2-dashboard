@@ -1,5 +1,5 @@
 import { dirname } from 'node:path';
-import { type Context, mustRun, type Step, type StepState, systemctlState } from './engine.js';
+import { confirmEffect, type Context, mustRun, type Step, type StepState, systemctlState } from './engine.js';
 import type { Host } from './host.js';
 
 // Reusable steps for host resources. Each one only ever creates what is missing; anything that exists but differs
@@ -8,6 +8,15 @@ import type { Host } from './host.js';
 const SYSTEM_UID_MAX = 999;
 const NOLOGIN = new Set(['/usr/sbin/nologin', '/sbin/nologin', '/bin/false', '/usr/bin/false']);
 const octal = (mode: number) => mode.toString(8).padStart(4, '0');
+
+const rootIdentity = (name: string) => `обліковий запис ${name} має UID 0 або основну групу root — служба працювала б із правами root`;
+const ROOT_FIX = 'інсталятор чужі облікові записи не змінює: з\'ясуйте, хто й навіщо створив цей запис; встановлення можливе лише з окремим системним користувачем без прав root';
+
+/** Before any change: an existing service account must not be root in disguise (UID 0 or primary group root). */
+export function serviceAccountPreflight(host: Host, name: string, p: { errors: string[] }): void {
+  const user = host.user(name);
+  if (user && (user.uid === 0 || user.gid === 0)) p.errors.push(`${rootIdentity(name)}. ${ROOT_FIX}`);
+}
 
 /** System user with its own group, no home, no shell (useradd --system --user-group). */
 export function systemUser(name: string): Step {
@@ -21,6 +30,7 @@ export function systemUser(name: string): Step {
           ? { state: 'conflict', detail: `група ${name} існує, а користувача немає`, fix: `з'ясуйте походження групи ${name}; інсталятор її не змінює` }
           : { state: 'pending', detail: 'useradd --system --user-group, без home і shell' };
       }
+      if (user.uid === 0 || user.gid === 0) return { state: 'conflict', detail: rootIdentity(name), fix: ROOT_FIX };
       if (user.uid > SYSTEM_UID_MAX || !NOLOGIN.has(user.shell)) {
         return { state: 'conflict', detail: `${name} існує, але це не системний обліковий запис без shell`, fix: `використайте окремий сервер або видаліть/перейменуйте чужого користувача ${name} самостійно` };
       }
@@ -124,33 +134,42 @@ export function exactFile(path: string, content: (host: Host) => string | null, 
   };
 }
 
+export const DAEMON_RELOAD = 'daemon-reload';
+
 /**
  * Installs a unit file from the active/prepared release (root:root 644), verified by systemd-analyze BEFORE it is
- * written, then daemon-reload. An existing different unit is a conflict: upgrades of units follow DEPLOYMENT.
+ * written, then daemon-reload. The reload is a durable effect: if it fails (or the run is interrupted) after the file
+ * was written, the next run sees the identical file AND the pending reload, and reloads before anything starts.
+ * An existing different unit is a conflict: upgrades of units follow DEPLOYMENT.
  */
 export function unitFile(name: string, source: () => string, effects: readonly string[] = []): Step {
   const target = `/etc/systemd/system/${name}`;
   return {
     id: `unit:${name}`,
     title: `systemd unit ${name}`,
-    check({ host }) {
+    check(ctx) {
+      const { host } = ctx;
       const info = host.stat(target);
       const src = source();
-      if (!info) return { state: 'pending', detail: host.stat(src) ? `з релізу (${src})` : 'з релізу після його підготовки' };
+      if (!info) return { state: 'pending', detail: host.stat(src) ? `з релізу (${src}) + daemon-reload` : 'з релізу після його підготовки + daemon-reload' };
       if (info.kind !== 'file') return { state: 'conflict', detail: `${target} не є звичайним файлом`, fix: `перевірте ${target} самостійно` };
-      if (!host.stat(src)) return { state: 'done', detail: 'unit уже встановлено; реліз для порівняння ще не підготовлено' };
-      if (host.readFile(target) !== host.readFile(src)) {
+      if (host.stat(src) && host.readFile(target) !== host.readFile(src)) {
         return { state: 'conflict', detail: `${target} відрізняється від unit у релізі (інша версія або ручні зміни)`, fix: `порівняйте: diff ${src} ${target}; оновлення units — за docs/DEPLOYMENT.md, інсталятор їх не перезаписує` };
       }
-      return { state: 'done' };
+      if (ctx.effects.has(DAEMON_RELOAD)) return { state: 'pending', detail: 'systemctl daemon-reload (не завершено попереднім запуском)' };
+      return host.stat(src) ? { state: 'done' } : { state: 'done', detail: 'unit уже встановлено; реліз для порівняння ще не підготовлено' };
     },
-    apply({ host }) {
-      const src = source();
-      mustRun(host, 'systemd-analyze', ['verify', src], `systemd-analyze verify ${name}`);
-      host.writeFileAtomic(target, host.readFile(src), { mode: 0o644, uid: 0, gid: 0 });
+    apply(ctx) {
+      const { host } = ctx;
+      if (!host.stat(target)) {
+        const src = source();
+        mustRun(host, 'systemd-analyze', ['verify', src], `systemd-analyze verify ${name}`);
+        host.writeFileAtomic(target, host.readFile(src), { mode: 0o644, uid: 0, gid: 0 });
+      }
       mustRun(host, 'systemctl', ['daemon-reload'], 'systemctl daemon-reload');
+      confirmEffect(ctx, DAEMON_RELOAD);
     },
-    effects,
+    effects: [DAEMON_RELOAD, ...effects],
     recovery: `перевірте вивід systemd-analyze verify ${source()}; встановлений файл можна прибрати (rm ${target}; systemctl daemon-reload) і повторити`,
   };
 }
@@ -174,7 +193,8 @@ export function service(unit: string, options: { restartOn?: string; title?: str
       if (enable && systemctlState(host, 'is-enabled', unit) !== 'enabled') mustRun(host, 'systemctl', ['enable', unit], `systemctl enable ${unit}`);
       const active = systemctlState(host, 'is-active', unit) === 'active';
       mustRun(host, 'systemctl', [active ? 'restart' : 'start', unit], `systemctl ${active ? 'restart' : 'start'} ${unit}`);
-      if (options.restartOn) ctx.effects.delete(options.restartOn);
+      // Only now is the change applied by the running process: the pending restart is cleared durably.
+      if (options.restartOn) confirmEffect(ctx, options.restartOn);
     },
     recovery: `systemctl status ${unit}; journalctl -u ${unit} -n 50 -o cat — причина в журналі; після виправлення повторіть`,
   };
