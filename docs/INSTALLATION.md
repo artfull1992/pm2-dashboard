@@ -166,7 +166,18 @@ node server-bundle/install/agent.js apply --artifact $A --api-url https://contro
 | Керування | група `nc-pm2-control`, `/etc/node-control-pm2-broker/<owner>.env` (644), **порожня** allowlist (root, 644; наявна не змінюється), unit і служба broker, членство Agent | `journalctl -u node-control-pm2-broker@<owner> -n 20 -o cat` |
 | Служба Agent | `enable` + `start` (`restart`, якщо змінено конфігурацію, unit або групи) | `journalctl -u node-control-agent -n 20 -o cat`; exit 2 — помилка конфігурації |
 
-Результат: «служба запущена» → «зв'язок Agent підтверджено». Підтвердження дає лише **поточний запуск** Agent: інсталятор бере його `InvocationID` (`systemctl show --property=InvocationID --value node-control-agent`) і читає записи тільки цього запуску (`journalctl _SYSTEMD_INVOCATION_ID=<id>`); останній результат heartbeat (`"outcome":"accepted"`) — успіх. Записи попередніх запусків (інший ключ чи конфігурація) не враховуються. Agent пише в журнал кожну зміну результату, тож на незміненому працюючому Agent (повторний `apply`, без restart) останній запис поточного запуску — його актуальний стан; щойно запущений Agent чекається до ~75 с. Якщо під час перевірки systemd перезапустив Agent, очікується звіт нового запуску. Сам `active` не є підтвердженням; журнал, який не вдалося прочитати, — «не підтверджено». `unauthorized` — ключ відхилено (не той сервер, відкликаний або сервер деактивовано); `network`/`timeout` — немає зв'язку або TLS; `unavailable` — помилка API. Для inventory додатково показується стан першого звіту.
+Результат: «служба запущена» → «зв'язок Agent підтверджено». Підтвердження дає лише **поточний запуск** Agent: інсталятор бере його `InvocationID` (`systemctl show --property=InvocationID --value node-control-agent`) і читає записи тільки цього запуску (`journalctl _SYSTEMD_INVOCATION_ID=<id> -o cat --no-pager -q`) потоково: з усього журналу запуску зберігається лише результат **останнього** рядка heartbeat (і останнього рядка inventory); сирий текст не зберігається й не виводиться.
+
+Межі одного читання: 10 с (потім процес `journalctl` примусово завершується), 64 MiB виводу; рядки довші за 8 KiB пропускаються. Результати:
+
+- останній результат `accepted` — успіх;
+- `unauthorized`, `network` тощо — «не підтверджено» з порадою;
+- жодного heartbeat — очікування до 15 повторів по 5 с;
+- помилка `journalctl`, тайм-аут чи перевищення 64 MiB — явна відмова («не підтверджено», а не успіх).
+
+Найгірший час перевірки обмежений: 15 × (≤ 10 с читання + 5 с паузи).
+
+Що саме доводить успіх: процес поточного запуску Agent (той самий ключ і конфігурація) отримав від API підтвердження heartbeat і після цього не записав іншого результату. Agent пише рядок лише при зміні результату. Тому на незміненому працюючому Agent (повторний `apply`, без restart) підтвердження спирається на останню зміну в цьому запуску, а не на свіжий мережевий запит у момент перевірки. Записи попередніх запусків не враховуються. Якщо під час перевірки systemd перезапустив Agent, очікується звіт нового запуску. Сам `active` не є підтвердженням. `unauthorized` — ключ відхилено (не той сервер, відкликаний або сервер деактивовано); `network`/`timeout` — немає зв'язку або TLS; `unavailable` — помилка API. Для inventory додатково показується стан першого звіту.
 
 ### 3.3 Керування й логи: явна allowlist
 
@@ -265,3 +276,4 @@ systemctl disable --now node-control-api                 # або node-control-a
 3. Частковий збій після зміни конфігурації: `systemctl mask node-control-api` → `apply --behind-nginx` (ключ дописано, restart не вдається, у `server.json` лишається `restart-api`) → `systemctl unmask node-control-api` → `apply` виконує restart (InvocationID змінився), повтор — ні. Окремо: перервати `apply` (Ctrl+C) на кроці unit/конфігурації й повторити.
 4. Agent на другій VM з тестовим PM2-користувачем і процесами: `plan`, `apply` (heartbeat підтверджено), повтор, додавання `--pm2-owner/--pm2-home` і `--enable-control`; PID і час старту PM2-процесів не змінились; `pm2` не запускався (`ps`/journal).
 5. Негативні: пошкоджений артефакт, чужий unit, `nodecontrol` з UID 0, відкликаний ключ (`unauthorized`), недоступний API.
+6. Журнал: на цільовій версії systemd перевірити, що `systemctl show --property=InvocationID --value node-control-agent` повертає ідентифікатор, а `journalctl _SYSTEMD_INVOCATION_ID=<id> -o cat --no-pager -q` — лише рядки цього запуску з кодом виходу 0 (зокрема, коли записів немає); після `systemctl restart` старі записи не підтверджують новий запуск.

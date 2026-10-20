@@ -1,5 +1,36 @@
 # Поточний стан проєкту
 
+## ADR-027: обмежена перевірка журналу Agent (2026-10-20) — готово до повторного review Codex
+
+Статус: **готово до повторного review Codex** (APPROVED не виставлявся). База: `c0e196d`, гілка `main`. Production, сервери, БД, Nginx, PM2 не змінювались; інсталятори на реальних серверах не запускались. Pending state, перевірка облікових записів і release workflow не змінювались.
+
+**Причина.** `verifyAgent` читав увесь журнал поточного invocation через `spawnSync` з типовим `maxBuffer` (≈ 1 MiB). На довгому запуску Agent журнал переповнював буфер, і повторний apply справної інсталяції завершувався «не вдалося прочитати журнал». Простий tail не годиться: стабільний `accepted` пишеться один раз.
+
+**Виправлення.**
+- Новий `Host.scan`: потокове читання stdout дочірнього процесу рядок за рядком. Межі: deadline (потім `SIGKILL`), ліміт байтів (результат `limit` + `SIGKILL`), рядки понад ліміт пропускаються без накопичення, stderr ігнорується; результати — `exit`/`timeout`/`limit`/`error`.
+- `verifyAgent` викликає `journalctl _SYSTEMD_INVOCATION_ID=<id> -o cat --no-pager -q` з межами 10 с / 64 MiB / 8 KiB на рядок і зберігає лише результат останнього heartbeat та inventory (без сирого тексту).
+- Помилка, тайм-аут і перевищення ліміту — явна відмова з поясненням.
+- Решта лишилась як була: зміна invocation під час читання, очікування першого heartbeat (15 × 5 с), відсутність restart заради перевірки.
+
+Файли: `installer/src/host.ts`, `installer/src/agent.ts`, `installer/test/fake-host.ts` (`scan` з тією самою семантикою: фільтр за invocation, ліміти, тайм-аут, помилка), новий `installer/test/journal.test.ts`.
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| Відтворення на коді `c0e196d` (справжній дочірній Node як `journalctl`, 2,5 MiB журналу) | 2 із 3 тестів падали: ранній `accepted` + понад 2 MiB → хибна відмова; пізній `unauthorized` серед мегабайтів подій → не розпізнано. Після виправлення — 3/3 |
+| `journal.test.ts` | 13/13: великий журнал; `unauthorized` після `accepted`; старий `unauthorized` + новий `accepted`; синтетичний секрет у журналі не потрапляє у вивід; тайм-аут; журнал > 64 MiB (справжній процес) → явна відмова; помилка `journalctl`; порожній журнал і лише inventory-події ≠ `accepted`; inventory з того самого проходу не підміняє heartbeat; запит завжди з поточним InvocationID. `realHost.scan` на справжніх процесах: 4 МБ потоком (40 001 рядок, останній без `\n`); > ліміту → `limit` і процес знищено; завислий процес → `timeout` за < 3 с і процес знищено; задовгі рядки пропускаються, код виходу передається, stderr не захоплюється; неіснуюча команда → `error` |
+| Попередні regression (`recovery.test.ts`) | без змін, проходять (зміна invocation, незмінений повтор без restart, pending state, UID 0) |
+| `npm run test:installer` | 104/104 (було 91) |
+| `npm run check:local` | exit 0: node:test 130/130, backend 500/500, smoke 10/10, agent 165/165 (+3 opt-in), frontend 247/247, installer 104/104, typecheck, lint, збірки, secrets |
+| Пакування | `installer:build`; `stageServerBundle` на тимчасовому stage → `server-bundle/install/` містить усі модулі й `package.json`; `--help` обох CLI з бандла; імпорти лише `node:*` і власні |
+| `git diff --check`, `check:secrets` | OK |
+| `test:backend:db`, UI Playwright, `test:e2e`, `test:integration` | не запускались: backend, frontend і БД не змінювались; для integration немає локального PostgreSQL |
+
+Перша спроба оновити документацію через Python-heredoc не застосувалась (локаль C, помилка кодування) — повторено скриптом у UTF-8. Це помилка інструмента, не коду.
+
+**Документація:** INSTALLATION — як обирається останній heartbeat, межі часу й обсягу, порожній журнал, тайм-аут, що саме доводить успіх на незміненому Agent; сценарій майбутньої Ubuntu-перевірки доповнено перевіркою `InvocationID` і `journalctl _SYSTEMD_INVOCATION_ID=… -q`. ADR-027 — датоване уточнення.
+
+**Межі.** Справжній systemd/journal не перевірявся: поведінка `_SYSTEMD_INVOCATION_ID`, `-q` і коду виходу при порожньому результаті взята з документації systemd і підлягає перевірці в сценарії INSTALLATION, розділ 8. **Наскрізне встановлення на чистій Ubuntu VM ще не виконане.** Rollback — окремий revert commit; заборона продовжувати pending-операції старим інсталятором і збереження файлів стану діють як раніше.
+
 ## Повторний незалежний review Codex — ADR-027: CHANGES REQUIRED (2026-10-20)
 
 Перевірено `b819cac` і `84814f7` від бази `0fb6501`, новий state, порядок intent/change/reload/restart/clear, verification Agent, account preflight, тести й документацію в обох напрямках. Початкове дерево чисте. Попередні три P2 закриті в перевірених сценаріях: pending дії переживають помилки, daemon-reload відновлюється, UID/GID 0 відхиляються до мутацій, записи попередніх invocation не підтверджують новий Agent. Документація описує state, відновлення та обмеження старого інсталятора. Залишилось нове зауваження:
