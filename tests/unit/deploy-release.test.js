@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -59,6 +59,62 @@ test('prepare: verifies, installs in staging, then publishes releases/<sha>', ()
   assert.ok(existsSync(join(base, 'releases', REV1, 'node_modules')));
   assert.deepEqual(readdirSync(join(base, 'releases')), [REV1]);
   assert.equal(statSync(join(base, 'releases', REV1, 'package.json')).mode & 0o022, 0, 'group/other must not write');
+});
+
+// Review 2026-10-20 (P2): server-release.js --base may name a base whose parents do not exist yet (as recursive mkdir
+// allowed before the umask fix). Missing levels are created with exact modes; existing ancestors are left as they are.
+for (const umask of [0o022, 0o077]) {
+  test(`prepare with a nested --base whose parents are missing (umask ${umask.toString(8).padStart(3, '0')}): every new level 755`, () => {
+    const art = artifact(REV1);
+    const root = tmp('nc-nested-');
+    const base = join(root, 'a', 'b', 'node-control'); // a/ and b/ are missing too
+    const previous = process.umask(umask);
+    let result;
+    try {
+      result = prepareRelease({ base, artifact: art.file, artifactSha256: art.sha256, revision: REV1, install: fakeInstall([]) });
+    } finally {
+      process.umask(previous);
+    }
+    assert.equal(result.status, 'prepared');
+    const mode = (p) => (statSync(p).mode & 0o777).toString(8);
+    for (const dir of [join(root, 'a'), join(root, 'a', 'b'), base, join(base, 'releases'), join(base, 'releases', REV1)]) {
+      assert.equal(mode(dir), '755', dir.slice(root.length));
+    }
+    // Repeated prepare: idempotent, nothing re-created.
+    assert.equal(prepareRelease({ base, artifact: art.file, artifactSha256: art.sha256, revision: REV1, install: () => assert.fail('no reinstall') }).status, 'already-prepared');
+  });
+}
+
+test('prepare with a nested --base: an existing ancestor keeps its mode and owner; only the missing levels are created', () => {
+  const art = artifact(REV1);
+  const root = tmp('nc-nested-');
+  const existing = join(root, 'opt');
+  mkdirSync(existing, { mode: 0o700 });
+  chmodSync(existing, 0o710); // deliberately unusual: must survive untouched
+  const before = statSync(existing);
+  const base = join(existing, 'tools', 'node-control');
+  prepareRelease({ base, artifact: art.file, artifactSha256: art.sha256, revision: REV1, install: fakeInstall([]) });
+  const after = statSync(existing);
+  assert.deepEqual([after.mode & 0o7777, after.uid, after.gid], [before.mode & 0o7777, before.uid, before.gid]);
+  assert.equal(statSync(join(existing, 'tools')).mode & 0o777, 0o755);
+});
+
+test('prepare with a nested --base: a file where a directory is expected is refused, nothing overwritten', () => {
+  const art = artifact(REV1);
+  const root = tmp('nc-nested-');
+  writeFileSync(join(root, 'opt'), 'not a directory');
+  assert.throws(
+    () => prepareRelease({ base: join(root, 'opt', 'node-control'), artifact: art.file, artifactSha256: art.sha256, revision: REV1, install: fakeInstall([]) }),
+    /not a directory/,
+  );
+  assert.equal(readFileSync(join(root, 'opt'), 'utf8'), 'not a directory');
+  const fileBase = join(root, 'base-file');
+  writeFileSync(fileBase, 'x');
+  assert.throws(
+    () => prepareRelease({ base: fileBase, artifact: art.file, artifactSha256: art.sha256, revision: REV1, install: fakeInstall([]) }),
+    /not a directory/,
+  );
+  assert.equal(readFileSync(fileBase, 'utf8'), 'x');
 });
 
 test('prepare under umask 077: base, releases and the whole release are readable by service users and Nginx', () => {
