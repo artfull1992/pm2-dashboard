@@ -8,7 +8,7 @@ import { consoleReporter, type Context, mustRun, type Preflight, type Reporter, 
 import { appendMissing, missingKeys, parseEnvText } from './envfile.js';
 import { type Host, realHost } from './host.js';
 import { renderNginxSite } from './nginx.js';
-import { activateStep, checkArtifact, checkBase, checkNotOtherRelease, defaultReleaseTool, prepareStep } from './release.js';
+import { activateStep, checkArtifact, checkBase, checkNotOtherRelease, checkUnits, defaultReleaseTool, prepareStep } from './release.js';
 import { DAEMON_RELOAD, service, serviceAccountPreflight, systemUser, unitFile } from './resources.js';
 import { loadPending } from './state.js';
 import { processInput, type SecretInput, secretFileProblems } from './secrets.js';
@@ -265,6 +265,7 @@ export async function buildServerPlan(host: Host, o: ServerOptions, input: Secre
   if (host.stat(o.releaseTool)?.kind !== 'file') p.errors.push(`не знайдено server-release.js (${o.releaseTool}): запускайте інсталятор із переданого server-bundle`);
   checkBase(host, API.base, p);
   checkNotOtherRelease(host, API.base, ref.revision, p);
+  if (sha) checkUnits(host, ref, [API.unit], p);
   serviceAccountPreflight(host, API.user, p);
   const pending = loadPending(host, 'server', [RESTART, DAEMON_RELOAD], p);
 

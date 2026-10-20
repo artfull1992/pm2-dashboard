@@ -46,6 +46,25 @@ export function checkBase(host: Host, base: string, p: Preflight): void {
   if (foreign.length > 0) p.errors.push(`${base} містить сторонні файли (${foreign.slice(0, 5).join(', ')}): це не каталог релізів Node Control — інсталятор туди не пише`);
 }
 
+/**
+ * Units the installer would install, compared BEFORE any change with the copies inside the (checksum-verified)
+ * artifact, read without extracting it (`tar -xzOf`). An existing different unit is not ours to replace: stop here,
+ * not after user, release, config and migrations were already created.
+ */
+export function checkUnits(host: Host, ref: ArtifactRef, units: readonly string[], p: Preflight): void {
+  for (const unit of units) {
+    const target = `/etc/systemd/system/${unit}`;
+    const info = host.stat(target);
+    if (!info) continue;
+    if (info.kind !== 'file') { p.errors.push(`${target} існує і не є звичайним файлом — перевірте його самостійно`); continue; }
+    const shipped = host.run('tar', ['-xzOf', ref.path, `deploy/systemd/${unit}`]);
+    if (shipped.code !== 0) { p.errors.push(`не вдалося прочитати ${unit} з артефакту для порівняння`); continue; }
+    if (host.readFile(target) !== shipped.stdout) {
+      p.errors.push(`${target} відрізняється від unit в артефакті (інша версія або ручні зміни): порівняйте вручну; оновлення units — за docs/DEPLOYMENT.md, інсталятор їх не перезаписує`);
+    }
+  }
+}
+
 /** An installation that already runs another revision is an upgrade: stop before any change. */
 export function checkNotOtherRelease(host: Host, base: string, revision: string, p: Preflight): void {
   const current = currentRevision(host, base);

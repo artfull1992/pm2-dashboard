@@ -6,7 +6,7 @@ import { EXIT, execute, type Plan, platformPreflight } from './cli.js';
 import { consoleReporter, type Context, mustRun, type Preflight, type Reporter, safeMessage, type Step, systemctlState } from './engine.js';
 import { appendMissing, missingKeys, parseEnvText, renderEnv } from './envfile.js';
 import { type Host, realHost } from './host.js';
-import { activateStep, checkArtifact, checkBase, checkNotOtherRelease, defaultReleaseTool, prepareStep } from './release.js';
+import { activateStep, checkArtifact, checkBase, checkNotOtherRelease, checkUnits, defaultReleaseTool, prepareStep } from './release.js';
 import { DAEMON_RELOAD, directory, exactFile, membership, service, serviceAccountPreflight, systemGroup, systemUser, unitFile } from './resources.js';
 import { loadPending } from './state.js';
 import { processInput, type SecretInput, secretFileProblems, singleLine } from './secrets.js';
@@ -277,6 +277,13 @@ export async function buildAgentPlan(host: Host, o: AgentOptions, input: SecretI
   if (host.stat(o.releaseTool)?.kind !== 'file') p.errors.push(`не знайдено server-release.js (${o.releaseTool}): запускайте інсталятор із переданого server-bundle`);
   checkBase(host, AGENT.base, p);
   checkNotOtherRelease(host, AGENT.base, ref.revision, p);
+  if (sha) {
+    checkUnits(host, ref, [
+      AGENT.unit,
+      ...(o.pm2 ? ['node-control-pm2-exporter@.service', 'node-control-pm2-exporter@.timer'] : []),
+      ...(o.pm2 && o.enableControl ? ['node-control-pm2-broker@.service'] : []),
+    ], p);
+  }
   serviceAccountPreflight(host, AGENT.user, p);
   const pending = loadPending(host, 'agent', [RESTART, DAEMON_RELOAD], p);
 
