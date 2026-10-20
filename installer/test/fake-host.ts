@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { basename, dirname } from 'node:path';
 import { parseEnv } from 'node:util';
-import type { FileInfo, GroupInfo, Host, Owner, RunOptions, RunResult, UserInfo } from '../src/host.js';
+import type { FileInfo, GroupInfo, Host, Owner, RunOptions, RunResult, ScanOptions, ScanResult, UserInfo } from '../src/host.js';
 
 // In-memory Linux host for the installer tests: a file tree with owners/modes, users and groups, systemd units, and
 // simulations of exactly the external tools the installers call (server-release.js, migrate.js, bootstrap-admin.js,
@@ -37,6 +37,8 @@ export class FakeHost implements Host {
   /** Called on every journal read: may log a line for the Agent's current invocation (null = nothing new yet). */
   agentLogs: ((invocation: string, read: number) => string | null) | null = null;
   journalFails = false;
+  /** The journal read does not finish (the real scan would kill it at the deadline). */
+  journalHangs = false;
   private journalReads = 0;
   private nextInvocation = 1;
   /** Writes that fail (path predicate); once = only the first matching write. */
@@ -211,16 +213,34 @@ export class FakeHost implements Host {
     }
   }
 
-  /** journalctl -u <unit> … → every run of the unit (like the real journal); _SYSTEMD_INVOCATION_ID=<id> → that run only. */
-  private journalctl(args: string[]): RunResult {
-    if (this.journalFails) return { code: 1, stdout: '', stderr: 'Failed to open journal' };
+  /** Rows a journalctl invocation would print: -u <unit> → every run of the unit (like the real journal); _SYSTEMD_INVOCATION_ID=<id> → that run only. */
+  private journalRows(args: readonly string[]): string[] {
     const unit = 'node-control-agent.service';
     const current = this.invocations.get(unit);
     const line = current && this.agentLogs ? this.agentLogs(current, this.journalReads++) : null;
     if (current && line) this.journal.push({ unit, invocation: current, line });
     const byInvocation = args.find((a) => a.startsWith('_SYSTEMD_INVOCATION_ID='))?.split('=')[1];
-    const rows = this.journal.filter((r) => (byInvocation === undefined ? r.unit === unit : r.invocation === byInvocation));
-    return { code: 0, stdout: rows.map((r) => `${r.line}\n`).join(''), stderr: '' };
+    return this.journal.filter((r) => (byInvocation === undefined ? r.unit === unit : r.invocation === byInvocation)).flatMap((r) => r.line.split('\n'));
+  }
+
+  private journalctl(args: string[]): RunResult {
+    if (this.journalFails) return { code: 1, stdout: '', stderr: 'Failed to open journal' };
+    return { code: 0, stdout: this.journalRows(args).map((l) => `${l}\n`).join(''), stderr: '' };
+  }
+
+  /** Same semantics as realHost.scan: line by line, byte limit, overlong lines skipped, deadline, exit code. */
+  scan(command: string, args: readonly string[], o: ScanOptions): Promise<ScanResult> {
+    this.calls.push({ command, args: [...args] });
+    if (command !== 'journalctl') return Promise.resolve({ status: 'exit', code: 127 });
+    if (this.journalFails) return Promise.resolve({ status: 'exit', code: 1 });
+    if (this.journalHangs) return Promise.resolve({ status: 'timeout' });
+    let bytes = 0;
+    for (const l of this.journalRows(args)) {
+      bytes += Buffer.byteLength(l) + 1;
+      if (bytes > o.maxBytes) return Promise.resolve({ status: 'limit' });
+      if (l.length <= o.maxLineChars) o.onLine(l);
+    }
+    return Promise.resolve({ status: 'exit', code: 0 });
   }
 
   private node(args: string[]): RunResult {
