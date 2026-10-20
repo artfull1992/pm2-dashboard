@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, chownSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, type Stats, writeSync } from 'node:fs';
+import { chmodSync, chownSync, closeSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, type Stats, writeSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 
@@ -93,8 +93,9 @@ export const realHost: Host = {
     const existing = realHost.stat(path);
     if (existing && existing.kind !== 'file') throw new Error(`${path} exists and is not a regular file`);
     const tmp = join(dirname(path), `.${basename(path)}.tmp-${String(process.pid)}-${randomBytes(4).toString('hex')}`);
-    const fd = openSync(tmp, 'wx', owner.mode);
+    const fd = openSync(tmp, 'wx', owner.mode & 0o600);
     try {
+      fchmodSync(fd, owner.mode); // open() applies the umask; the exact mode is set before any content is written
       writeSync(fd, content);
       fsyncSync(fd);
       closeSync(fd);

@@ -73,16 +73,23 @@ export function prepareRelease({ base, artifact, artifactSha256, revision, insta
     return { status: 'already-prepared', dir: target };
   }
 
-  mkdirSync(releases, { recursive: true, mode: 0o755 });
+  // Modes are set explicitly: mkdir applies the operator's umask (077 would make the release unreadable for the
+  // service users and Nginx). Only directories created here are touched.
+  for (const dir of [base, releases]) {
+    if (!existsSync(dir)) { mkdirSync(dir, { mode: 0o755 }); chmodSync(dir, 0o755); }
+  }
   const staging = join(releases, `.staging-${revision}-${process.pid}`);
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { mode: 0o755 });
+  chmodSync(staging, 0o755);
   try {
     run('tar', ['-xzf', artifact, '-C', staging, '--no-same-owner']);
     const errors = verifyManifest(staging, revision);
     if (errors.length > 0) throw new Error(`manifest verification failed: ${errors.join('; ')}`);
     install(staging);
-    run('chmod', ['-R', 'go-w', staging]);
+    // Root-owned, no secrets: readable (and traversable) by everyone, writable only by root — whatever the umask
+    // of the extraction and of npm ci was.
+    run('chmod', ['-R', 'u+rwX,go=rX', staging]);
     renameSync(staging, target);
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
