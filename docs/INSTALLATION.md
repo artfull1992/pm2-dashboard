@@ -2,7 +2,7 @@
 
 Єдине джерело інструкцій для первинного встановлення Central API, підключення серверів (Agent), діагностики та відновлення після часткової невдачі. Процедура оновлення наявних інсталяцій і історія деплоїв — [DEPLOYMENT](DEPLOYMENT.md); архітектура — [ARCHITECTURE](ARCHITECTURE.md).
 
-> **Стан перевірки (2026-10-20).** Інсталятори покриті автоматичними тестами на змодельованому хості (порядок кроків, права, конфлікти, повторні запуски й незавершені дії, підтвердження поточного запуску Agent, секрети) і перевіркою примітивів на справжній файловій системі. **Наскрізне встановлення на чистій Ubuntu VM ще не виконувалось** — до такої перевірки маршрут вважається не підтвердженим end-to-end. Не запускайте інсталятори на серверах, де Node Control уже встановлено вручну: для них — [DEPLOYMENT](DEPLOYMENT.md).
+> **Стан перевірки (2026-10-20).** Маршрут цього документа пройдено наскрізно на одноразових ізольованих VM: **Ubuntu 26.04.1 LTS (arm64)**, systemd 259, Node.js 22.22.1 і npm 9.2 з пакетів Ubuntu, PostgreSQL 18.6, Nginx 1.28.3; тестовий PM2 7.0.4 на окремій VM Agent. Перевірено первинне встановлення, повтори, umask 022 і 077, Nginx/HTTPS-вхід, Agent з inventory і broker, часткові збої та відновлення, справжній systemd/journal, негативні сценарії й reboot (матриця — розділ 8 і PROJECT_STATUS). Інші версії Ubuntu й архітектура x86_64 не перевірялись. Не запускайте інсталятори на серверах, де Node Control уже встановлено вручну: для них — [DEPLOYMENT](DEPLOYMENT.md).
 
 ## Що встановлюється
 
@@ -19,8 +19,9 @@ PM2, його застосунки, `PM2_HOME` і автозапуск PM2 ін�
 
 ## Підтримка й обмеження
 
-- Ubuntu із systemd; запуск від root. Інші дистрибутиви інсталятор відхиляє. Точна перевірена версія Ubuntu ще не зафіксована (див. стан перевірки вище).
-- Node.js 22 саме в `/usr/bin/node` (його використовують units). Інсталятор Node.js не встановлює й не оновлює.
+- Ubuntu із systemd; запуск від root. Інші дистрибутиви інсталятор відхиляє. Перевірено: Ubuntu 26.04.1 LTS (arm64).
+- Node.js 22 саме в `/usr/bin/node` (його використовують units) і `npm` (потрібен для залежностей API). В Ubuntu 26.04 обидва — з пакетів дистрибутива: `apt install nodejs npm` (там Node.js 22; npm — окремий пакет). Інсталятор Node.js не встановлює й не оновлює.
+- На центральному сервері — `apt install postgresql nginx` (PostgreSQL слухає лише `127.0.0.1`; стандартний `pg_hba.conf` Ubuntu вже дозволяє вхід за паролем із loopback).
 - Docker не використовується. PostgreSQL і Nginx — host-служби, якими керує оператор.
 - Шляхи, користувачі й назви units фіксовані (deployment contract, [DEPLOYMENT](DEPLOYMENT.md)): один Central API на сервер, на керованому сервері — один власник PM2 для inventory/керування.
 - Транзакційності системної інсталяції немає: кроки виконуються по черзі, за невдачі — зупинка з поясненням, повторний запуск продовжує.
@@ -93,11 +94,11 @@ node server-bundle/install/server.js apply --artifact $A --db-env db.env --publi
 | Крок | Що змінюється | Як перевірити | Якщо не вдалося |
 |---|---|---|---|
 | Користувач | `useradd --system --user-group --shell /usr/sbin/nologin nodecontrol` | `id nodecontrol` | наявний `nodecontrol` приймається лише як системний (UID 1–999, не UID 0, основна група не root, shell `nologin`/`false`); інакше — зупинка до змін, обліковий запис не змінюється |
-| Реліз | `server-release.js prepare`: SHA-256 → manifest → `npm ci --omit=dev` → `/opt/node-control/releases/<sha>`; права незалежні від umask оператора: каталоги 755, файли 644 (виконувані — 755), власник root, запис лише root | `stat -c '%U %a' /opt/node-control /opt/node-control/releases /opt/node-control/releases/<sha>` | prepare не залишає частково розпакованого релізу; повторіть |
+| Реліз | `server-release.js prepare`: SHA-256 → manifest → `npm ci --omit=dev` → `/opt/node-control/releases/<sha>`; права незалежні від umask оператора: каталоги 755, файли 644 (виконувані — 755), власник `root:root` для всіх файлів, зокрема залежностей `npm ci`, запис лише root | `stat -c '%U %a' /opt/node-control /opt/node-control/releases /opt/node-control/releases/<sha>` | prepare не залишає частково розпакованого релізу; повторіть |
 | Конфігурація | `server-release.js config`: `/etc/node-control/api.env` (600 `nodecontrol`, каталог 750 `root:nodecontrol`) з `DB_*` — лише якщо файлу немає | `stat -c '%U %a' /etc/node-control/api.env` | наявний файл не перезаписується; помилки в ньому — конфлікт із назвами ключів |
 | Параметри | лише **відсутні** ключі: `AUTH_COOKIE_SECURE=true`, `AUTH_ALLOWED_ORIGINS`, `ALERTS_PUBLIC_URL`, згенерований `ALERTS_SECRET_KEY` + `_VERSION=1`; з `--behind-nginx` — `API_TRUSTED_PROXIES=127.0.0.1`; з `--enable-pm2-control` — `PM2_CONTROL_ENABLED=true`. Перед зміною — `api.env.bak-<час>` (600) | `grep -c '' api.env`; значення не друкувати | попередній вміст — у `.bak`; повторіть |
 | Схема БД | `migrate.js status`; порожня БД → `migrate.js up` (одна транзакція) | `status`: pending=0 | невдалий `up` відкочується повністю; БД із наявною схемою — це оновлення, інсталятор її не мігрує |
-| Unit | `systemd-analyze verify` файлу з релізу → `/etc/systemd/system/node-control-api.service` (644 root) → `daemon-reload` | `systemctl cat node-control-api` | інший наявний unit — конфлікт (`diff`); встановлений можна прибрати й повторити |
+| Unit | `systemd-analyze verify` файлу з релізу → `/etc/systemd/system/node-control-api.service` (644 root) → `daemon-reload` | `systemctl cat node-control-api` | наявний unit, що відрізняється від unit в артефакті, зупиняє інсталятор ще в перевірках (до будь-яких змін); інсталятор його не перезаписує (`diff`). Незавершений `daemon-reload` повторюється наступним запуском |
 | Активація | `server-release.js activate`: `/opt/node-control/current` → реліз | `server-release.js status` | інший активний реліз — зупинка (це оновлення) |
 | Служба | `systemctl enable` + `start` (`restart`, якщо цього запуску змінено конфігурацію чи unit) | `systemctl is-active node-control-api` | причина в `journalctl -u node-control-api -n 50 -o cat` |
 | Адміністратор (`--admin-email`) | `bootstrap-admin.js` від `nodecontrol` | вхід в UI | наявний адміністратор не змінюється (повідомлення «вже існує») |
@@ -161,7 +162,7 @@ node server-bundle/install/agent.js apply --artifact $A --api-url https://contro
 | Користувач | `nodecontrol-agent` (системний, без shell) — **до** будь-яких каталогів чи файлів з його власністю | ті самі вимоги, що й для `nodecontrol` (не UID 0, не група root); інакше — зупинка до змін |
 | Реліз | `/opt/node-control-agent` (755 root) → `prepare --no-install` → `activate` | як для API |
 | Конфігурація | `/etc/node-control-agent` (750 `root:nodecontrol-agent`) → `agent.env` (600 `nodecontrol-agent`, атомарно): `NC_AGENT_API_URL`, `NC_AGENT_TOKEN` (+ ключі inventory/керування) — лише якщо файлу немає; інакше додаються лише відсутні ключі з `agent.env.bak-<час>` | наявний ключ ніколи не ротується |
-| Unit | `node-control-agent.service` із релізу, `verify` → встановлення → `daemon-reload` — **до** `enable/start` | інший наявний unit — конфлікт |
+| Unit | `node-control-agent.service` із релізу, `verify` → встановлення → `daemon-reload` — **до** `enable/start` | наявний інший unit Agent, exporter чи broker — зупинка ще в перевірках, до будь-яких змін |
 | Inventory | група `nc-pm2-inventory`, членство Agent, `/var/lib/node-control-pm2` (2750 `<owner>:nc-pm2-inventory`), `/etc/node-control-pm2-exporter/<owner>.env` (644), units exporter, один пробний запуск, `enable --now` таймера | `journalctl -u node-control-pm2-exporter@<owner> -n 20 -o cat`; PM2 не змінювався |
 | Керування | група `nc-pm2-control`, `/etc/node-control-pm2-broker/<owner>.env` (644), **порожня** allowlist (root, 644; наявна не змінюється), unit і служба broker, членство Agent | `journalctl -u node-control-pm2-broker@<owner> -n 20 -o cat` |
 | Служба Agent | `enable` + `start` (`restart`, якщо змінено конфігурацію, unit або групи) | `journalctl -u node-control-agent -n 20 -o cat`; exit 2 — помилка конфігурації |
@@ -267,9 +268,9 @@ systemctl disable --now node-control-api                 # або node-control-a
 
 Не друкуйте вміст `api.env`/`agent.env`, `systemctl show` чи `/proc/<pid>/environ`; не виконуйте `pm2 jlist`/`env` (містять env застосунків).
 
-## 8. Наскрізна перевірка на чистій Ubuntu (ще не виконана)
+## 8. Наскрізна перевірка на чистій Ubuntu
 
-Сценарій для майбутнього погодженого ізольованого прогону (не production, без Docker); результат фіксується в PROJECT_STATUS із версією Ubuntu:
+**Виконано 2026-10-20** на артефактах revision `7023523` (Ubuntu 26.04.1 LTS arm64, одноразові VM, без Docker, без production). Усі пункти нижче пройдено; матриця з фактичними результатами й знайдені під час прогону дефекти (виправлені) — PROJECT_STATUS. Для перевірки іншої версії Ubuntu чи архітектури — той самий сценарій:
 
 1. Чиста VM: Ubuntu LTS із systemd, Node.js 22 у `/usr/bin/node`, PostgreSQL і Nginx з пакетів; синтетичний домен і самопідписаний сертифікат, довірений на тестовому «керованому» VM.
    Кожен сценарій — з чистого snapshot, двічі: в shell з `umask 022` і з `umask 077` (як після підготовки секретів); перевірити, що `nodecontrol`, `nodecontrol-agent`, власник PM2 і користувач Nginx читають потрібні файли релізів і конфігурацій, а секретні файли лишаються 600.
