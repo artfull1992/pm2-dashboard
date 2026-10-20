@@ -31,6 +31,19 @@ describe('realHost', () => {
     expect(() => { realHost.writeFileAtomic(join(d, 'sub'), 'x', { mode: 0o600, ...me }); }).toThrow();
   });
 
+  it('writeFileAtomic and mkdir: the requested mode exactly, also under umask 077 (operator shells after secret setup)', () => {
+    const d = tmp();
+    const previous = process.umask(0o077);
+    try {
+      realHost.writeFileAtomic(join(d, 'allowlist.json'), '{}', { mode: 0o644, ...me });
+      realHost.mkdir(join(d, 'snap'), { mode: 0o2750, ...me });
+    } finally {
+      process.umask(previous);
+    }
+    expect(statSync(join(d, 'allowlist.json')).mode & 0o7777).toBe(0o644);
+    expect(statSync(join(d, 'snap')).mode & 0o777).toBe(0o750);
+  });
+
   it('mkdir: exact mode despite the umask, one level, never over an existing path; stat/readlink do not follow links', () => {
     const d = tmp();
     const sub = join(d, 'snap');

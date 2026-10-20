@@ -61,6 +61,29 @@ test('prepare: verifies, installs in staging, then publishes releases/<sha>', ()
   assert.equal(statSync(join(base, 'releases', REV1, 'package.json')).mode & 0o022, 0, 'group/other must not write');
 });
 
+test('prepare under umask 077: base, releases and the whole release are readable by service users and Nginx', () => {
+  const art = artifact(REV1); // built with the normal umask, like on the build machine
+  const base = join(tmp('nc-opt-'), 'node-control'); // does not exist yet: prepare creates it
+  const previous = process.umask(0o077);
+  try {
+    prepareRelease({
+      base, artifact: art.file, artifactSha256: art.sha256, revision: REV1,
+      // like npm ci under the operator's umask: 700 dirs, 600 files
+      install: (dir) => { mkdirSync(join(dir, 'node_modules', 'pg'), { recursive: true }); writeFileSync(join(dir, 'node_modules', 'pg', 'index.js'), 'x'); },
+    });
+  } finally {
+    process.umask(previous);
+  }
+  const mode = (p) => (statSync(p).mode & 0o777).toString(8);
+  const release = join(base, 'releases', REV1);
+  assert.deepEqual([mode(base), mode(join(base, 'releases')), mode(release)], ['755', '755', '755']);
+  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? [join(dir, e.name), ...walk(join(dir, e.name))] : [join(dir, e.name)]));
+  for (const path of walk(release)) {
+    const expected = statSync(path).isDirectory() ? '755' : '644';
+    assert.equal(mode(path), expected, path.slice(release.length));
+  }
+});
+
 test('prepare is idempotent: second run reuses the verified release without reinstalling', () => {
   const base = tmp('nc-base-');
   const calls = [];
