@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 import { buildApiEnv, parseApiEnv, validateApiEnv } from '../../scripts/deploy/lib/api-env.js';
 import { buildManifest, MANIFEST_FILE, sha256File } from '../../scripts/deploy/lib/manifest.js';
 import {
-  activateRelease, ensureApiConfig, prepareRelease, releaseStatus, rollbackRelease,
+  activateRelease, ensureApiConfig, ownTree, prepareRelease, releaseStatus, rollbackRelease,
 } from '../../scripts/deploy/lib/release-dir.js';
 import { runCli } from '../../scripts/deploy/server-release.js';
 import { generatePassword } from '../../scripts/lib/password.js';
@@ -82,6 +82,22 @@ test('prepare under umask 077: base, releases and the whole release are readable
     const expected = statSync(path).isDirectory() ? '755' : '644';
     assert.equal(mode(path), expected, path.slice(release.length));
   }
+});
+
+test('ownTree: every entry not owned by the target (incl. symlinks, not followed) is handed over; owned ones are skipped', () => {
+  const dir = tmp('nc-own-');
+  mkdirSync(join(dir, 'node_modules', '@types', 'node'), { recursive: true });
+  writeFileSync(join(dir, 'node_modules', '@types', 'node', 'index.d.ts'), 'x');
+  spawnSync('ln', ['-s', '/etc/passwd', join(dir, 'node_modules', 'link')]);
+  const calls = [];
+  // Target: a uid nobody here has (as root would target 0 while npm left uid 1001 behind).
+  const changed = ownTree(dir, { uid: 4242, gid: 4242, lchown: (path, uid, gid) => { calls.push([path.slice(dir.length), uid, gid]); } });
+  assert.equal(changed, 6);
+  assert.deepEqual(calls.map(([p]) => p).sort(), ['', '/node_modules', '/node_modules/@types', '/node_modules/@types/node', '/node_modules/@types/node/index.d.ts', '/node_modules/link']);
+  assert.ok(calls.every(([, uid, gid]) => uid === 4242 && gid === 4242));
+  // Already owned by the target → nothing to do.
+  const me = statSync(dir);
+  assert.equal(ownTree(dir, { uid: me.uid, gid: me.gid, lchown: () => assert.fail('no change expected') }), 0);
 });
 
 test('prepare is idempotent: second run reuses the verified release without reinstalling', () => {

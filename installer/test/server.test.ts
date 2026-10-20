@@ -108,6 +108,20 @@ describe('server installer: first installation', () => {
     expect(again.code).toBe(0);
     expect(again.all).toMatch(/адміністратор уже існує/);
     expect(h.admins).toBe(1);
+    // Ubuntu run 2026-10-20: the refused bootstrap is not reported as a change.
+    expect(again.all).toMatch(/перший адміністратор \(admin@example\.com\): нічого не змінено/);
+    expect(again.all).toMatch(/Усі кроки вже були виконані раніше — нічого не змінено/);
+    expect(again.all).not.toMatch(/Змінено: \d/);
+  });
+
+  it('next steps: only what is still open, numbered without gaps', async () => {
+    const h = host();
+    h.file('/root/admin.pass', 'x-pass-1234567890\n', 0o600);
+    const first = await run(h, ['apply', ...ARGS]);
+    expect(first.all).toMatch(/ {2}1\. Nginx \+ TLS[\s\S]* {2}2\. Перший адміністратор[\s\S]* {2}3\. Сервери/);
+    const done = await run(h, ['apply', ...ARGS, '--behind-nginx', '--admin-email', 'admin@example.com', '--admin-password-file', '/root/admin.pass']);
+    expect(done.all).toMatch(/ {2}1\. Сервери/);
+    expect(done.all).not.toMatch(/повторити apply з --behind-nginx|Перший адміністратор:| 2\. /);
   });
 
   it('--behind-nginx later: only API_TRUSTED_PROXIES is added (existing lines byte for byte), with a backup, and the API restarts', async () => {
