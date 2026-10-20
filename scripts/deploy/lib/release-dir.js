@@ -6,7 +6,7 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync,
+  chmodSync, chownSync, existsSync, lchownSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync,
   renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -57,6 +57,22 @@ export function assertReleaseUsable(base, revision) {
 }
 
 /**
+ * Gives every entry of a release tree to uid:gid (root by default) without following symlinks. npm ci run as root
+ * keeps the owner recorded in package tarballs (e.g. uid 1001), which a later local user with that uid could modify.
+ * Returns the number of entries changed.
+ */
+export function ownTree(dir, { uid = 0, gid = 0, lchown = lchownSync } = {}) {
+  let changed = 0;
+  const visit = (path) => {
+    const info = lstatSync(path);
+    if (info.uid !== uid || info.gid !== gid) { lchown(path, uid, gid); changed += 1; }
+    if (info.isDirectory()) for (const name of readdirSync(path)) visit(join(path, name));
+  };
+  visit(dir);
+  return changed;
+}
+
+/**
  * Verifies the artifact checksum, extracts into a staging dir, verifies the manifest, installs production
  * dependencies and only then renames staging → releases/<sha>. Any failure leaves no release directory behind.
  */
@@ -90,6 +106,7 @@ export function prepareRelease({ base, artifact, artifactSha256, revision, insta
     // Root-owned, no secrets: readable (and traversable) by everyone, writable only by root — whatever the umask
     // of the extraction and of npm ci was.
     run('chmod', ['-R', 'u+rwX,go=rX', staging]);
+    if (process.getuid?.() === 0) ownTree(staging); // root-owned release (never the uids from npm tarballs)
     renameSync(staging, target);
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });

@@ -36,7 +36,8 @@ export interface Step {
   title: string;
   /** Read-only inspection. May throw (e.g. a probe failed): treated like a failure of the step. */
   check(ctx: Context): StepState | Promise<StepState>;
-  apply(ctx: Context): void | Promise<void>;
+  /** Returns 'unchanged' when the action found nothing to change (e.g. bootstrap: an administrator already exists). */
+  apply(ctx: Context): undefined | 'unchanged' | Promise<undefined | 'unchanged'>;
   /** Effects recorded when this step changes something. */
   effects?: readonly string[];
   /** What the operator does if apply fails (the step itself is safe to retry unless said otherwise). */
@@ -88,10 +89,11 @@ export async function runSteps(ctx: Context, steps: readonly Step[]): Promise<Ru
       continue;
     }
     out.line(`  → [${n}] ${step.title}: ${state.detail}`);
+    let unchanged: boolean;
     try {
       // Intent first: the reload/restart this change will need is recorded BEFORE the change.
       if (added.length > 0) ctx.persist();
-      await step.apply(ctx);
+      unchanged = (await step.apply(ctx)) === 'unchanged';
       const after = await step.check(ctx);
       if (after.state !== 'done') throw new Error(`після виконання стан не підтверджено (${after.state === 'conflict' ? after.detail : after.detail})`);
     } catch (error) {
@@ -100,6 +102,7 @@ export async function runSteps(ctx: Context, steps: readonly Step[]): Promise<Ru
       reportStop(out, changed);
       return { ok: false, changed, failedStep: step.id };
     }
+    if (unchanged) { out.line(`  ✓ [${n}] ${step.title}: нічого не змінено`); continue; }
     changed.push(step.title);
     out.line(`  ✓ [${n}] ${step.title}: виконано`);
   }

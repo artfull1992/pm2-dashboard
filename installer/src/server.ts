@@ -204,9 +204,10 @@ function adminStep(o: ServerOptions, revision: string): Step {
       const r = o.adminPasswordFile
         ? host.run('runuser', [...args, '--password-stdin'], { input: host.readFile(o.adminPasswordFile) })
         : host.run('runuser', args, { interactive: true });
-      if (r.code === 3) ctx.out.line('    адміністратор уже існує або email зайнятий — нічого не змінено');
-      else if (r.code !== 0) throw new Error(`bootstrap-admin.js: код ${String(r.code)} (2 — ввід/параметри, 1 — помилка БД; нічого не закомічено)`);
+      if (r.code !== 0 && r.code !== 3) throw new Error(`bootstrap-admin.js: код ${String(r.code)} (2 — ввід/параметри, 1 — помилка БД; нічого не закомічено)`);
       ctx.effects.add('admin-done');
+      if (r.code === 3) { ctx.out.line('    адміністратор уже існує або email зайнятий — нічого не змінено'); return 'unchanged'; }
+      return undefined;
     },
     recovery: 'bootstrap або створює адміністратора повністю, або нічого; повторіть з --admin-email (наявного адміністратора не змінить)',
   };
@@ -241,6 +242,19 @@ export async function verifyServer(ctx: Context): Promise<boolean> {
   const ready = await waitStatus(host, `http://127.0.0.1:${String(port)}/health/ready`, 15);
   out.line(ready === 200 ? '  ✓ /health/ready — 200 (БД доступна): health пройдено' : `  ✗ /health/ready — ${ready === null ? 'немає відповіді' : String(ready)}: API не бачить БД (перевірте PostgreSQL і DB_*)`);
   return ready === 200;
+}
+
+/** What the operator does next — only the steps still open for the options of this run, numbered in order. */
+function nextSteps(o: ServerOptions): string[] {
+  const todo = [
+    ...(o.behindNginx ? [] : [
+      `Nginx + TLS: node ${join('install', 'server.js')} nginx-config --server-name <домен> --certificate <crt> --certificate-key <key>`
+        + '\n     → перевірити, зберегти, nginx -t, reload; потім повторити apply з --behind-nginx.',
+    ]),
+    ...(o.adminEmail ? [] : ['Перший адміністратор: повторіть apply з --admin-email <email> (пароль — прихований ввід).']),
+    'Сервери: UI → «Сервери» → «Додати сервер» → «Видати ключ»; на сервері — install/agent.js.',
+  ];
+  return ['\nГотово: Central API встановлено й перевірено. Далі (docs/INSTALLATION.md):', ...todo.map((t, i) => `  ${String(i + 1)}. ${t}`)];
 }
 
 export async function buildServerPlan(host: Host, o: ServerOptions, input: SecretInput): Promise<Plan> {
@@ -313,13 +327,7 @@ export async function buildServerPlan(host: Host, o: ServerOptions, input: Secre
     pending,
     steps,
     verify: verifyServer,
-    next: [
-      '\nГотово: Central API встановлено й перевірено. Далі (docs/INSTALLATION.md):',
-      `  1. Nginx + TLS: node ${join('install', 'server.js')} nginx-config --server-name <домен> --certificate <crt> --certificate-key <key>`,
-      '     → перевірити, зберегти, nginx -t, reload; потім повторити apply з --behind-nginx.',
-      ...(o.adminEmail ? [] : ['  2. Перший адміністратор: повторіть apply з --admin-email <email> (пароль — прихований ввід).']),
-      '  3. Сервери: UI → «Сервери» → «Додати сервер» → «Видати ключ»; на сервері — install/agent.js.',
-    ],
+    next: nextSteps(o),
   };
 }
 
