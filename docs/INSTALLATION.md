@@ -2,7 +2,7 @@
 
 Єдине джерело інструкцій для первинного встановлення Central API, підключення серверів (Agent), діагностики та відновлення після часткової невдачі. Процедура оновлення наявних інсталяцій і історія деплоїв — [DEPLOYMENT](DEPLOYMENT.md); архітектура — [ARCHITECTURE](ARCHITECTURE.md).
 
-> **Стан перевірки (2026-10-20).** Маршрут цього документа пройдено наскрізно на одноразових ізольованих VM: **Ubuntu 26.04.1 LTS (arm64)**, systemd 259, Node.js 22.22.1 і npm 9.2 з пакетів Ubuntu, PostgreSQL 18.6, Nginx 1.28.3; тестовий PM2 7.0.4 на окремій VM Agent. Перевірено первинне встановлення, повтори, umask 022 і 077, Nginx/HTTPS-вхід, Agent з inventory і broker, часткові збої та відновлення, справжній systemd/journal, негативні сценарії й reboot (матриця — розділ 8 і PROJECT_STATUS). Інші версії Ubuntu й архітектура x86_64 не перевірялись. Не запускайте інсталятори на серверах, де Node Control уже встановлено вручну: для них — [DEPLOYMENT](DEPLOYMENT.md).
+> **Стан перевірки (2026-10-20).** Маршрут цього документа пройдено наскрізно на одноразових ізольованих VM: **Ubuntu 26.04.1 LTS (arm64)**, systemd 259, Node.js 22.22.1 і npm 9.2 з пакетів Ubuntu, PostgreSQL 18.6, Nginx 1.28.3; тестовий PM2 7.0.4 на окремій VM Agent. Перевірено первинне встановлення й повтори (API і Agent — під umask 022 і 077), Nginx/HTTPS-вхід, Agent з inventory і broker, часткові збої та відновлення, справжній systemd/journal, негативні сценарії й reboot (ці — під umask 022; матриця — розділ 8 і PROJECT_STATUS). Інші версії Ubuntu й архітектура x86_64 не перевірялись. Не запускайте інсталятори на серверах, де Node Control уже встановлено вручну: для них — [DEPLOYMENT](DEPLOYMENT.md).
 
 ## Що встановлюється
 
@@ -270,12 +270,27 @@ systemctl disable --now node-control-api                 # або node-control-a
 
 ## 8. Наскрізна перевірка на чистій Ubuntu
 
-**Виконано 2026-10-20** на артефактах revision `7023523` (Ubuntu 26.04.1 LTS arm64, одноразові VM, без Docker, без production). Усі пункти нижче пройдено; матриця з фактичними результатами й знайдені під час прогону дефекти (виправлені) — PROJECT_STATUS. Для перевірки іншої версії Ubuntu чи архітектури — той самий сценарій:
+### 8.1 Що виконано (2026-10-20)
 
-1. Чиста VM: Ubuntu LTS із systemd, Node.js 22 у `/usr/bin/node`, PostgreSQL і Nginx з пакетів; синтетичний домен і самопідписаний сертифікат, довірений на тестовому «керованому» VM.
-   Кожен сценарій — з чистого snapshot, двічі: в shell з `umask 022` і з `umask 077` (як після підготовки секретів); перевірити, що `nodecontrol`, `nodecontrol-agent`, власник PM2 і користувач Nginx читають потрібні файли релізів і конфігурацій, а секретні файли лишаються 600.
+На артефактах revision `7023523`: Ubuntu 26.04.1 LTS arm64, одноразові VM, без Docker, без production. Матриця з фактичними результатами й дефектами, знайденими під час прогону (виправлені), — у PROJECT_STATUS. Обсяг umask:
+
+- під **обома** umask (`022` і `077`) пройдено фази встановлення API (plan, apply, повтор, Nginx/HTTPS, додавання ключів) і Agent (plan, heartbeat, повтор, inventory, broker);
+- recovery-, негативні, журнальні сценарії й reboot виконано **лише під umask `022`**; під `077` ці фази не повторювались.
+
+_Уточнення 2026-10-20 (за review Codex):_ попередня редакція цього розділу описувала частковий збій через `systemctl mask` і переривання Ctrl+C. Цих сценаріїв не виконували, а `mask` для цієї межі не підходить: masked unit — symlink, тож інсталятор зупиняється ще в перевірках, до запису конфігурації. Нижче — сценарії, які справді виконано (R1, R3), з точними кроками.
+
+### 8.2 Як повторити (лише одноразові тестові VM)
+
+Ін'єкції збоїв нижче — **лише для одноразових тестових VM, ніколи для production**. Кожен сценарій починати з чистого snapshot; якщо його перервано, повернути VM до snapshot (або виконати крок «відновлення» нижче), не продовжувати на «напівзламаній» VM.
+
+1. Чиста VM: Ubuntu LTS із systemd, Node.js 22 у `/usr/bin/node`, PostgreSQL і Nginx з пакетів; синтетичний домен і самопідписаний сертифікат, довірений на тестовому «керованому» VM. Фази встановлення API й Agent — двічі, з чистого snapshot: в shell з `umask 022` і з `umask 077` (як після підготовки секретів); перевірити, що `nodecontrol`, `nodecontrol-agent`, власник PM2 і користувач Nginx читають потрібні файли релізів і конфігурацій, а секретні файли лишаються 600.
 2. Central API: БД за розділом 2.1 → `server.js plan` (нічого не змінено: порівняти `getent passwd`, `ls /etc/systemd/system`, `/var/lib/node-control-install` до/після) → `apply` → `apply` ще раз (нічого не змінено, без restart: `systemctl show -p InvocationID node-control-api` до/після однаковий).
-3. Частковий збій після зміни конфігурації: `systemctl mask node-control-api` → `apply --behind-nginx` (ключ дописано, restart не вдається, у `server.json` лишається `restart-api`) → `systemctl unmask node-control-api` → `apply` виконує restart (InvocationID змінився), повтор — ні. Окремо: перервати `apply` (Ctrl+C) на кроці unit/конфігурації й повторити.
-4. Agent на другій VM з тестовим PM2-користувачем і процесами: `plan`, `apply` (heartbeat підтверджено), повтор, додавання `--pm2-owner/--pm2-home` і `--enable-control`; PID і час старту PM2-процесів не змінились; `pm2` не запускався (`ps`/journal).
-5. Негативні: пошкоджений артефакт, чужий unit, `nodecontrol` з UID 0, відкликаний ключ (`unauthorized`), недоступний API.
-6. Журнал: на цільовій версії systemd перевірити, що `systemctl show --property=InvocationID --value node-control-agent` повертає ідентифікатор, а `journalctl _SYSTEMD_INVOCATION_ID=<id> -o cat --no-pager -q` — лише рядки цього запуску з кодом виходу 0 (зокрема, коли записів немає); після `systemctl restart` старі записи не підтверджують новий запуск.
+3. **R1 — збій після зміни конфігурації, до restart.** Передумова: API встановлено, у `api.env` ще немає `API_TRUSTED_PROXIES`.
+   - Ін'єкція: тимчасово заборонити вхід тестової ролі — `runuser -u postgres -- psql -X -c 'ALTER ROLE node_control_user NOLOGIN'`. Порт PostgreSQL лишається відкритим, тож перевірки перед змінами проходять.
+   - `server.js apply --artifact … --behind-nginx` → ключ дописано в `api.env`, потім `migrate.js status` падає (`code=28000`), exit 1; restart не виконано; `/var/lib/node-control-install/server.json` містить `"pending":["restart-api"]`. `server.js plan` цей файл не змінює.
+   - Усунення причини (і відновлення при перериванні сценарію): `… -c 'ALTER ROLE node_control_user LOGIN'`.
+   - Та сама команда `apply` → рівно один restart (InvocationID змінився), `pending` порожній; ще один повтор — нічого.
+4. **R3 — невдалий restart.** Ін'єкція: тестова обгортка `/usr/local/sbin/systemctl` (у `PATH` root вона йде раніше за `/usr/bin`), яка один раз завершує `restart node-control-api.service` з кодом 1, а всі інші виклики передає `/usr/bin/systemctl`. `apply --behind-nginx` → «служба … не вдалося», у стані `restart-api`. Відновлення: видалити обгортку (`rm /usr/local/sbin/systemctl`) — це повертає точний початковий стан. Повтор → restart виконано, стан очищено; ще повтор — нічого. Той самий механізм використано для збою `daemon-reload` (R2) і для SIGKILL інсталятора одразу після успішного restart (R4).
+5. Agent на другій VM з тестовим PM2-користувачем і процесами: `plan`, `apply` (heartbeat підтверджено), повтор, додавання `--pm2-owner/--pm2-home` і `--enable-control`; PID і час старту PM2-процесів не змінились; `pm2` не запускався (`ps`/journal).
+6. Негативні: пошкоджений артефакт, чужий unit, `nodecontrol` з UID 0, відкликаний ключ (`unauthorized`), недоступний API.
+7. Журнал: на цільовій версії systemd перевірити, що `systemctl show --property=InvocationID --value node-control-agent` повертає ідентифікатор, а `journalctl _SYSTEMD_INVOCATION_ID=<id> -o cat --no-pager -q` — лише рядки цього запуску з кодом виходу 0 (зокрема, коли записів немає); після `systemctl restart` старі записи не підтверджують новий запуск.

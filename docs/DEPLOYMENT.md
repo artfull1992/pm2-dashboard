@@ -36,7 +36,7 @@ Central API та Agents — Node.js 22, systemd. PM2 керує лише зас�
 | Runtime | `/usr/bin/node` — Node.js 22 (пакет `nodejs` nodesource); глобальний Node не оновлюється в межах деплою |
 | Сервісний користувач | `nodecontrol` — системний, `/usr/sbin/nologin`, без home, без sudo, власна група |
 | systemd unit | `node-control-api.service` ← `deploy/systemd/node-control-api.service` |
-| Релізи | `/opt/node-control/releases/<git-sha>` — `root:root`, без запису для group/other; з 2026-10-20 `prepare` задає права явно (каталоги 755, файли 644/755) незалежно від umask і від root передає все дерево (зокрема `node_modules`) `root:root` |
+| Релізи | `/opt/node-control/releases/<git-sha>` — `root:root`, без запису для group/other; з 2026-10-20 `prepare` задає права явно (каталоги 755, файли 644/755) незалежно від umask і від root передає все дерево (зокрема `node_modules`) `root:root`; відсутні батьківські каталоги `--base` створюються з 755, наявні не змінюються |
 | Поточний / попередній | symlinks `/opt/node-control/current`, `/opt/node-control/previous` |
 | Конфігурація | `/etc/node-control/api.env` — `600 nodecontrol:nodecontrol`; каталог `750 root:nodecontrol`; єдине джерело — `ENV_FILE` у unit |
 | Listener | `127.0.0.1:3100` (лише loopback, `API_HOST` валідується). Egress-фільтра `IPAddressDeny` немає з Task 013.2: потрібен вихідний HTTPS до Slack; призначення обмежує код (лише `hooks.slack.com/services/…`) |

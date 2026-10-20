@@ -1,5 +1,27 @@
 # Поточний стан проєкту
 
+## Ubuntu review: вкладений --base і інструкція recovery (2026-10-20) — готово до повторного review Codex
+
+Статус: **готово до повторного review Codex** (APPROVED не виставлявся). База: `4541c0e`, гілка `main`. VM і production не змінювались; Linux-прогін на новій revision не повторювався (див. «Межі»).
+
+| # | Причина | Виправлення | Файли | Regression (старий код → новий) |
+|---|---|---|---|---|
+| P2 `--base` | виправлення umask (`9cedd89`) замінило рекурсивний mkdir створенням лише `base` і `releases`; відсутній батьківський каталог давав ENOENT | `ensureDirTree`: створює всі відсутні рівні зверху вниз, кожен новий — з явним `chmod 755`; наявні предки й цілі symlink не змінюються; файл на місці каталогу — «exists and is not a directory» без перезапису | `scripts/deploy/lib/release-dir.js` | `deploy-release.test.js`: вкладений base (3 відсутні рівні) під umask 022 і 077 → усі нові рівні 755, повтор — `already-prepared`; наявний предок `0710` зберіг права, UID і GID — 3 тести падали → проходять; конфлікт із файлом (проходив і раніше: ENOTDIR) — закріплено; наявні тести ownership/umask/manifest — без змін (23/23) |
+| P2 recovery | INSTALLATION §8 описував `systemctl mask` і Ctrl+C, яких не виконували; masked unit — symlink, тож інсталятор зупиняється ще в перевірках, до запису ключа | §8 розділено: «Що виконано» (факт, точний обсяг umask) і «Як повторити» (R1 — тимчасовий `ALTER ROLE … NOLOGIN`, R3 — одноразова обгортка `systemctl`; передумови, очікуваний pending state, усунення причини, відновлення, лише тестові VM); у примітці на початку документа уточнено обсяг umask | `docs/INSTALLATION.md` | джерела фактів: сценарії `r1.sh`, `r234.sh`, `final-run.sh` і журнали `final-R1.log`, `final-R234.log`, фаз API/Agent 022/077 (приватний scratchpad, не в репозиторії) |
+
+Уточнення обсягу umask (не переписує попередніх записів): під 022 і 077 пройдено фази встановлення API й Agent; recovery-, негативні, журнальні сценарії й reboot — лише під 022.
+
+| Перевірка (Node 22) | Результат |
+|---|---|
+| `node --test tests/unit/deploy-release.test.js` | на `4541c0e` з новими тестами: 3 падіння (fail 3, pass 20); після виправлення 23/23 |
+| `npm run check:local` | exit 0: node:test 136/136, backend 500/500, smoke 10/10, agent 165/165 (+3 opt-in), frontend 247/247, installer 107/107, typecheck, lint, збірки, secrets |
+| Пакування | `server-bundle` зібрано `stageServerBundle` з поточного tooling; справжній CLI `server-release.js prepare --no-install` зі синтетичним tar.gz і manifest у вкладений `--base` (3 відсутні рівні) під umask 077 → `prepared`, повтор → `already-prepared`, усі нові рівні 755; `--help` обох інсталяторів із бандла |
+| `npm run test:installer`, `git diff --check`, `check:secrets` | 107/107 (у складі check:local); OK; OK |
+
+**Межі.** Повтор на Lima VM не виконувався: зміна — логіка створення каталогів у `prepare`, перевірена на справжній файловій системі під umask 022/077 і через CLI `server-release.js` зі справжнім tar.gz; фіксовані шляхи інсталяторів (`/opt/node-control*`) мають наявного батька `/opt`, тобто поведінка інсталяторів на VM від цієї зміни не залежить. Матриця `7023523` не є прогоном нового коду.
+
+**Узгоджений наступний етап (лише план, НЕ реалізовано до APPROVED):** майстер `git clone → cd node-control → sudo ./install.sh` з вибором «Central Server» або «Agent». Вимоги: каталог checkout довільний (не прив'язаний до `/home/ubuntu`); встановлення може виконувати root; власник PM2 визначається окремо; домашній каталог — із системного облікового запису; `PM2_HOME` — з фактичного daemon/конфігурації, а не з поточного `./`; кілька власників — явний вибір; нестандартний шлях можна вказати вручну; зберігається чинний versioned release workflow (артефакт, checksum/manifest, `prepare`/`activate`, rollback).
+
 ## Незалежний review Codex — Ubuntu E2E / ADR-027: CHANGES REQUIRED (2026-10-20)
 
 Перевірено зміни `9cedd89`–`7023523` і документацію `2286fc5` від бази `6e98324`; початкове дерево чисте. Прочитано реалізацію прав/ownership, preflight units, звітів кроків, regression-тести й документацію Code → Docs / Docs → Code. Ubuntu-прогін підтверджується доступними первинними артефактами, але є два зауваження:
