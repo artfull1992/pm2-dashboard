@@ -2,7 +2,7 @@
 
 Єдине джерело інструкцій для первинного встановлення Central API, підключення серверів (Agent), діагностики та відновлення після часткової невдачі. Процедура оновлення наявних інсталяцій і історія деплоїв — [DEPLOYMENT](DEPLOYMENT.md); архітектура — [ARCHITECTURE](ARCHITECTURE.md).
 
-> **Стан перевірки (2026-10-20).** Інсталятори покриті автоматичними тестами на змодельованому хості (порядок кроків, права, конфлікти, повторні запуски, секрети) і перевіркою примітивів на справжній файловій системі. **Наскрізне встановлення на чистій Ubuntu VM ще не виконувалось** — до такої перевірки маршрут вважається не підтвердженим end-to-end. Не запускайте інсталятори на серверах, де Node Control уже встановлено вручну: для них — [DEPLOYMENT](DEPLOYMENT.md).
+> **Стан перевірки (2026-10-20).** Інсталятори покриті автоматичними тестами на змодельованому хості (порядок кроків, права, конфлікти, повторні запуски й незавершені дії, підтвердження поточного запуску Agent, секрети) і перевіркою примітивів на справжній файловій системі. **Наскрізне встановлення на чистій Ubuntu VM ще не виконувалось** — до такої перевірки маршрут вважається не підтвердженим end-to-end. Не запускайте інсталятори на серверах, де Node Control уже встановлено вручну: для них — [DEPLOYMENT](DEPLOYMENT.md).
 
 ## Що встановлюється
 
@@ -92,7 +92,7 @@ node server-bundle/install/server.js apply --artifact $A --db-env db.env --publi
 
 | Крок | Що змінюється | Як перевірити | Якщо не вдалося |
 |---|---|---|---|
-| Користувач | `useradd --system --user-group --shell /usr/sbin/nologin nodecontrol` | `id nodecontrol` | чужий `nodecontrol` (не системний або з shell) — конфлікт, інсталятор його не змінює |
+| Користувач | `useradd --system --user-group --shell /usr/sbin/nologin nodecontrol` | `id nodecontrol` | наявний `nodecontrol` приймається лише як системний (UID 1–999, не UID 0, основна група не root, shell `nologin`/`false`); інакше — зупинка до змін, обліковий запис не змінюється |
 | Реліз | `server-release.js prepare`: SHA-256 → manifest → `npm ci --omit=dev` → `/opt/node-control/releases/<sha>` | `ls /opt/node-control/releases` | prepare не залишає частково розпакованого релізу; повторіть |
 | Конфігурація | `server-release.js config`: `/etc/node-control/api.env` (600 `nodecontrol`, каталог 750 `root:nodecontrol`) з `DB_*` — лише якщо файлу немає | `stat -c '%U %a' /etc/node-control/api.env` | наявний файл не перезаписується; помилки в ньому — конфлікт із назвами ключів |
 | Параметри | лише **відсутні** ключі: `AUTH_COOKIE_SECURE=true`, `AUTH_ALLOWED_ORIGINS`, `ALERTS_PUBLIC_URL`, згенерований `ALERTS_SECRET_KEY` + `_VERSION=1`; з `--behind-nginx` — `API_TRUSTED_PROXIES=127.0.0.1`; з `--enable-pm2-control` — `PM2_CONTROL_ENABLED=true`. Перед зміною — `api.env.bak-<час>` (600) | `grep -c '' api.env`; значення не друкувати | попередній вміст — у `.bak`; повторіть |
@@ -158,7 +158,7 @@ node server-bundle/install/agent.js apply --artifact $A --api-url https://contro
 
 | Крок | Що змінюється | Якщо не вдалося |
 |---|---|---|
-| Користувач | `nodecontrol-agent` (системний, без shell) — **до** будь-яких каталогів чи файлів з його власністю | чужий користувач із цим ім'ям — конфлікт |
+| Користувач | `nodecontrol-agent` (системний, без shell) — **до** будь-яких каталогів чи файлів з його власністю | ті самі вимоги, що й для `nodecontrol` (не UID 0, не група root); інакше — зупинка до змін |
 | Реліз | `/opt/node-control-agent` (755 root) → `prepare --no-install` → `activate` | як для API |
 | Конфігурація | `/etc/node-control-agent` (750 `root:nodecontrol-agent`) → `agent.env` (600 `nodecontrol-agent`, атомарно): `NC_AGENT_API_URL`, `NC_AGENT_TOKEN` (+ ключі inventory/керування) — лише якщо файлу немає; інакше додаються лише відсутні ключі з `agent.env.bak-<час>` | наявний ключ ніколи не ротується |
 | Unit | `node-control-agent.service` із релізу, `verify` → встановлення → `daemon-reload` — **до** `enable/start` | інший наявний unit — конфлікт |
@@ -166,7 +166,7 @@ node server-bundle/install/agent.js apply --artifact $A --api-url https://contro
 | Керування | група `nc-pm2-control`, `/etc/node-control-pm2-broker/<owner>.env` (644), **порожня** allowlist (root, 644; наявна не змінюється), unit і служба broker, членство Agent | `journalctl -u node-control-pm2-broker@<owner> -n 20 -o cat` |
 | Служба Agent | `enable` + `start` (`restart`, якщо змінено конфігурацію, unit або групи) | `journalctl -u node-control-agent -n 20 -o cat`; exit 2 — помилка конфігурації |
 
-Результат: «служба запущена» → «зв'язок Agent підтверджено» (у журналі Agent `"msg":"heartbeat","outcome":"accepted"`; очікування до ~75 с). `unauthorized` — ключ відхилено (не той сервер, відкликаний або сервер деактивовано); `network`/`timeout` — немає зв'язку або TLS; `unavailable` — помилка API. Для inventory додатково показується стан першого звіту.
+Результат: «служба запущена» → «зв'язок Agent підтверджено». Підтвердження дає лише **поточний запуск** Agent: інсталятор бере його `InvocationID` (`systemctl show --property=InvocationID --value node-control-agent`) і читає записи тільки цього запуску (`journalctl _SYSTEMD_INVOCATION_ID=<id>`); останній результат heartbeat (`"outcome":"accepted"`) — успіх. Записи попередніх запусків (інший ключ чи конфігурація) не враховуються. Agent пише в журнал кожну зміну результату, тож на незміненому працюючому Agent (повторний `apply`, без restart) останній запис поточного запуску — його актуальний стан; щойно запущений Agent чекається до ~75 с. Якщо під час перевірки systemd перезапустив Agent, очікується звіт нового запуску. Сам `active` не є підтвердженням; журнал, який не вдалося прочитати, — «не підтверджено». `unauthorized` — ключ відхилено (не той сервер, відкликаний або сервер деактивовано); `network`/`timeout` — немає зв'язку або TLS; `unavailable` — помилка API. Для inventory додатково показується стан першого звіту.
 
 ### 3.3 Керування й логи: явна allowlist
 
@@ -199,13 +199,26 @@ Broker перечитує allowlist сам. На центральному сер
 | Невдалий старт служби | «не вдалося»; health не перевіряється | `journalctl -u <unit> -n 50 -o cat` → виправити → `apply` |
 | API недоступний / TLS | зупинка в перевірках Agent, без змін | перевірити DNS, сертифікат, вихідний HTTPS |
 | Неправильний або відкликаний ключ | установка завершена, але «зв'язок НЕ підтверджено», exit 1 | новий ключ в UI → ротація (розділ 6) |
-| Перерване встановлення (збій, Ctrl+C) | наступний `apply` продовжує з першого невиконаного кроку | запустити ту саму команду `apply` |
+| Перерване встановлення (збій, Ctrl+C) | наступний `apply` продовжує з першого невиконаного кроку й виконує незавершені `daemon-reload`/restart | запустити ту саму команду `apply` |
+| Пошкоджений або чужий файл стану | зупинка до змін із назвою файлу | див. «Стан незавершених дій» нижче |
 
 Після зупинки інсталятор пише, що саме було змінено в цьому запуску. Він ніколи не друкує «успішно встановлено» при невдалій перевірці.
+
+### Стан незавершених дій
+
+Зміна конфігурації, unit-файлу чи груп діє лише після `systemctl daemon-reload` і перезапуску служби. Щоб ця дія не загубилась після збою, Ctrl+C чи аварійного завершення між зміною й перезапуском, інсталятор веде файл стану:
+
+- `/var/lib/node-control-install/server.json` (Central API) і `agent.json` (Agent); каталог `700 root`, файл `600 root`; вміст — лише назви дій (`restart-api`, `restart-agent`, `daemon-reload`), без значень і секретів;
+- **порядок:** спершу записується намір (дія, якої вимагатиме зміна), потім змінюється ресурс, потім виконується reload/restart, і лише після його успіху дія прибирається з файлу. Збій між наміром і зміною коштує щонайбільше один зайвий restart, але ніколи не пропущений; збій після restart до очищення — ще один restart наступного запуску. Невдалий restart лишається в стані до успіху;
+- повторний `apply` виконує записані дії (`daemon-reload` — на кроці unit, до запуску будь-якої служби; restart — на кроці служби); завершений незмінений повтор файл не змінює й нічого не перезапускає;
+- `plan` читає файл і показує незавершені дії («буде виконано — restart»), але нічого не записує й не створює;
+- файл, що не є звичайним файлом root із правами 600 (або каталог не `700 root`), symlink, пошкоджений JSON чи невідомий формат — зупинка до змін. Відновлення вручну: переглянути файл (секретів у ньому немає), виконати перелічені дії (`systemctl daemon-reload`; `systemctl restart node-control-api` або `node-control-agent`), зберегти копію файлу й видалити його, повторити `apply`.
 
 ## 5. Оновлення та rollback
 
 Інсталятори — лише для першого встановлення: на інсталяції з іншим активним релізом вони зупиняються. Оновлення — штатна процедура [DEPLOYMENT](DEPLOYMENT.md), «Процедура» (API: `prepare` → backup `pg_dump` → `migrate status/up` → unit → `activate` → restart; Agent: `prepare --no-install` → `activate` → restart). Rollback оновлення — `server-release.js rollback` (повертає попередній реліз; схема БД не відкочується, тому попередній реліз має бути сумісним зі схемою — див. відповідні розділи DEPLOYMENT).
+
+**Rollback коду інсталятора** — окремий revert commit. Інсталятор ревізій `668ec23`–`b0f8d1d` файлу стану не знає: **не продовжуйте ним незавершений запуск нової версії** — він не виконає записаних reload/restart. Безпечний шлях: завершити незавершені дії вручну за переліком у файлі стану (розділ 4), потім, за потреби, повторити `apply` старою версією. Файл стану лишається на диску (без секретів) і нічого не ламає.
 
 **Відкат первинного встановлення** (нічого не видаляється автоматично):
 
@@ -213,7 +226,7 @@ Broker перечитує allowlist сам. На центральному сер
 systemctl disable --now node-control-api                 # або node-control-agent / node-control-pm2-*@<owner>
 ```
 
-Далі, лише свідомо: unit-файли в `/etc/systemd/system/node-control-*` (+ `daemon-reload`), `/opt/node-control*`, `/etc/node-control*`, `/var/lib/node-control-pm2*`, користувачі `nodecontrol*`, групи `nc-pm2-*`. БД і роль Node Control видаляються лише окремим рішенням оператора (backup спершу). PM2 і застосунки цим не зачіпаються.
+Далі, лише свідомо: unit-файли в `/etc/systemd/system/node-control-*` (+ `daemon-reload`), `/opt/node-control*`, `/etc/node-control*`, `/var/lib/node-control-pm2*`, `/var/lib/node-control-install`, користувачі `nodecontrol*`, групи `nc-pm2-*`. БД і роль Node Control видаляються лише окремим рішенням оператора (backup спершу). PM2 і застосунки цим не зачіпаються.
 
 ## 6. Секрети, backup і відновлення
 
@@ -242,3 +255,13 @@ systemctl disable --now node-control-api                 # або node-control-a
 | Дії недоступні | allowlist, `journalctl -u node-control-pm2-broker@<owner> -n 5 -o cat`, `PM2_CONTROL_ENABLED` на API |
 
 Не друкуйте вміст `api.env`/`agent.env`, `systemctl show` чи `/proc/<pid>/environ`; не виконуйте `pm2 jlist`/`env` (містять env застосунків).
+
+## 8. Наскрізна перевірка на чистій Ubuntu (ще не виконана)
+
+Сценарій для майбутнього погодженого ізольованого прогону (не production, без Docker); результат фіксується в PROJECT_STATUS із версією Ubuntu:
+
+1. Чиста VM: Ubuntu LTS із systemd, Node.js 22 у `/usr/bin/node`, PostgreSQL і Nginx з пакетів; синтетичний домен і самопідписаний сертифікат, довірений на тестовому «керованому» VM.
+2. Central API: БД за розділом 2.1 → `server.js plan` (нічого не змінено: порівняти `getent passwd`, `ls /etc/systemd/system`, `/var/lib/node-control-install` до/після) → `apply` → `apply` ще раз (нічого не змінено, без restart: `systemctl show -p InvocationID node-control-api` до/після однаковий).
+3. Частковий збій після зміни конфігурації: `systemctl mask node-control-api` → `apply --behind-nginx` (ключ дописано, restart не вдається, у `server.json` лишається `restart-api`) → `systemctl unmask node-control-api` → `apply` виконує restart (InvocationID змінився), повтор — ні. Окремо: перервати `apply` (Ctrl+C) на кроці unit/конфігурації й повторити.
+4. Agent на другій VM з тестовим PM2-користувачем і процесами: `plan`, `apply` (heartbeat підтверджено), повтор, додавання `--pm2-owner/--pm2-home` і `--enable-control`; PID і час старту PM2-процесів не змінились; `pm2` не запускався (`ps`/journal).
+5. Негативні: пошкоджений артефакт, чужий unit, `nodecontrol` з UID 0, відкликаний ключ (`unauthorized`), недоступний API.
