@@ -3,7 +3,7 @@ import type { Database } from '../database.js';
 import {
   type ApplicationCursor, encodeCursor, INVENTORY_FRESH_SECONDS, type InventoryReport, type ProcessStatus,
 } from './inventory.js';
-import { ONLINE_WINDOW_SECONDS, type ServerStatus } from './store.js';
+import { lockAgentServer, ONLINE_WINDOW_SECONDS, type ServerStatus } from './store.js';
 
 // PM2 inventory SQL (ADR-016). Parameterized only. A report is applied in one transaction that re-validates the
 // credential (FOR SHARE, like the heartbeat), locks the server's inventory row and enforces ordering:
@@ -98,13 +98,7 @@ export function createPgInventoryStore(db: Database): InventoryStore {
   return {
     recordInventory({ tokenHash, report }) {
       return db.transaction(async (tx) => {
-        const cred = await tx.query<{ server_id: string }>(
-          `SELECT c.server_id FROM agent_credentials c JOIN servers s ON s.id = c.server_id
-            WHERE c.token_hash = $1 AND c.revoked_at IS NULL AND s.is_active
-            FOR SHARE OF c, s`,
-          [tokenHash],
-        );
-        const serverId = cred.rows[0]?.server_id;
+        const serverId = await lockAgentServer(tx, tokenHash);
         if (!serverId) return 'unauthorized' as const;
         const clock = await tx.query<{ t: Date }>('SELECT clock_timestamp() AS t');
         const receivedAt = clock.rows[0]?.t;

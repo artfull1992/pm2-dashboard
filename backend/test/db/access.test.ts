@@ -322,6 +322,21 @@ describe('scope: log routes checker', () => {
   });
 });
 
+describe('current requester rights (queued log delivery, review e621e31)', () => {
+  it('actorScope re-reads role and active flag: admin → null, operator → own id, viewer/inactive/unknown → denied', async () => {
+    const { ctx, allA, multi } = await world();
+    expect(await ctx.checker.actorScope(ctx.adminId, 'logs:read')).toEqual({ scope: null });
+    expect(await ctx.checker.actorScope(allA, 'logs:read')).toEqual({ scope: allA });
+    expect(await ctx.checker.actorScope(multi, 'logs:read')).toBeNull(); // viewer has no logs:read
+    expect(await ctx.checker.actorScope(multi, 'monitoring:read')).toEqual({ scope: multi });
+    await ctx.sql('UPDATE users SET is_active = false WHERE id = $1', [allA]);
+    expect(await ctx.checker.actorScope(allA, 'logs:read')).toBeNull();
+    await ctx.sql(`UPDATE users SET is_active = true, role = 'viewer' WHERE id = $1`, [allA]);
+    expect(await ctx.checker.actorScope(allA, 'logs:read')).toBeNull();
+    expect(await ctx.checker.actorScope(randomUUID(), 'logs:read')).toBeNull();
+  });
+});
+
 describe('grants administration', () => {
   it('atomic replace with revision, audit in the same transaction, validation, admin is global', async () => {
     const { ctx, a, b, none } = await world();

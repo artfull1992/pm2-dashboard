@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuthConfig } from '../config.js';
 import { describeError, PublicHttpError } from '../errors.js';
 import { normalizeEmail } from './email.js';
@@ -55,6 +55,15 @@ declare module 'fastify' {
   interface FastifyRequest {
     auth: AuthState | null;
     agent: AgentState | null;
+  }
+  interface FastifyInstance {
+    /**
+     * Re-validates the request's session NOW, with the same lookup as the onRequest hook (session not revoked or
+     * expired, user active, role re-read from the database). For handlers that wait (long-polls, ADR-028): what was
+     * true when the request started is not trusted after the wait. Returns the current state (also stored on
+     * `request.auth`) or null (no valid session any more; the cookie is cleared on `reply`). Throws 503 if the lookup fails.
+     */
+    revalidateSession(request: FastifyRequest, reply: FastifyReply): Promise<AuthState | null>;
   }
 }
 
@@ -154,6 +163,26 @@ export function registerAuth(app: FastifyInstance, options: AuthPluginOptions): 
 
   app.decorateRequest('auth', null);
   app.decorateRequest('agent', null);
+
+  app.decorate('revalidateSession', async (request: FastifyRequest, reply: FastifyReply): Promise<AuthState | null> => {
+    const token = request.auth?.token;
+    let session = null;
+    if (token !== undefined) {
+      try {
+        session = await store.resolveSession(sessionTokenDigest(token));
+      } catch (error) {
+        request.log.error({ error: describeError(error) }, 'Session lookup failed');
+        throw unavailable();
+      }
+    }
+    if (!session || token === undefined) {
+      if (token !== undefined) reply.header('set-cookie', clearedSessionCookie(config.cookieSecure));
+      request.auth = null;
+      return null;
+    }
+    request.auth = { ...session, permissions: permissionsFor(session.role), token };
+    return request.auth;
+  });
 
   /**
    * Machine authentication (ADR-015). Bearer token only; a browser context (Origin / Sec-Fetch-* / session

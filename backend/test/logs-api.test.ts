@@ -42,7 +42,7 @@ function build() {
 beforeEach(() => {
   auth = new FakeAuthStore(); servers = new FakeServerStore(); clock = Date.now(); hub = new LogHub(() => clock);
   // These lifecycle tests are not about grants (see the scope tests below): every user is treated as granted.
-  access = new FakeAccessChecker(async (id) => (await servers.get(id, null)) !== null); access.allowUngranted = true;
+  access = new FakeAccessChecker(async (id) => (await servers.get(id, null)) !== null); access.actors = (id) => auth.users.get(id); access.allowUngranted = true;
   build();
 });
 afterEach(async () => { await app.close(); });
@@ -62,8 +62,9 @@ async function node(admin: Session, name = 'node-1') {
   return { serverId, token };
 }
 
+// Protocol v2 (ADR-028): scoped readers get logs only from an Agent/broker that verifies the target at read time.
 const report = (over: Record<string, unknown> = {}) => ({
-  version: 1, broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: [{ targetKey: 'api', name: 'api', pmId: 0, matchStatus: 'ok' }], ...over,
+  version: 2, mode: 'allowlist', broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: [{ targetKey: 'api', name: 'api', pmId: 0, matchStatus: 'ok', identity: 'c'.repeat(16) }], ...over,
 });
 const agentPoll = (token: string, body: unknown = report()) => app.inject({ method: 'POST', url: '/api/agent/logs/poll', headers: { authorization: `Bearer ${token}` }, payload: body as object });
 const agentResult = (token: string, body: unknown) => app.inject({ method: 'POST', url: '/api/agent/logs/result', headers: { authorization: `Bearer ${token}` }, payload: body as object });
@@ -137,7 +138,7 @@ describe('request lifecycle', () => {
     expect((await create(admin, n.serverId)).statusCode).toBe(409);
     hub.close();
     const n2 = await node(admin, 'node-2');
-    void connected(n2, report({ targets: [{ targetKey: 'api', name: 'api', pmId: null, matchStatus: 'fingerprint_mismatch' }] }));
+    void connected(n2, report({ targets: [{ targetKey: 'api', name: 'api', pmId: null, matchStatus: 'fingerprint_mismatch', identity: null }] }));
     await new Promise((r) => setTimeout(r, 30));
     expect((await create(admin, n2.serverId)).statusCode).toBe(409);
     expect((await create(admin, n2.serverId, { targetKey: 'other' })).statusCode).toBe(409);
@@ -180,13 +181,13 @@ describe('request lifecycle', () => {
   it('protocol v2 (ADR-028): an auto broker without allowlist; the reply declares scoped access; strict total/targets', async () => {
     const admin = await session('admin');
     const n = await node(admin);
-    const v2 = (over: Record<string, unknown> = {}) => ({ version: 2, mode: 'auto', broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: report().targets, total: 1, ...over });
+    const v2 = (over: Record<string, unknown> = {}) => ({ ...report(), mode: 'auto', total: 1, ...over });
     const { held } = await connected(n, v2());
     expect((await create(admin, n.serverId)).statusCode).toBe(202);
     const reply = (await held).json<{ accessModel?: string; requests: unknown[] }>();
     expect(reply.accessModel).toBe('scoped');
     expect(reply.requests).toHaveLength(1);
-    const many = Array.from({ length: 501 }, (_, i) => ({ targetKey: `n-${String(i)}`, name: `s${String(i)}`, pmId: i, matchStatus: 'ok' }));
+    const many = Array.from({ length: 501 }, (_, i) => ({ targetKey: `n-${String(i)}`, name: `s${String(i)}`, pmId: i, matchStatus: 'ok', identity: 'c'.repeat(16) }));
     for (const b of [v2({ targets: many, total: 501 }), v2({ mode: 'open' }), { ...v2(), version: 1 }, v2({ total: -1 })]) {
       expect((await agentPoll(n.token, b)).statusCode).toBe(400);
     }
@@ -229,11 +230,11 @@ describe('LogHub (bounded memory)', () => {
     let now = 1_000_000;
     const h = new LogHub(() => now);
     const serverId = randomUUID();
-    const poll = () => h.agentPoll(serverId, { version: 1, broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: t as never }, () => undefined);
+    const poll = () => h.agentPoll(serverId, { version: 2, mode: 'allowlist', broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: t as never }, () => undefined);
     const results: string[] = [];
     for (let i = 0; i < 31; i++) {
       void poll();
-      const r = h.create({ serverId, targetKey: 'api', serviceName: 'api', actorUserId: 'u1', lines: 10 });
+      const r = h.create({ serverId, targetKey: 'api', serviceName: 'api', actorUserId: 'u1', lines: 10, scoped: false });
       if (typeof r === 'string') { results.push(r); break; }
       h.agentResult(serverId, r.request.requestId, { outcome: 'ok', reason: null, readAt: new Date(now).toISOString(), stdout: null, stderr: null });
       now += 100;
@@ -241,7 +242,7 @@ describe('LogHub (bounded memory)', () => {
     expect(results).toEqual(['rate_limited']);
     now += 61_000;
     void poll();
-    expect(typeof h.create({ serverId, targetKey: 'api', serviceName: 'api', actorUserId: 'u1', lines: 10 })).toBe('object');
+    expect(typeof h.create({ serverId, targetKey: 'api', serviceName: 'api', actorUserId: 'u1', lines: 10, scoped: false })).toBe('object');
     h.close();
   });
 
@@ -249,7 +250,7 @@ describe('LogHub (bounded memory)', () => {
     const h = new LogHub();
     const serverId = randomUUID();
     let closeCb: (() => void) | undefined;
-    const report1 = { version: 1 as const, broker: 'ok' as const, daemon: 'ok' as const, allowlist: 'ok' as const, targets: t as never };
+    const report1 = { version: 2 as const, mode: 'allowlist' as const, broker: 'ok' as const, daemon: 'ok' as const, allowlist: 'ok' as const, targets: t as never };
     const first = h.agentPoll(serverId, report1, () => undefined);
     const second = h.agentPoll(serverId, report1, (cb) => { closeCb = cb; });
     expect(await first).toEqual([]);
@@ -284,13 +285,13 @@ describe('agent long-poll over real HTTP', () => {
 // exactly once.
 describe('result waiters (bounded)', () => {
   const t = report().targets;
-  const rep = { version: 1 as const, broker: 'ok' as const, daemon: 'ok' as const, allowlist: 'ok' as const, targets: t as never };
+  const rep = { version: 2 as const, mode: 'allowlist' as const, broker: 'ok' as const, daemon: 'ok' as const, allowlist: 'ok' as const, targets: t as never };
   const ok = (now: number) => ({ outcome: 'ok' as const, reason: null, readAt: new Date(now).toISOString(), stdout: null, stderr: null });
   const timeouts = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
   const tick = () => new Promise((r) => setTimeout(r, 5));
   function open(h: LogHub, serverId: string, actorUserId: string): string {
     void h.agentPoll(serverId, rep, () => undefined);
-    const r = h.create({ serverId, targetKey: 'api', serviceName: 'api', actorUserId, lines: 10 });
+    const r = h.create({ serverId, targetKey: 'api', serviceName: 'api', actorUserId, lines: 10, scoped: false });
     if (typeof r === 'string') throw new Error(r);
     return r.request.requestId;
   }

@@ -1,6 +1,6 @@
 import { insertAudit } from '../auth/store.js';
 import { type Scope, serverVisibleSql } from '../auth/scope.js';
-import type { Database } from '../database.js';
+import type { Database, QueryClient } from '../database.js';
 import { normalizeSnapshot, type ServerSnapshot } from './snapshot.js';
 
 // Server registry SQL (ADR-015). Parameterized only; admin mutations + audit in one transaction.
@@ -71,6 +71,26 @@ const UNIQUE_VIOLATION = '23505';
 
 // revoked_at uses clock_timestamp(): after waiting for the server row lock, now() (= transaction start) can be
 // EARLIER than a credential a concurrent transaction just created, which would violate revoked_at >= created_at.
+/**
+ * Machine-request authorisation inside a transaction: the server of an active, unrevoked Agent credential, with the
+ * server row and then the credential row held FOR SHARE until the transaction ends (a concurrent revoke or deactivation
+ * waits, or is seen). Lock order = the revoke's (server row, then credential). Locking both at once (FOR SHARE OF c, s)
+ * took the credential first: a request waiting for a revoke's server lock then held the credential the revoke had to
+ * update → deadlock (review e621e31, reproduced in test/db/servers.test.ts).
+ */
+export async function lockAgentServer(tx: QueryClient, tokenHash: Buffer): Promise<string | null> {
+  const found = await tx.query<{ server_id: string }>('SELECT server_id FROM agent_credentials WHERE token_hash = $1 AND revoked_at IS NULL', [tokenHash]);
+  const candidate = found.rows[0]?.server_id;
+  if (!candidate) return null;
+  const server = await tx.query('SELECT 1 FROM servers WHERE id = $1 AND is_active FOR SHARE', [candidate]);
+  if (server.rows.length === 0) return null;
+  // Re-checked under the server lock: a revoke that committed while we waited is seen here.
+  const cred = await tx.query<{ server_id: string }>(
+    'SELECT server_id FROM agent_credentials WHERE token_hash = $1 AND server_id = $2 AND revoked_at IS NULL FOR SHARE', [tokenHash, candidate],
+  );
+  return cred.rows[0]?.server_id ?? null;
+}
+
 export function createPgServerStore(db: Database): ServerStore {
   return {
     async list({ limit, afterId, scope }) {
@@ -155,13 +175,7 @@ export function createPgServerStore(db: Database): ServerStore {
 
     recordHeartbeat({ tokenHash, snapshot }) {
       return db.transaction(async (tx) => {
-        const cred = await tx.query<{ server_id: string }>(
-          `SELECT c.server_id FROM agent_credentials c JOIN servers s ON s.id = c.server_id
-            WHERE c.token_hash = $1 AND c.revoked_at IS NULL AND s.is_active
-            FOR SHARE OF c, s`,
-          [tokenHash],
-        );
-        const serverId = cred.rows[0]?.server_id;
+        const serverId = await lockAgentServer(tx, tokenHash);
         if (!serverId) return 'unauthorized' as const;
         // Server receive time, taken once: stored and returned. A concurrent heartbeat with a later timestamp is
         // never overwritten (WHERE …<=), so the row always holds the newest accepted snapshot.

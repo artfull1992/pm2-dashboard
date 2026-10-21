@@ -342,10 +342,10 @@ Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HO
 
 | Запит | Доступ | Успіх | Помилки |
 |---|---|---|---|
-| `GET /api/servers/:id/log-targets` | `logs:read` (admin, operator) | `200 {serverId, state: supported\|not_connected\|unsupported\|broker_unavailable, reportedAt, targets:[{targetKey, name, pmId, matchStatus}]}` | 400, 401, 403, 404 |
+| `GET /api/servers/:id/log-targets` | `logs:read` (admin, operator) | `200 {serverId, state: supported\|not_connected\|unsupported\|broker_unavailable, reportedAt, targets:[{targetKey, name, pmId, matchStatus}]}` — лише надані сервіси; для operator/viewer зі старим Agent/broker (протокол v1) — `unsupported` | 400, 401, 403, 404 |
 | `POST /api/servers/:id/log-requests` `{"targetKey","lines"?: 1..100}` | `logs:read` + Origin + CSRF | `202 {requestId, deadlineAt}` | 400, 401, 403, 404, 409 (не підтримується/не на зв'язку/не дозволено), 429, 503 |
-| `GET /api/log-requests/:id` | `logs:read`, лише ініціатор | `200 {requestId, serverId, targetKey, status: pending\|done\|expired, deadlineAt, result:{outcome, reason, readAt, stdout, stderr}\|null}` (чекає ≤ 8 с) | 400, 401, 403, 404 |
-| `POST /api/agent/logs/poll` / `POST /api/agent/logs/result` | **machine** | long-poll ≤ 25 с → `{requests:[≤4]}` / `{status:"recorded"}` | 400, 401, 403, 404, 409, 413, 429 |
+| `GET /api/log-requests/:id` | `logs:read`, лише ініціатор | `200 {requestId, serverId, targetKey, status: pending\|done\|expired, deadlineAt, result:{outcome, reason, readAt, stdout, stderr}\|null}` (чекає ≤ 8 с). Після очікування й для готового результату сесія, активність, роль і призначення перевіряються заново: `401` (сесія/деактивація), `403` (немає `logs:read`), `404` (не надано); текст лише за чинного доступу. `reason` може бути `target_changed`/`identity_changed`/`not_authorized` — запит не виконано | 400, 401, 403, 404 |
+| `POST /api/agent/logs/poll` / `POST /api/agent/logs/result` | **machine** | long-poll ≤ 25 с → `{requests:[≤4 {requestId, targetKey, lines, deadlineAt, name?, identity?}], accessModel?}` / `{status:"recorded"}`; v2: цілі з `identity`, кожен запит несе очікувані `name`/`identity` для перевірки broker; запит передається лише за чинних прав автора й незмінної цілі | 400, 401, 403, 404, 409, 413, 429 |
 
 `stdout`/`stderr`: `{state: ok|empty|missing|unavailable|merged, text, lines, truncated, sizeBytes, modifiedAt}` — без шляхів і env. Дозвіл на ноді: `"logs": true` у записі allowlist broker (окремо від `actions`); `processes:control` не дає читання логів. Текст не зберігається.
 
@@ -353,7 +353,7 @@ Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HO
 
 | Запит | Доступ | Успіх | Помилки |
 |---|---|---|---|
-| `GET /api/servers/:id/control` | `monitoring:read` | `200 {serverId, enabled, serverStatus, broker:{state, daemon, allowlist, reportedAt, fresh, mode, protocol, total}\|null, targets:[{targetKey, name, pmId, actions, matchStatus}], targetFreshSeconds}` — цілі лише наданих сервісів | 400, 401, 403, 404, 503 |
+| `GET /api/servers/:id/control` | `monitoring:read` | `200 {serverId, enabled, serverStatus, broker:{state, daemon, allowlist, reportedAt, fresh, mode, protocol, total}\|null, targets:[{targetKey, name, pmId, actions, matchStatus}], targetFreshSeconds}` — цілі лише наданих сервісів; `total` (усі процеси власника) — лише admin і «Усі сервіси», інакше `null` | 400, 401, 403, 404, 503 |
 | `POST /api/servers/:id/control-commands` `{"targetKey","action":"start"\|"stop"\|"restart","idempotencyKey":"<uuid>"}` | `processes:control` (operator/admin) + Origin + CSRF | `201 CommandView` (нова) / `200 CommandView` (повтор з тим самим ключем) | 400, 401, 403, 404, 409 (вимкнено, сервер офлайн, ціль недоступна, дія не дозволена, команда вже виконується, конфлікт ключа), 503 |
 | `GET /api/servers/:id/control-commands?limit=1..50&targetKey=` | `monitoring:read` | `200 {items:[CommandView]}`; `targetKey` — лише команди цієї цілі allowlist (фільтр до limit, ADR-026) | 400, 401, 403, 404, 503 |
 | `GET /api/control-commands/:id` | `monitoring:read` | `200 CommandView` | 400, 401, 403, 404, 503 |

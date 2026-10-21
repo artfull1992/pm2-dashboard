@@ -3,7 +3,7 @@ import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, normalize } from 'node:path';
 import type { AllowlistEntry } from './allowlist.js';
 import { AllowlistError } from './allowlist.js';
-import { autoTargetKey, type Match, matchEntry, matchName, processNames, type RawProcessView } from './identity.js';
+import { autoTargetKey, identityOf, type Match, matchEntry, matchName, processNames, type RawProcessView } from './identity.js';
 import { isProcessName } from './protocol.js';
 import {
   type BrokerMode, LOG_LIMITS, MAX_LOG_TARGETS_V2, type LogReason, type LogsRequest, type LogsResponse, type LogStream, type LogTarget, type LogTargetsResponse,
@@ -199,7 +199,7 @@ export async function listLogTargets(deps: Pick<LogDeps, 'loadAllowlist' | 'list
     const all = processNames(raw, () => true);
     const targets = all.filter(isProcessName).slice(0, MAX_LOG_TARGETS_V2).map((name): LogTarget => {
       const m = matchName(name, raw);
-      return { targetKey: autoTargetKey(name), name, pmId: m.status === 'ok' ? m.view.pmId : null, matchStatus: m.status };
+      return { targetKey: autoTargetKey(name), name, pmId: m.status === 'ok' ? m.view.pmId : null, matchStatus: m.status, identity: m.status === 'ok' ? identityOf(m.view) : null };
     });
     return reply({ daemon: 'ok', allowlist: 'ok', targets }, all.length);
   }
@@ -212,9 +212,11 @@ export async function listLogTargets(deps: Pick<LogDeps, 'loadAllowlist' | 'list
     raw = null;
   }
   const targets: LogTarget[] = entries.filter((e) => e.logs === true).map((e) => {
-    if (!raw) return { targetKey: e.id, name: e.name, pmId: null, matchStatus: 'daemon_unavailable' };
-    const m = matchEntry(e, raw);
-    return { targetKey: e.id, name: e.name, pmId: m.status === 'ok' ? m.view.pmId : null, matchStatus: m.status };
+    const t: LogTarget = !raw ? { targetKey: e.id, name: e.name, pmId: null, matchStatus: 'daemon_unavailable' } : (() => {
+      const m = matchEntry(e, raw);
+      return { targetKey: e.id, name: e.name, pmId: m.status === 'ok' ? m.view.pmId : null, matchStatus: m.status, ...(version === 2 ? { identity: m.status === 'ok' ? identityOf(m.view) : null } : {}) };
+    })();
+    return version === 2 && t.identity === undefined ? { ...t, identity: null } : t;
   });
   return reply({ daemon: raw ? 'ok' : 'unavailable', allowlist: 'ok', targets }, targets.length);
 }
@@ -253,6 +255,12 @@ export async function readLogs(req: LogsRequest, deps: LogDeps): Promise<LogsRes
     match = name === undefined ? { status: 'not_found' } : matchName(name, raw);
   }
   if (match.status !== 'ok') return fail('rejected', match.status);
+  // Version 2 (ADR-028): the process must still be the service — and, when given, the definition — the API authorised
+  // this request for. A targetKey that now means something else is refused, never read. Auto mode needs the identity.
+  if (req.v === 2) {
+    if (match.view.name !== req.name) return fail('rejected', 'target_changed');
+    if (req.identity === null ? auto : identityOf(match.view) !== req.identity) return fail('rejected', 'identity_changed');
+  }
   const view: RawProcessView = match.view;
   const outPath = allowedLogPath(view.env.pm_out_log_path, deps.logDirs);
   const errPath = allowedLogPath(view.env.pm_err_log_path, deps.logDirs);

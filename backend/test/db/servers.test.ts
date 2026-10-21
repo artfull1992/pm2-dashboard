@@ -206,6 +206,32 @@ describe('heartbeat', () => {
     expect(await hb()).toBe('unauthorized');
   });
 
+  it('deterministic: a heartbeat waiting on a revoke never holds the credential row (no deadlock; review e621e31)', async () => {
+    // The interleaving behind the rare "deadlock detected" of the racing test above, forced step by step with the
+    // revoke's own statements: the revoke holds the server row FOR UPDATE; a heartbeat arrives and must wait for it
+    // WITHOUT holding the credential row; the revoke then updates the credential and commits. A heartbeat that locked
+    // the credential first (FOR SHARE OF c, s in table order) closes a lock cycle → PostgreSQL aborts one of them.
+    const ctx = await setup();
+    const serverId = await createServer(ctx);
+    const { token } = await issue(ctx, serverId);
+    const revoker = await connectTestClient(config);
+    try {
+      await revoker.query(`SET search_path TO "${ctx.schema}"`);
+      await revoker.query('BEGIN');
+      await revoker.query('SELECT 1 FROM servers WHERE id = $1 FOR UPDATE', [serverId]);
+      const heartbeat = ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot() });
+      heartbeat.catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 200)); // the heartbeat is now waiting on the server row
+      await revoker.query("SET LOCAL lock_timeout = '3s'");
+      await revoker.query('UPDATE agent_credentials SET revoked_at = clock_timestamp() WHERE server_id = $1 AND revoked_at IS NULL', [serverId]);
+      await revoker.query('COMMIT');
+      await expect(heartbeat).resolves.toBe('unauthorized');
+    } finally {
+      await revoker.query('ROLLBACK').catch(() => undefined);
+      await revoker.end();
+    }
+  });
+
   it('server identity is bound to the credential', async () => {
     const ctx = await setup();
     const a = await createServer(ctx, 'a');

@@ -111,7 +111,7 @@ describe('log viewer', () => {
     ['target not allowed', (id: string) => logTargets(id, { targets: [] }), 'Логи не дозволені'],
     ['different PM2 id', (id: string) => logTargets(id, { targets: [{ targetKey: 'api', name: 'api', pmId: 9, matchStatus: 'ok' }] }), 'Логи не дозволені'],
     ['identity mismatch', (id: string) => logTargets(id, { targets: [{ targetKey: 'api', name: 'api', pmId: null, matchStatus: 'fingerprint_mismatch' }] }), 'Логи не дозволені'],
-    ['old agent/broker', (id: string) => logTargets(id, { state: 'unsupported', targets: [] }), 'Перегляд логів не підтримується'],
+    ['old agent/broker', (id: string) => logTargets(id, { state: 'unsupported', targets: [] }), 'Перегляд логів не підтримується: потрібні оновлені Agent і broker'],
     ['agent offline', (id: string) => logTargets(id, { state: 'not_connected', targets: [] }), 'Логи: агент не на зв’язку'],
   ])('%s → no logs item, explained', async (_n, targets, hint) => {
     backend('operator', undefined, targets);

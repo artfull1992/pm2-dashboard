@@ -20,6 +20,8 @@ const REASONS: Record<string, string> = {
   daemon_unavailable: 'PM2 daemon недоступний', deadline_passed: 'запит протерміновано', invalid_deadline: 'некоректний дедлайн',
   broker_busy: 'broker зайнятий', timeout: 'читання не вклалося в час', broker_unavailable: 'broker недоступний',
   broker_unsupported: 'broker не підтримує перегляд логів',
+  target_changed: 'ціль тепер відповідає іншому сервісу — запит не виконано', identity_changed: 'визначення процесу змінилося після запиту — запит не виконано',
+  not_authorized: 'доступ до цього сервісу більше не надано',
 };
 const STATE_TEXT: Record<LogStream['state'], string> = {
   ok: '', empty: 'Лог порожній.', missing: 'Файл логу відсутній.', unavailable: 'Лог недоступний для читання (поза дозволеними каталогами, недоступний або вимкнений).',

@@ -11,13 +11,13 @@ import { type AllowlistEntry, AllowlistError, parseAllowlist } from '../src/cont
 import { createBroker, listenBroker } from '../src/control/broker.js';
 import { BrokerError, brokerCall } from '../src/control/client.js';
 import { listTargets } from '../src/control/executor.js';
-import { autoTargetKey, fingerprintOf, viewOf } from '../src/control/identity.js';
+import { autoTargetKey, fingerprintOf, identityOf, viewOf } from '../src/control/identity.js';
 import { Journal } from '../src/control/journal.js';
 import {
-  allowedLogPath, buildStreams, maskSecrets, prepareLines, readLogs, readTail, sanitizeLine, shrinkToFrame,
+  allowedLogPath, buildStreams, listLogTargets, maskSecrets, prepareLines, readLogs, readTail, sanitizeLine, shrinkToFrame,
 } from '../src/control/logs.js';
 import { runLogs } from '../src/control/logs-loop.js';
-import { LOG_LIMITS, type LogsRequest, type LogsResponse, parseLogsResponse } from '../src/control/logs-protocol.js';
+import { LOG_LIMITS, type LogsRequest, type LogsResponse, parseLogsRequest, parseLogsResponse } from '../src/control/logs-protocol.js';
 
 const TOKEN = `ncag_${'L'.repeat(43)}`;
 const SECRET = 'SYNTHETIC_LOG_SECRET_6f1c';
@@ -38,8 +38,10 @@ function proc(pmId: number, name: string, out: string, err: string, extra: Recor
 const fp = (p: ReturnType<typeof proc>) => fingerprintOf(viewOf(p) ?? (() => { throw new Error('x'); })());
 const entry = (p: ReturnType<typeof proc>, logs = true, actions: AllowlistEntry['actions'] = ['restart']): AllowlistEntry =>
   ({ id: p.name, name: p.name, actions, fingerprint: fp(p), ...(logs ? { logs: true } : {}) });
-const logsReq = (targetKey: string, over: Partial<LogsRequest> = {}): LogsRequest =>
+const logsReq = (targetKey: string, over: Partial<Extract<LogsRequest, { v: 1 }>> = {}): LogsRequest =>
   ({ v: 1, op: 'logs', requestId: randomUUID(), targetKey, lines: 100, deadlineAt: new Date(Date.now() + 10_000).toISOString(), ...over });
+const logsReq2 = (targetKey: string, name: string, identity: string | null): LogsRequest =>
+  ({ v: 2, op: 'logs', requestId: randomUUID(), targetKey, lines: 100, deadlineAt: new Date(Date.now() + 10_000).toISOString(), name, identity });
 
 describe('allowlist: explicit, optional logs permission', () => {
   const base = { id: 'api', name: 'api', actions: ['restart'], fingerprint: `sha256:${'a'.repeat(64)}` };
@@ -186,6 +188,31 @@ describe('readLogs (broker)', () => {
     const p = proc(1, 'api', out, err, extra);
     return { dir, p };
   }
+
+  it('v2 (review e621e31): the read is bound to the expected name and definition — allowlist and auto', async () => {
+    const { dir, p } = setup();
+    const id = identityOf(viewOf(p) ?? (() => { throw new Error('x'); })());
+    const allow = { loadAllowlist: () => Promise.resolve([entry(p)]), list: () => Promise.resolve([p]), logDirs: [dir] };
+    expect(await readLogs(logsReq2('api', 'api', id), allow)).toMatchObject({ v: 2, outcome: 'ok' });
+    expect(await readLogs(logsReq2('api', 'api', null), allow)).toMatchObject({ outcome: 'ok' }); // allowlist: fingerprint already pins it
+    // The allowlist id 'api' was re-assigned (root edited the list) to another process: refused, not read.
+    const other = proc(2, 'billing', p.pm2_env.pm_out_log_path, p.pm2_env.pm_err_log_path);
+    const moved = { ...allow, loadAllowlist: () => Promise.resolve([{ ...entry(other), id: 'api' }]), list: () => Promise.resolve([p, other]) };
+    const refused = await readLogs(logsReq2('api', 'api', id), moved);
+    expect(refused).toMatchObject({ outcome: 'rejected', reason: 'target_changed', stdout: null, stderr: null });
+    expect(await readLogs(logsReq2('api', 'api', 'f'.repeat(16)), allow)).toMatchObject({ outcome: 'rejected', reason: 'identity_changed', stdout: null });
+    const auto = { ...allow, mode: 'auto' as const, loadAllowlist: () => Promise.reject(new Error('not read in auto mode')) };
+    expect(await readLogs(logsReq2(autoTargetKey('api'), 'api', id), auto)).toMatchObject({ outcome: 'ok' });
+    expect(await readLogs(logsReq2(autoTargetKey('api'), 'api', null), auto)).toMatchObject({ outcome: 'rejected', reason: 'identity_changed' }); // auto needs it
+    expect(await readLogs(logsReq(autoTargetKey('api')), auto)).toMatchObject({ outcome: 'rejected', reason: 'allowlist_invalid' }); // v1 → fail closed
+    // Log targets v2 carry the identity (null when not matched); the parser holds the broker to it.
+    const targets = await listLogTargets({ ...allow, mode: 'allowlist' }, 2);
+    expect(targets.targets).toEqual([{ targetKey: 'api', name: 'api', pmId: 1, matchStatus: 'ok', identity: id }]);
+    expect(parseLogsResponse(targets, { v: 2, op: 'logTargets' })).not.toBeNull();
+    expect(parseLogsResponse({ ...targets, targets: [{ ...targets.targets[0], identity: null }] }, { v: 2, op: 'logTargets' })).toBeNull();
+    expect(parseLogsRequest({ v: 2, op: 'logs', requestId: randomUUID(), targetKey: 'api', lines: 5, deadlineAt: new Date().toISOString() })).toBeNull();
+    expect(parseLogsRequest({ v: 2, op: 'logs', requestId: randomUUID(), targetKey: 'api', lines: 5, deadlineAt: new Date().toISOString(), name: 'api', identity: 'xyz' })).toBeNull();
+  });
 
   it('reads both streams of an allowed target; response has no paths, env or raw errors', async () => {
     const { dir, p } = setup();
@@ -357,10 +384,23 @@ describe('broker socket and agent loop', () => {
     const key = autoTargetKey('api');
     const unscoped = await run(autoSock, (_b, n) => (n === 1 ? oneRequest(key) : new Response('{"requests":[]}', { status: 200 })));
     expect(unscoped.results).toEqual([]);
-    // …and with accessModel 'scoped' the read is served as protocol v2.
-    const scoped = await run(autoSock, (_b, n) => (n === 1 ? oneRequest(key, { accessModel: 'scoped' }) : new Response('{"requests":[],"accessModel":"scoped"}', { status: 200 })));
-    expect(scoped.polls[0]).toMatchObject({ version: 2, mode: 'auto', total: 1, targets: [{ targetKey: key, name: 'api', matchStatus: 'ok' }] });
+    // …and with accessModel 'scoped' + the expected target (name, identity) the read is served as protocol v2.
+    const id = identityOf(viewOf(p) ?? (() => { throw new Error('x'); })());
+    const expectedReq = (name: string, identity: string | null) => new Response(JSON.stringify({
+      requests: [{ requestId, targetKey: key, lines: 5, deadlineAt: new Date(Date.now() + 10_000).toISOString(), name, identity }], accessModel: 'scoped',
+    }), { status: 200 });
+    const idle = () => new Response('{"requests":[],"accessModel":"scoped"}', { status: 200 });
+    const scoped = await run(autoSock, (_b, n) => (n === 1 ? expectedReq('api', id) : idle()));
+    expect(scoped.polls[0]).toMatchObject({ version: 2, mode: 'auto', total: 1, targets: [{ targetKey: key, name: 'api', matchStatus: 'ok', identity: id }] });
     expect(scoped.results).toEqual([expect.objectContaining({ requestId, outcome: 'ok', stdout: expect.objectContaining({ text: 'auto line' }) as unknown })]);
+    // Review e621e31: the broker refuses a target that is not the authorised one — never reads it.
+    for (const [name, identity, reason] of [['other-app', id, 'target_changed'], ['api', 'f'.repeat(16), 'identity_changed'], ['api', null, 'identity_changed']] as const) {
+      const r = await run(autoSock, (_b, n) => (n === 1 ? expectedReq(name, identity) : idle()));
+      expect(r.results, reason).toEqual([expect.objectContaining({ requestId, outcome: 'rejected', reason, stdout: null })]);
+    }
+    // Without the expected target (an older API) the Agent asks version 1, which an auto broker refuses (fail closed).
+    const noExpected = await run(autoSock, (_b, n) => (n === 1 ? oneRequest(key, { accessModel: 'scoped' }) : idle()));
+    expect(noExpected.results).toEqual([expect.objectContaining({ outcome: 'rejected', reason: 'allowlist_invalid', stdout: null })]);
   });
 
   it('agent: an older API (404) gets the long backoff; no control socket → no log polling', async () => {

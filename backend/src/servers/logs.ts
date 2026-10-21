@@ -34,6 +34,10 @@ export const LOG_REASONS = [
   'not_allowlisted', 'logs_not_allowed', 'allowlist_invalid', 'not_found', 'ambiguous', 'cluster_unsupported',
   'fingerprint_mismatch', 'daemon_unavailable', 'deadline_passed', 'invalid_deadline', 'broker_busy', 'timeout',
   'broker_unavailable', 'broker_unsupported',
+  // ADR-028 (review e621e31): the request is bound to the service/definition it was authorised for. Set by the API when
+  // the reported target changed before delivery or the requester lost the right; by the broker (v2) when the target
+  // it resolves at read time is not the expected one.
+  'target_changed', 'identity_changed', 'not_authorized',
 ] as const;
 const MATCH = ['ok', 'not_found', 'ambiguous', 'cluster_unsupported', 'fingerprint_mismatch', 'daemon_unavailable'] as const;
 const TARGET_KEY_PATTERN = '^[a-z0-9][a-z0-9._-]{0,63}$';
@@ -41,7 +45,11 @@ const UUID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const ISO_PATTERN = '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$';
 
 export interface LogStream { state: (typeof STREAM_STATES)[number]; text: string; lines: number; truncated: boolean; sizeBytes: number | null; modifiedAt: string | null }
-export interface LogTarget { targetKey: string; name: string; pmId: number | null; matchStatus: (typeof MATCH)[number] }
+export interface LogTarget {
+  targetKey: string; name: string; pmId: number | null; matchStatus: (typeof MATCH)[number];
+  /** Version 2 only: definition identity of a matched target (16 hex), null otherwise. */
+  identity?: string | null;
+}
 export interface LogResult { outcome: 'ok' | 'rejected' | 'failed'; reason: string | null; readAt: string; stdout: LogStream | null; stderr: LogStream | null }
 export interface AgentLogReport {
   version: 1 | 2;
@@ -71,6 +79,13 @@ export const logTargetSchema = {
   },
 } as const;
 
+/** Version 2 log target: plus the definition identity, so a request can be bound to it (ADR-028). */
+export const logTargetSchemaV2 = {
+  ...logTargetSchema,
+  required: [...logTargetSchema.required, 'identity'],
+  properties: { ...logTargetSchema.properties, identity: { type: ['string', 'null'], pattern: '^[0-9a-f]{16}$' } },
+} as const;
+
 const pollCommon = {
   broker: { type: 'string', enum: ['ok', 'unavailable', 'unsupported'] },
   daemon: { type: ['string', 'null'], enum: ['ok', 'unavailable', null] }, allowlist: { type: ['string', 'null'], enum: ['ok', 'invalid', null] },
@@ -86,7 +101,7 @@ export const agentPollSchema = {
       type: 'object', additionalProperties: false, required: ['version', 'mode', 'broker', 'daemon', 'allowlist', 'targets'],
       properties: {
         version: { type: 'integer', enum: [2] }, mode: { type: ['string', 'null'], enum: ['allowlist', 'auto', null] }, ...pollCommon,
-        targets: { type: 'array', maxItems: LOG_LIMITS.maxTargetsV2, items: logTargetSchema },
+        targets: { type: 'array', maxItems: LOG_LIMITS.maxTargetsV2, items: logTargetSchemaV2 },
         total: { type: 'integer', minimum: 0, maximum: 100_000 },
       },
     },
@@ -111,8 +126,13 @@ export function resultProblem(r: LogResult): string | null {
 }
 
 export type ViewStatus = 'pending' | 'done' | 'expired';
-export interface RequestView { requestId: string; serverId: string; targetKey: string; serviceName: string; status: ViewStatus; deadlineAt: string; result: LogResult | null }
-export interface Delivered { requestId: string; targetKey: string; lines: number; deadlineAt: string }
+export interface RequestView {
+  requestId: string; serverId: string; targetKey: string; serviceName: string; status: ViewStatus; deadlineAt: string; result: LogResult | null;
+  /** Delivered to a version-1 Agent: the broker could not verify the target at read time — admins only (ADR-028). */
+  legacy: boolean;
+}
+/** A request handed to the Agent: what it reads (targetKey) and what it must still be (name, identity — version 2). */
+export interface Delivered { requestId: string; targetKey: string; lines: number; deadlineAt: string; name: string; identity: string | null; actorUserId: string }
 /** null: unknown or not the requester's (no detail); limit_*: refused before any waiter/timer was created. */
 export type GetOutcome = RequestView | null | 'limit_request' | 'limit_actor' | 'limit_global';
 export type CreateOutcome =
@@ -121,6 +141,9 @@ export type CreateOutcome =
 
 interface Entry {
   id: string; serverId: string; targetKey: string; serviceName: string; actorUserId: string; lines: number;
+  /** Definition identity of the target when the request was authorised (version-2 report), else null. */
+  identity: string | null;
+  legacy: boolean;
   deadline: number; state: 'pending' | 'delivered' | 'done' | 'expired'; result: LogResult | null; finishedAt: number | null;
   waiters: Set<() => void>;
 }
@@ -159,22 +182,27 @@ export class LogHub {
     return { requests: this.requests.size, agents: this.agents.size, waiters: this.waiters, waitingActors: this.actorWaiters.size, waitersInRequests };
   }
 
-  status(serverId: string): { state: 'supported' | 'not_connected' | 'unsupported' | 'broker_unavailable'; reportedAt: string | null; targets: LogTarget[] } {
+  /**
+   * `scoped`: the reader is limited to granted services (ADR-028). A version-1 Agent/broker cannot verify at read time
+   * that a targetKey still means the authorised service, so scoped readers get no log viewing from it (fail closed).
+   */
+  status(serverId: string, scoped = false): { state: 'supported' | 'not_connected' | 'unsupported' | 'broker_unavailable'; reportedAt: string | null; targets: LogTarget[] } {
     const a = this.agents.get(serverId);
     if (!a || this.now() - a.seenAt > LOG_LIMITS.agentSeenMs) return { state: 'not_connected', reportedAt: a ? new Date(a.seenAt).toISOString() : null, targets: [] };
     const reportedAt = new Date(a.seenAt).toISOString();
-    if (a.report.broker === 'unsupported') return { state: 'unsupported', reportedAt, targets: [] };
+    if (a.report.broker === 'unsupported' || (scoped && a.report.version === 1)) return { state: 'unsupported', reportedAt, targets: [] };
     // An auto broker (version 2) has no allowlist at all; an allowlist broker needs a valid one.
     if (a.report.broker !== 'ok' || (a.report.allowlist !== 'ok' && a.report.mode !== 'auto')) return { state: 'broker_unavailable', reportedAt, targets: [] };
     return { state: 'supported', reportedAt, targets: a.report.targets };
   }
 
   /** `serviceName`: the service the caller authorised (ADR-028); it must still be the reported name of the target. */
-  create(input: { serverId: string; targetKey: string; serviceName: string; actorUserId: string; lines: number }): CreateOutcome {
+  create(input: { serverId: string; targetKey: string; serviceName: string; actorUserId: string; lines: number; scoped: boolean }): CreateOutcome {
     this.cleanup();
-    const st = this.status(input.serverId);
+    const st = this.status(input.serverId, input.scoped);
     if (st.state !== 'supported') return st.state;
-    if (!st.targets.some((t) => t.targetKey === input.targetKey && t.name === input.serviceName && t.matchStatus === 'ok')) return 'target_not_allowed';
+    const target = st.targets.find((t) => t.targetKey === input.targetKey && t.name === input.serviceName && t.matchStatus === 'ok');
+    if (!target) return 'target_not_allowed';
     const now = this.now();
     const hits = (this.rate.get(input.actorUserId) ?? []).filter((t) => now - t < 60_000);
     if (hits.length >= LOG_LIMITS.ratePerActorPerMinute) return 'rate_limited';
@@ -184,6 +212,7 @@ export class LogHub {
     this.rate.set(input.actorUserId, hits);
     const entry: Entry = {
       id: randomUUID(), serverId: input.serverId, targetKey: input.targetKey, serviceName: input.serviceName, actorUserId: input.actorUserId, lines: input.lines,
+      identity: target.identity ?? null, legacy: false,
       deadline: now + LOG_LIMITS.requestDeadlineMs, state: 'pending', result: null, finishedAt: null, waiters: new Set(),
     };
     this.requests.set(entry.id, entry);
@@ -216,9 +245,26 @@ export class LogHub {
   }
 
   /** The requester's own request (server + service), without waiting — for the access re-check before a read. */
-  peek(requestId: string, actorUserId: string): { serverId: string; serviceName: string } | null {
+  peek(requestId: string, actorUserId: string): { serverId: string; serviceName: string; legacy: boolean } | null {
     const e = this.requests.get(requestId);
-    return e && e.actorUserId === actorUserId ? { serverId: e.serverId, serviceName: e.serviceName } : null;
+    return e && e.actorUserId === actorUserId ? { serverId: e.serverId, serviceName: e.serviceName, legacy: e.legacy } : null;
+  }
+
+  /**
+   * Ends a request that must not be read (target changed, requester no longer allowed) — without any text. Only a
+   * request not yet answered by the Agent; a late result for it is then refused as a conflict.
+   */
+  reject(requestId: string, reason: 'target_changed' | 'identity_changed' | 'not_authorized'): void {
+    const e = this.requests.get(requestId);
+    if (!e || (e.state !== 'pending' && e.state !== 'delivered')) return;
+    this.finish(e, { outcome: 'rejected', reason, readAt: new Date(this.now()).toISOString(), stdout: null, stderr: null });
+  }
+
+  private finish(e: Entry, result: LogResult): void {
+    e.state = 'done';
+    e.result = result;
+    e.finishedAt = this.now();
+    for (const w of [...e.waiters]) w();
   }
 
   agentResult(serverId: string, requestId: string, result: LogResult): 'recorded' | 'not_found' | 'conflict' {
@@ -226,10 +272,7 @@ export class LogHub {
     const e = this.requests.get(requestId);
     if (!e || e.serverId !== serverId) return 'not_found';
     if (e.state !== 'delivered') return 'conflict';
-    e.state = 'done';
-    e.result = result;
-    e.finishedAt = this.now();
-    for (const w of [...e.waiters]) w();
+    this.finish(e, result);
     return 'recorded';
   }
 
@@ -274,14 +317,27 @@ export class LogHub {
     return this.view(e);
   }
 
+  /**
+   * Pending requests of the server, re-checked against the Agent's CURRENT report (ADR-028): the targetKey must still
+   * be the authorised service (same name, matched) and — when the request recorded one — the same definition identity.
+   * Otherwise the request ends rejected without being read; it is never redirected to whatever the key means now.
+   * The requester's current rights are checked by the caller (logs-routes) before anything leaves the API.
+   */
   private takeFor(serverId: string): Delivered[] {
     const out: Delivered[] = [];
+    const report = this.agents.get(serverId)?.report;
     for (const e of this.requests.values()) {
       if (out.length >= LOG_LIMITS.maxPerPoll) break;
-      if (e.serverId === serverId && e.state === 'pending') {
-        e.state = 'delivered';
-        out.push({ requestId: e.id, targetKey: e.targetKey, lines: e.lines, deadlineAt: new Date(e.deadline).toISOString() });
-      }
+      if (e.serverId !== serverId || e.state !== 'pending') continue;
+      const target = report?.targets.find((t) => t.targetKey === e.targetKey);
+      if (!target || target.name !== e.serviceName || target.matchStatus !== 'ok') { this.reject(e.id, 'target_changed'); continue; }
+      if (e.identity !== null && target.identity !== e.identity) { this.reject(e.id, 'identity_changed'); continue; }
+      e.state = 'delivered';
+      e.legacy = report?.version !== 2;
+      out.push({
+        requestId: e.id, targetKey: e.targetKey, lines: e.lines, deadlineAt: new Date(e.deadline).toISOString(),
+        name: e.serviceName, identity: e.identity, actorUserId: e.actorUserId,
+      });
     }
     return out;
   }
@@ -296,7 +352,10 @@ export class LogHub {
 
   private view(e: Entry): RequestView {
     const status: ViewStatus = e.state === 'done' ? 'done' : e.state === 'expired' ? 'expired' : 'pending';
-    return { requestId: e.id, serverId: e.serverId, targetKey: e.targetKey, serviceName: e.serviceName, status, deadlineAt: new Date(e.deadline).toISOString(), result: e.state === 'done' ? e.result : null };
+    return {
+      requestId: e.id, serverId: e.serverId, targetKey: e.targetKey, serviceName: e.serviceName, status, deadlineAt: new Date(e.deadline).toISOString(),
+      result: e.state === 'done' ? e.result : null, legacy: e.legacy,
+    };
   }
 
   /** Expires overdue requests, drops finished ones after the TTL and prunes the throttling maps. */

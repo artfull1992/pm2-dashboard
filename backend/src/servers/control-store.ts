@@ -6,7 +6,7 @@ import {
   type BrokerMode, COMMAND_DEADLINE_SECONDS, type CommandView, type ControlAction, type ControlTarget, LEASE_SECONDS, MAX_ATTEMPTS,
   type MatchStatus, type PollReport, RESULT_GRACE_SECONDS, type ResultReport, TARGET_FRESH_SECONDS,
 } from './control.js';
-import { ONLINE_WINDOW_SECONDS, type ServerStatus } from './store.js';
+import { lockAgentServer, ONLINE_WINDOW_SECONDS, type ServerStatus } from './store.js';
 
 // PM2 process control SQL (ADR-017). Parameterized only. Every lifecycle transition and its audit row share one
 // transaction. Command identity on the wire is the command id; a machine request is bound to the server of the
@@ -19,7 +19,10 @@ export interface ControlView {
     state: 'ok' | 'unavailable'; daemon: 'ok' | 'unavailable' | null; allowlist: 'ok' | 'invalid' | null; reportedAt: string; fresh: boolean;
     /** Reported by version-2 Agents; null for version 1 (allowlist). */
     mode: BrokerMode | null; protocol: 1 | 2;
-    /** Version 2: targets the broker knows (more than listed = cut at 500); null otherwise. */
+    /**
+     * Version 2: targets the broker knows (more than listed = cut at 500). Only for admin or an "all" grant on this
+     * server; null for a selected grant (never reveals hidden services, review e621e31) and for version 1.
+     */
     total: number | null;
   } | null;
   /** Only the targets of services visible in the scope (ADR-028). */
@@ -82,15 +85,7 @@ const OUTCOME_AUDIT: Record<ResultReport['outcome'], { event: ProcessCommandEven
   unknown: { event: 'process.command_unknown', outcome: 'failure' },
 };
 
-async function serverForToken(tx: QueryClient, tokenHash: Buffer): Promise<string | null> {
-  const cred = await tx.query<{ server_id: string }>(
-    `SELECT c.server_id FROM agent_credentials c JOIN servers s ON s.id = c.server_id
-      WHERE c.token_hash = $1 AND c.revoked_at IS NULL AND s.is_active
-      FOR SHARE OF c, s`,
-    [tokenHash],
-  );
-  return cred.rows[0]?.server_id ?? null;
-}
+const serverForToken = lockAgentServer;
 
 async function clock(tx: QueryClient): Promise<Date> {
   const r = await tx.query<{ t: Date }>('SELECT clock_timestamp() AS t');
@@ -102,11 +97,14 @@ async function clock(tx: QueryClient): Promise<Date> {
 export function createPgControlStore(db: Database): ControlStore {
   return {
     async controlView(serverId, scope) {
-      const head = await db.query<{ server_status: ServerStatus; broker_state: 'ok' | 'unavailable' | null; daemon_state: 'ok' | 'unavailable' | null; allowlist: 'ok' | 'invalid' | null; reported_at: Date | null; fresh: boolean | null; protocol: number | null; mode: BrokerMode | null; targets_total: number | null; [k: string]: unknown }>(
+      const head = await db.query<{ server_status: ServerStatus; broker_state: 'ok' | 'unavailable' | null; daemon_state: 'ok' | 'unavailable' | null; allowlist: 'ok' | 'invalid' | null; reported_at: Date | null; fresh: boolean | null; protocol: number | null; mode: BrokerMode | null; targets_total: number | null; total_visible: boolean; [k: string]: unknown }>(
         `SELECT CASE WHEN h.received_at IS NULL THEN 'never_connected'
                      WHEN h.received_at > now() - make_interval(secs => ${String(ONLINE_WINDOW_SECONDS)}) THEN 'online' ELSE 'offline' END AS server_status,
                 cs.broker_state, cs.daemon_state, cs.allowlist, cs.reported_at, cs.protocol, cs.mode, cs.targets_total,
-                cs.reported_at > now() - make_interval(secs => ${String(TARGET_FRESH_SECONDS)}) AS fresh
+                cs.reported_at > now() - make_interval(secs => ${String(TARGET_FRESH_SECONDS)}) AS fresh,
+                -- The broker's total counts EVERY process of the owner: only for readers who may see all services of
+                -- this server (admin, or an "all" grant); a selected grant never learns how many others exist (ADR-028).
+                ($2::uuid IS NULL OR EXISTS (SELECT 1 FROM user_server_access g WHERE g.user_id = $2::uuid AND g.server_id = s.id AND g.mode = 'all')) AS total_visible
            FROM servers s
            LEFT JOIN server_heartbeats h ON h.server_id = s.id
            LEFT JOIN server_control_status cs ON cs.server_id = s.id
@@ -124,7 +122,7 @@ export function createPgControlStore(db: Database): ControlStore {
         serverId,
         serverStatus: r.server_status,
         broker: r.broker_state && r.reported_at
-          ? { state: r.broker_state, daemon: r.daemon_state, allowlist: r.allowlist, reportedAt: r.reported_at.toISOString(), fresh: r.fresh === true, mode: r.mode, protocol: r.protocol === 2 ? 2 : 1, total: r.targets_total }
+          ? { state: r.broker_state, daemon: r.daemon_state, allowlist: r.allowlist, reportedAt: r.reported_at.toISOString(), fresh: r.fresh === true, mode: r.mode, protocol: r.protocol === 2 ? 2 : 1, total: r.total_visible ? r.targets_total : null }
           : null,
         targets: targets.rows.map((t) => ({ targetKey: t.target_key, name: t.name, pmId: t.pm_id, actions: t.actions, matchStatus: t.match_status })),
       };

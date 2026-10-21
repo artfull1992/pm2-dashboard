@@ -1,5 +1,55 @@
 # Поточний стан проєкту
 
+## Виправлення за review Codex `e621e31` — ресурсна авторизація логів, лічильники, deadlock heartbeat (2026-10-21) — готово до повторного review Codex
+
+База: `e621e31` (реалізація `2dc962c`), дерево було чисте. APPROVED не виставлено. Production, сервери користувача й Slack не використовувались. Bootstrap x86_64 validation лишається окремим відкритим питанням.
+
+**P1a — відкритий log long-poll після втрати прав.** До виправлення: `test/logs-access.test.ts` на коді `e621e31` (v2-звіт без `identity`, бо старий API його не приймав) — 11 із 16 падали. Operator → viewer, admin → viewer, деактивація й logout давали `200` з текстом логів; відкликання grant уже блокувало. Виправлення:
+- `app.revalidateSession` у `backend/src/auth/plugin.ts` — той самий пошук сесії, що й onRequest: сесія не відкликана й не прострочена, користувач активний, роль перечитана;
+- `GET /api/log-requests/:id` після будь-якого очікування й для готового результату перевіряє сесію (`401`), `logs:read` (`403`) і призначення з новим scope (`404`). Захоплений scope admin більше не діє після очікування.
+
+Після виправлення: 16/16 (fakes, справжній Fastify inject). На справжній PostgreSQL (`test/db/scoped-http.test.ts`, HTTP + pg-сховища): operator → viewer через SQL зі збереженою сесією → `403`, деактивація → `401`, відкликана сесія → `401`, відкликаний grant → `404`, без змін → `200`. Маркер логу відсутній у всіх відмовах і в журналах сервісу.
+
+**P1b — переадресація queued-запиту через `targetKey`.** До виправлення: перепризначений `shared-key` → запит доставлявся й повертав чужий текст (тест падав). Виправлення:
+- запит запам'ятовує назву сервісу та `identity` (v2);
+- hub при передачі звіряє поточний звіт Agent: інша назва → `rejected/target_changed`, інше визначення → `identity_changed`; запит не читається й не переадресовується;
+- перед передачею Agent перечитуються роль, активність і призначення автора (`AccessChecker.actorScope`, справжній SQL — `test/db/access.test.ts`) → `not_authorized`;
+- протокол логів v2: log targets несуть `identity`, запит Agent→broker — очікувані `name`/`identity`; broker перевіряє їх до відкриття файлів (allowlist і auto; в auto `identity` обов'язкова, v1-запит → `allowlist_invalid`);
+- legacy v1 (старий Agent або broker) не може перевірити ціль під час читання. Тому логи через нього — лише admin; для operator/viewer `unsupported`/`409`, а результат v1 не-admin не видається. Fallback Agent на v1 для старого API не передає `identity` (звіт лишається сумісним).
+
+Mixed versions (логи):
+
+| API | Agent / broker | operator / viewer | admin |
+|---|---|---|---|
+| новий | новий v2 (allowlist або auto) | так, з перевіркою цілі в broker | так |
+| новий | старий v1 або новий Agent зі старим broker | ні («не підтримується»), fail closed | так, з перевіркою назви при передачі |
+| старий | новий, allowlist | як раніше (старий API) | як раніше |
+| старий | новий, auto | ні (Agent нічого не читає) | ні |
+
+**P2 — `broker.total` розкривав приховані сервіси.** До виправлення (HTTP + PostgreSQL): selected grant бачив `total: 2` при 1 видимій цілі та `640` при > 500. Виправлення: `total` лише для admin і режиму «Усі сервіси» на сервері, інакше `null`. Після виправлення (`scoped-http.test.ts`): admin 2/2, operator з «Усі» 2/2, operator і viewer з «Вибрані» `null`/1, без grant — `404`; > 500: 640 лише admin і «Усі». Інших лічильників прихованих ресурсів не знайдено: log-targets без total, dashboard, inventory і alerts уже scoped.
+
+**Deadlock heartbeat/revoke.** Відтворюваність вихідного тесту на коді `e621e31` — 1 deadlock на 20 прогонів. Детерміновано відтворено новим тестом `servers.test.ts → deterministic …`: revoke тримає `servers FOR UPDATE`; heartbeat (`FOR SHARE OF c, s` блокує спершу credential) чекає на server; `UPDATE agent_credentials` у revoke → `deadlock detected while locking tuple in relation "servers"`.
+- Походження: дефект конкурентності продукту з Task 007 (`ea5cd0f`), у `2dc962c` не змінювався, ACL-регресією не є. Той самий шаблон — у poll керування й звіті inventory.
+- Виправлення: спільна `lockAgentServer` блокує в порядку revoke (server, потім credential) з повторною перевіркою credential під блокуванням; застосовано в heartbeat, control poll та inventory.
+- Після виправлення: детермінований тест проходить, вихідний гоночний — 30/30. Авторизація Agent не послаблена: після revoke heartbeat → `unauthorized`.
+
+**Перевірки після виправлень (локально):**
+
+| Перевірка | Результат |
+|---|---|
+| `test:backend:db` (PostgreSQL 18, одноразова VM, per-run schemas) | 151/151 двічі поспіль |
+| backend unit/API (у т. ч. `logs-access` 16, `logs-api` 18) | 525/525 |
+| Agent (broker v2 binding, negotiation через справжній сокет) | 176 (+3 opt-in) |
+| frontend | 255/255 |
+| `test:e2e` (Playwright) | 19/19 (+2 opt-in) |
+| `test:e2e:pm2` (одноразовий `PM2_HOME`, синтетичні застосунки; логи через v2 з прив'язкою цілі) | 2/2 |
+| `check:local`, `git diff --check`, `check:secrets` | див. звіт commit |
+
+**Обмеження:**
+- Сценарій «визначення процесу змінилося між передачею Agent і читанням» перевірено broker-тестами (unit і справжній unix-сокет); на справжньому PM2 він не відтворювався.
+- Команда, вже прочитана broker до відкликання, не відкликається; гарантія — жодна нова видача тексту.
+- Під час розробки годинник VM з тестовою БД відставав; його синхронізовано з хостом (проблема середовища).
+
 ## Незалежний review Codex — ролі й ресурсні доступи: CHANGES REQUIRED (2026-10-21)
 
 Перевірено `2dc962c` від бази `294aeae`, початкове дерево чисте. Прочитано модель/міграцію доступів, SQL scope, керування й логи, version negotiation Agent/broker, UI призначень, installer і тести. Базова матриця ролей/призначень реалізована, але є три відтворені зауваження:

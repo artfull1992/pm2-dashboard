@@ -1,3 +1,4 @@
+import { hasPermission, type Permission, type Role } from '../../src/auth/rbac.js';
 import type { AccessChecker, Scope } from '../../src/auth/scope.js';
 
 /**
@@ -8,6 +9,8 @@ import type { AccessChecker, Scope } from '../../src/auth/scope.js';
 export class FakeAccessChecker implements AccessChecker {
   readonly grants = new Map<string, Map<string, { mode: 'all' | 'selected'; services: Set<string> }>>();
   allowUngranted = false;
+  /** Current role/active flag of a user (the real checker reads `users`); unset → nobody (fail closed). */
+  actors: (userId: string) => { role: Role; isActive: boolean } | undefined = () => undefined;
 
   /** `exists`: whether a server exists at all (the real checker reads the servers table). */
   constructor(private readonly exists: (serverId: string) => Promise<boolean> = () => Promise.resolve(true)) {}
@@ -21,6 +24,12 @@ export class FakeAccessChecker implements AccessChecker {
   revoke(userId: string, serverId?: string): void {
     if (serverId === undefined) this.grants.delete(userId);
     else this.grants.get(userId)?.delete(serverId);
+  }
+
+  actorScope(userId: string, permission: Permission): Promise<{ scope: Scope } | null> {
+    const a = this.actors(userId);
+    if (!a?.isActive || !hasPermission(a.role, permission)) return Promise.resolve(null);
+    return Promise.resolve({ scope: a.role === 'admin' ? null : userId });
   }
 
   private server(scope: Scope, serverId: string) {

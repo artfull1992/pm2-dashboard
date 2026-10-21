@@ -133,7 +133,7 @@ export function rowMenu({ app, canControl, canLogs, control, logs, busy, limitRe
     const logTarget = logTargetFor(app, lv);
     if (logTarget) items.push({ key: 'logs', label: 'Переглянути логи', disabled: false, onSelect: () => { onLogs(logTarget); } });
     else if (lv) {
-      reasons.push(lv.state === 'unsupported' ? 'Перегляд логів не підтримується'
+      reasons.push(lv.state === 'unsupported' ? 'Перегляд логів не підтримується: потрібні оновлені Agent і broker'
         : lv.state === 'not_connected' ? 'Логи: агент не на зв’язку'
           : lv.state === 'broker_unavailable' ? 'Логи тимчасово недоступні' : 'Логи не дозволені');
     }

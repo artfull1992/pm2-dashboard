@@ -23,6 +23,8 @@ export const LOG_REASONS = [
   'fingerprint_mismatch', 'daemon_unavailable', 'deadline_passed', 'invalid_deadline', 'broker_busy', 'timeout',
   // Set by the Agent (not the broker) when the broker cannot be asked.
   'broker_unavailable', 'broker_unsupported',
+  // Version 2 (ADR-028): the target the broker resolves is not the service/definition the request was authorised for.
+  'target_changed', 'identity_changed',
 ] as const;
 export type LogReason = (typeof LOG_REASONS)[number];
 
@@ -36,7 +38,11 @@ export interface LogStream {
   modifiedAt: string | null;
 }
 
-export interface LogTarget { targetKey: string; name: string; pmId: number | null; matchStatus: string }
+export interface LogTarget {
+  targetKey: string; name: string; pmId: number | null; matchStatus: string;
+  /** Version 2 only: definition identity of a matched target (16 hex), null otherwise. */
+  identity?: string | null;
+}
 
 /** Version 2 (ADR-028): adds the broker mode and up to 500 targets; requests/results are otherwise the same. */
 export const MAX_LOG_TARGETS_V1 = 50;
@@ -44,7 +50,10 @@ export const MAX_LOG_TARGETS_V2 = 500;
 export type BrokerMode = 'allowlist' | 'auto';
 
 export type LogTargetsRequest = { v: 1 | 2; op: 'logTargets' };
-export type LogsRequest = { v: 1 | 2; op: 'logs'; requestId: string; targetKey: string; lines: number; deadlineAt: string };
+/** Version 2 adds what the target must still be (name; identity when the API recorded one) — checked before reading. */
+export type LogsRequest =
+  | { v: 1; op: 'logs'; requestId: string; targetKey: string; lines: number; deadlineAt: string }
+  | { v: 2; op: 'logs'; requestId: string; targetKey: string; lines: number; deadlineAt: string; name: string; identity: string | null };
 
 export type LogTargetsResponse = {
   v: 1 | 2; op: 'logTargets'; daemon: 'ok' | 'unavailable'; allowlist: 'ok' | 'invalid'; targets: LogTarget[];
@@ -72,6 +81,8 @@ const MATCH = ['ok', 'not_found', 'ambiguous', 'cluster_unsupported', 'fingerpri
 // eslint-disable-next-line no-control-regex -- names must not carry control characters
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
 
+const IDENTITY_RE = /^[0-9a-f]{16}$/;
+const isName = (v: unknown): v is string => typeof v === 'string' && v.length >= 1 && v.length <= 128 && !CONTROL_RE.test(v);
 const isIso = (v: unknown): v is string => typeof v === 'string' && ISO_UTC_RE.test(v) && Number.isFinite(Date.parse(v));
 const isLines = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= LOG_LIMITS.maxLines;
 
@@ -79,11 +90,13 @@ export function parseLogsRequest(value: Record<string, unknown>): LogTargetsRequ
   if (value.v !== 1 && value.v !== 2) return null;
   const v = value.v;
   if (value.op === 'logTargets') return exactKeys(value, ['v', 'op']) ? { v, op: 'logTargets' } : null;
-  if (value.op !== 'logs' || !exactKeys(value, ['v', 'op', 'requestId', 'targetKey', 'lines', 'deadlineAt'])) return null;
-  const { requestId, targetKey, lines, deadlineAt } = value;
+  if (value.op !== 'logs' || !exactKeys(value, ['v', 'op', 'requestId', 'targetKey', 'lines', 'deadlineAt', ...(v === 2 ? ['name', 'identity'] : [])])) return null;
+  const { requestId, targetKey, lines, deadlineAt, name, identity } = value;
   if (typeof requestId !== 'string' || !UUID_RE.test(requestId) || typeof targetKey !== 'string' || !TARGET_KEY_RE.test(targetKey)) return null;
   if (!isLines(lines) || !isIso(deadlineAt)) return null;
-  return { v, op: 'logs', requestId, targetKey, lines, deadlineAt };
+  if (v === 1) return { v: 1, op: 'logs', requestId, targetKey, lines, deadlineAt };
+  if (!isName(name) || !(identity === null || (typeof identity === 'string' && IDENTITY_RE.test(identity)))) return null;
+  return { v: 2, op: 'logs', requestId, targetKey, lines, deadlineAt, name, identity };
 }
 
 export function parseLogStream(v: unknown): LogStream | null | undefined {
@@ -106,11 +119,15 @@ export function parseLogsResponse(value: unknown, expected: LogTargetsRequest | 
     if ((daemon !== 'ok' && daemon !== 'unavailable') || (allowlist !== 'ok' && allowlist !== 'invalid') || !Array.isArray(targets) || targets.length > max) return null;
     const parsed: LogTarget[] = [];
     for (const t of targets as unknown[]) {
-      if (!isObject(t) || !exactKeys(t, ['targetKey', 'name', 'pmId', 'matchStatus'])) return null;
-      const { targetKey, name, pmId, matchStatus } = t;
+      if (!isObject(t) || !exactKeys(t, ['targetKey', 'name', 'pmId', 'matchStatus', ...(expected.v === 2 ? ['identity'] : [])])) return null;
+      const { targetKey, name, pmId, matchStatus, identity } = t;
       if (typeof targetKey !== 'string' || !TARGET_KEY_RE.test(targetKey) || typeof name !== 'string' || name.length < 1 || name.length > 128 || CONTROL_RE.test(name)) return null;
       if (!(pmId === null || (typeof pmId === 'number' && Number.isSafeInteger(pmId) && pmId >= 0)) || !oneOf(MATCH, matchStatus)) return null;
-      parsed.push({ targetKey, name, pmId, matchStatus });
+      if (expected.v === 2) {
+        // A matched target always carries its identity, an unmatched one never.
+        if (matchStatus === 'ok' ? !(typeof identity === 'string' && IDENTITY_RE.test(identity)) : identity !== null) return null;
+        parsed.push({ targetKey, name, pmId, matchStatus, identity: identity as string | null });
+      } else parsed.push({ targetKey, name, pmId, matchStatus });
     }
     if (new Set(parsed.map((t) => t.targetKey)).size !== parsed.length) return null;
     if (expected.v === 1) return { v: 1, op: 'logTargets', daemon, allowlist, targets: parsed };

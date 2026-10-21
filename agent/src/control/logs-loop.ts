@@ -12,7 +12,8 @@ import {
 // is never logged. Version negotiation as in loop.ts (ADR-028): an AUTO broker is never reported to an API that does
 // not answer version 2 with accessModel 'scoped' — an older API would let any logs:read user read every process.
 
-export interface LogPollRequest { requestId: string; targetKey: string; lines: number; deadlineAt: string }
+/** `name`/`identity` (API protocol v2): what the target must still be when the broker reads it. */
+export interface LogPollRequest { requestId: string; targetKey: string; lines: number; deadlineAt: string; expected?: { name: string; identity: string | null } }
 export const LOG_POLL_TIMEOUT_MS = 35_000;
 export const MAX_REQUESTS_PER_POLL = 4;
 /** Lower bound between two empty polls: a misbehaving API (no long-poll hold) can never cause a busy loop. */
@@ -20,6 +21,8 @@ export const MIN_EMPTY_POLL_INTERVAL_MS = 1_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TARGET_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+// eslint-disable-next-line no-control-regex -- names must not carry control characters
+const NAME_CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
 
 export function parseLogPollReply(text: string): { requests: LogPollRequest[]; accessModel?: 'scoped' } | null {
   let body: unknown;
@@ -30,12 +33,18 @@ export function parseLogPollReply(text: string): { requests: LogPollRequest[]; a
   if (!Array.isArray(requests) || requests.length > MAX_REQUESTS_PER_POLL || Object.keys(body).length !== (accessModel === undefined ? 1 : 2)) return null;
   const out: LogPollRequest[] = [];
   for (const r of requests as unknown[]) {
-    if (typeof r !== 'object' || r === null || Object.keys(r).length !== 4) return null;
-    const { requestId, targetKey, lines, deadlineAt } = r as Record<string, unknown>;
+    if (typeof r !== 'object' || r === null) return null;
+    const withExpected = Object.hasOwn(r, 'name') || Object.hasOwn(r, 'identity');
+    if (Object.keys(r).length !== (withExpected ? 6 : 4)) return null;
+    const { requestId, targetKey, lines, deadlineAt, name, identity } = r as Record<string, unknown>;
     if (typeof requestId !== 'string' || !UUID_RE.test(requestId) || typeof targetKey !== 'string' || !TARGET_KEY_RE.test(targetKey)) return null;
     if (typeof lines !== 'number' || !Number.isSafeInteger(lines) || lines < 1 || lines > LOG_LIMITS.maxLines) return null;
     if (typeof deadlineAt !== 'string' || !ISO_RE.test(deadlineAt) || !Number.isFinite(Date.parse(deadlineAt))) return null;
-    out.push({ requestId, targetKey, lines, deadlineAt });
+    if (withExpected) {
+      if (typeof name !== 'string' || name.length < 1 || name.length > 128 || NAME_CONTROL_RE.test(name)) return null;
+      if (!(identity === null || (typeof identity === 'string' && /^[0-9a-f]{16}$/.test(identity)))) return null;
+      out.push({ requestId, targetKey, lines, deadlineAt, expected: { name, identity } });
+    } else out.push({ requestId, targetKey, lines, deadlineAt });
   }
   return { requests: out, ...(accessModel === 'scoped' ? { accessModel } : {}) };
 }
@@ -109,7 +118,7 @@ export async function runLogs(config: AgentConfig, signal: AbortSignal, deps: Lo
     let version: 1 | 2 = brokerVersion === 1 || (v1Polls > 0 && !auto) ? 1 : 2;
     const report = (v: 1 | 2) => (v === 2
       ? { version: 2, mode, broker, daemon, allowlist, targets, total }
-      : { version: 1, broker, daemon, allowlist, targets: targets.slice(0, MAX_LOG_TARGETS_V1) });
+      : { version: 1, broker, daemon, allowlist, targets: targets.slice(0, MAX_LOG_TARGETS_V1).map(({ targetKey, name, pmId, matchStatus }) => ({ targetKey, name, pmId, matchStatus })) });
     const startedAt = Date.now();
     let poll = await machinePost(config, '/api/agent/logs/poll', report(version), signal, parseLogPollReply, deps.fetchImpl, LOG_POLL_TIMEOUT_MS);
     if (poll.kind === 'rejected' && version === 2) {
@@ -160,7 +169,10 @@ export async function runLogs(config: AgentConfig, signal: AbortSignal, deps: Lo
     const failed = (reason: 'broker_unavailable' | 'broker_unsupported' | 'timeout'): LogsResponse =>
       ({ v, op: 'logs', requestId: r.requestId, outcome: 'failed', reason, readAt: new Date().toISOString(), stdout: null, stderr: null });
     if (broker !== 'ok' || !control) return failed(broker === 'unsupported' ? 'broker_unsupported' : 'broker_unavailable');
-    const req: LogsRequest = { v, op: 'logs', requestId: r.requestId, targetKey: r.targetKey, lines: r.lines, deadlineAt: r.deadlineAt };
+    const base = { op: 'logs' as const, requestId: r.requestId, targetKey: r.targetKey, lines: r.lines, deadlineAt: r.deadlineAt };
+    // A version-2 broker gets what the target must still be; without it (an older API, allowlist fallback) the
+    // request stays version 1, which an auto broker refuses (fail closed).
+    const req: LogsRequest = v === 2 && r.expected ? { v: 2, ...base, name: r.expected.name, identity: r.expected.identity } : { v: 1, ...base };
     try {
       return await call(control.socket, req, LOG_LIMITS.readTimeoutMs + 3_000, (v) => parseLogsResponse(v, req)) as LogsResponse;
     } catch (error) {

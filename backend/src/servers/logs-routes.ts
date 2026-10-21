@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { type AccessChecker, requestScope, type Scope } from '../auth/scope.js';
+import { hasPermission } from '../auth/rbac.js';
+import { type AccessChecker, requestScope, type Scope, scopeOf } from '../auth/scope.js';
 import type { AuditContext, AuditEvent } from '../auth/store.js';
 import { describeError, PublicHttpError } from '../errors.js';
 import {
@@ -8,6 +9,12 @@ import {
 
 // Bounded authorized log viewing (ADR-018). Browser: logs:read (+ Origin + CSRF for the POST). Machine: the Agent's
 // long-poll and result. Log text is only returned to the requesting user and never logged, audited or stored.
+//
+// ADR-028 (review e621e31): access is decided NOW, not when a request started. Before any result is handed out the
+// session, active flag and role are re-read (app.revalidateSession — the same lookup as every request) and the grant
+// is checked with the scope derived from them; before a queued request is handed to the Agent its requester's current
+// role/active flag/grant are re-read too, and the request carries the service name and definition identity it was
+// authorised for, so a broker (protocol v2) refuses a changed target instead of reading it.
 
 const UUID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 const idParams = { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', pattern: UUID_PATTERN } } } as const;
@@ -82,7 +89,7 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
     const { id } = request.params as { id: string };
     const scope = requestScope(request.auth);
     await ensureServer(id, scope, request.log);
-    const status = hub.status(id);
+    const status = hub.status(id, scope !== null);
     // Only the services the user may see: hidden names are neither listed nor counted.
     const visible = await checked(request.log, () => access.visibleServices(scope, id, status.targets.map((t) => t.name)));
     return { serverId: id, ...status, targets: status.targets.filter((t) => visible.has(t.name)) };
@@ -107,12 +114,12 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
     await ensureServer(id, scope, request.log);
     const context = { actorUserId: auth.userId, requestId: request.id };
     // The service of the target as currently reported; a hidden one is answered exactly like a missing one.
-    const status = hub.status(id);
+    const status = hub.status(id, scope !== null);
     const reported = status.targets.find((t) => t.targetKey === targetKey);
     const serviceName = reported && (await serviceVisible(scope, id, reported.name, request.log)) ? reported.name : null;
     const result = status.state !== 'supported' ? status.state
       : serviceName === null ? 'target_not_allowed' as const
-        : hub.create({ serverId: id, targetKey, serviceName, actorUserId: auth.userId, lines });
+        : hub.create({ serverId: id, targetKey, serviceName, actorUserId: auth.userId, lines, scoped: scope !== null });
     if (result === 'rate_limited') throw new PublicHttpError(429, 'Too many log requests', { 'retry-after': '10' });
     if (result === 'busy') throw new PublicHttpError(503, 'Service temporarily unavailable', { 'retry-after': '5' });
     if (typeof result === 'string') {
@@ -151,7 +158,18 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
     // A client that goes away frees its waiter at once (RESPONSE 'close', see the agent long-poll below).
     const view = await hub.get(id, auth.userId, { onClose: (cb) => { if (reply.raw.destroyed) cb(); else reply.raw.once('close', cb); } });
     if (!view) throw new PublicHttpError(404, 'Log request not found');
-    if (typeof view === 'object' && !(await serviceVisible(scope, view.serverId, view.serviceName, request.log))) throw new PublicHttpError(404, 'Log request not found');
+    if (typeof view === 'object') {
+      // After the wait (or a cached result): the session, active flag and role as they are now — never the ones from
+      // before the wait (a captured admin scope is not a lasting permission). Then the grant with the CURRENT scope.
+      const now = await app.revalidateSession(request, reply);
+      if (!now) throw new PublicHttpError(401, 'Authentication required');
+      if (!hasPermission(now.role, 'logs:read')) throw new PublicHttpError(403, 'Forbidden');
+      const current = scopeOf(now);
+      // A result read by a version-1 Agent was not verified by the broker at read time: admins only.
+      if ((view.legacy && current !== null) || !(await serviceVisible(current, view.serverId, view.serviceName, request.log))) {
+        throw new PublicHttpError(404, 'Log request not found');
+      }
+    }
     if (view === 'limit_request' || view === 'limit_actor') throw new PublicHttpError(429, 'Too many waiting log reads', { 'retry-after': '1' });
     if (view === 'limit_global') throw new PublicHttpError(503, 'Service temporarily unavailable', { 'retry-after': '2' });
     return view;
@@ -172,7 +190,11 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
               type: 'array', maxItems: LOG_LIMITS.maxPerPoll,
               items: {
                 type: 'object', additionalProperties: false, required: ['requestId', 'targetKey', 'lines', 'deadlineAt'],
-                properties: { requestId: { type: 'string' }, targetKey: { type: 'string' }, lines: { type: 'integer' }, deadlineAt: { type: 'string' } },
+                properties: {
+                  requestId: { type: 'string' }, targetKey: { type: 'string' }, lines: { type: 'integer' }, deadlineAt: { type: 'string' },
+                  // Version 2 only: what the target must still be when the broker reads it.
+                  name: { type: 'string' }, identity: { type: ['string', 'null'] },
+                },
               },
             },
           },
@@ -184,10 +206,29 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
     if (!agent) throw new PublicHttpError(401, 'Agent credential missing or invalid');
     const report = request.body as AgentLogReport;
     if (new Set(report.targets.map((t) => t.targetKey)).size !== report.targets.length) throw new PublicHttpError(400, 'Invalid log report');
+    // Version 2: a matched target always carries its identity, an unmatched one never.
+    if (report.version === 2 && report.targets.some((t) => (t.matchStatus === 'ok') !== (typeof t.identity === 'string'))) throw new PublicHttpError(400, 'Invalid log report');
+    if (report.version === 2 && report.total !== undefined && report.total < report.targets.length) throw new PublicHttpError(400, 'Invalid log report');
     // Identity from the credential; a disconnected long-poll releases its slot.
     // The RESPONSE 'close' fires only when the connection goes away (or after sending); the request's 'close' fires as
     // soon as its body is consumed and would end every long-poll immediately (busy loop).
-    const requests = await hub.agentPoll(agent.serverId, report, (cb) => { reply.raw.once('close', cb); });
+    const taken = await hub.agentPoll(agent.serverId, report, (cb) => { reply.raw.once('close', cb); });
+    // The requester's rights NOW (role, active flag, grant) before anything is handed to the Agent; a version-1 Agent
+    // only serves admins (it cannot verify the target at read time). A refused request ends rejected, unread.
+    const requests = [];
+    for (const t of taken) {
+      let allowed = false;
+      try {
+        const actor = await access.actorScope(t.actorUserId, 'logs:read');
+        allowed = actor !== null && (report.version === 2 || actor.scope === null)
+          && (await access.visibleServices(actor.scope, agent.serverId, [t.name])).has(t.name);
+      } catch (error) {
+        request.log.error({ error: describeError(error) }, 'Access lookup failed');
+      }
+      if (!allowed) { hub.reject(t.requestId, 'not_authorized'); continue; }
+      const base = { requestId: t.requestId, targetKey: t.targetKey, lines: t.lines, deadlineAt: t.deadlineAt };
+      requests.push(report.version === 2 ? { ...base, name: t.name, identity: t.identity } : base);
+    }
     return { requests, ...(report.version === 2 ? { accessModel: 'scoped' as const } : {}) };
   });
 
