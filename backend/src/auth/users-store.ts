@@ -60,7 +60,7 @@ const view = (r: UserRow): UserView => ({
 });
 
 /** Under the users table lock: the actor's session is valid and the actor is an active admin. */
-async function actorIsAdmin(tx: QueryClient, actor: ActorRef): Promise<boolean> {
+export async function actorIsAdmin(tx: QueryClient, actor: ActorRef): Promise<boolean> {
   const { rows } = await tx.query(
     `SELECT 1 FROM users u JOIN sessions s ON s.user_id = u.id
       WHERE u.id = $1 AND s.id = $2 AND u.is_active AND u.role = 'admin' AND s.revoked_at IS NULL AND s.expires_at > now()`,

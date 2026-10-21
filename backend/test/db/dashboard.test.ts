@@ -69,7 +69,7 @@ const current = (procs: string[] = []) => ({ seen: 5, inv: { state: 'ok' as cons
 describe('dashboard aggregate (real SQL)', () => {
   it('empty system: exact zeros, empty lists, no invented state', async () => {
     const ctx = await setup();
-    const d = await ctx.store.dashboard({ actionsFor: null });
+    const d = await ctx.store.dashboard({ actionsFor: null, scope: null });
     expect(d.servers).toEqual({ total: 0, inactive: 0, active: 0, online: 0, offline: 0, neverConnected: 0 });
     expect(d.inventory).toEqual({ current: 0, stale: 0, unavailable: 0, notReported: 0 });
     expect(d.processes).toEqual({ live: { total: 0, online: 0, problem: 0, transitional: 0 }, notLive: 0 });
@@ -89,7 +89,7 @@ describe('dashboard aggregate (real SQL)', () => {
     await server(ctx, 'f-unavailable', { seen: 5, inv: { state: 'unavailable', collectedAgo: null } });
     await server(ctx, 'g-not-reported', { seen: 5, snapshot: legacySnapshot({ memory: { totalBytes: 0, freeBytes: 0 } }) as unknown as ServerSnapshot });
     await server(ctx, 'h-exporter-stale', { seen: 5, inv: { state: 'stale', collectedAgo: 10 }, procs: ['errored'] });
-    const d = await ctx.store.dashboard({ actionsFor: null });
+    const d = await ctx.store.dashboard({ actionsFor: null, scope: null });
     expect(d.servers).toEqual({ total: 8, inactive: 1, active: 7, online: 5, offline: 1, neverConnected: 1 });
     // b-offline's inventory row is still within 180 s → counted "current" as inventory, but its processes are not live.
     expect(d.inventory).toEqual({ current: 2, stale: 2, unavailable: 1, notReported: 2 });
@@ -119,7 +119,7 @@ describe('dashboard aggregate (real SQL)', () => {
     const ctx = await setup();
     await server(ctx, 'edge-online', { seen: 85, inv: { state: 'ok', collectedAgo: 175 }, procs: ['online'] });
     await server(ctx, 'edge-offline', { seen: 95, inv: { state: 'ok', collectedAgo: 185 }, procs: ['online'] });
-    const d = await ctx.store.dashboard({ actionsFor: null });
+    const d = await ctx.store.dashboard({ actionsFor: null, scope: null });
     expect(d.servers).toMatchObject({ online: 1, offline: 1 });
     expect(d.inventory).toMatchObject({ current: 1, stale: 1 });
     expect(d.processes.live.total).toBe(1);
@@ -129,7 +129,7 @@ describe('dashboard aggregate (real SQL)', () => {
     const ctx = await setup();
     for (let i = 0; i < 60; i++) await server(ctx, `n-${String(i).padStart(2, '0')}`, { seen: 600 });
     await server(ctx, 'z-live', current(Array.from({ length: 30 }, () => 'errored')));
-    const d = await ctx.store.dashboard({ actionsFor: null });
+    const d = await ctx.store.dashboard({ actionsFor: null, scope: null });
     expect(d.servers).toMatchObject({ active: 61, offline: 60, online: 1 });
     expect(d.attentionServers).toMatchObject({ total: 60, limit: DASHBOARD_LIMITS.attentionServers });
     expect(d.attentionServers.items).toHaveLength(DASHBOARD_LIMITS.attentionServers);
@@ -138,7 +138,7 @@ describe('dashboard aggregate (real SQL)', () => {
     expect(d.serverList.items).toHaveLength(DASHBOARD_LIMITS.serverList);
     expect(d.attentionProcesses).toMatchObject({ total: 30 });
     expect(d.attentionProcesses.items).toHaveLength(DASHBOARD_LIMITS.attentionProcesses);
-    const again = await ctx.store.dashboard({ actionsFor: null }); // deterministic order (status, server, name, pm_id)
+    const again = await ctx.store.dashboard({ actionsFor: null, scope: null }); // deterministic order (status, server, name, pm_id)
     expect(again.attentionProcesses.items).toEqual(d.attentionProcesses.items);
     expect(again.serverList.items.map((x) => x.name)).toEqual(d.serverList.items.map((x) => x.name));
     expect(d.processes.live).toMatchObject({ total: 30, problem: 30 });
@@ -161,8 +161,8 @@ describe('dashboard aggregate (real SQL)', () => {
        VALUES ($1, 'web', 'stop', 'queued', $2, $3, now() - interval '10 minutes', now() - interval '8 minutes')`, [sid, me, randomUUID()]);
     const before: unknown = (await ctx.sql('SELECT md5(string_agg(c::text, \',\' ORDER BY id)) AS h FROM control_commands c')).rows[0];
     const sessionsBefore: unknown = (await ctx.sql('SELECT count(*) FROM sessions')).rows[0];
-    expect((await ctx.store.dashboard({ actionsFor: null })).recentActions).toBeNull();
-    const d = await ctx.store.dashboard({ actionsFor: me });
+    expect((await ctx.store.dashboard({ actionsFor: null, scope: null })).recentActions).toBeNull();
+    const d = await ctx.store.dashboard({ actionsFor: me, scope: null });
     expect(d.recentActions?.items).toHaveLength(DASHBOARD_LIMITS.recentActions);
     expect(d.recentActions?.items[0]).toMatchObject({ targetKey: 'web', action: 'stop', status: 'queued', overdue: true, requestedByMe: true, serverName: 'cmd', completedAt: null });
     expect(d.recentActions?.items.slice(1).every((a) => !a.overdue && a.status === 'succeeded')).toBe(true);
@@ -176,7 +176,7 @@ describe('dashboard aggregate (real SQL)', () => {
   it('the read transaction is READ ONLY (a write inside it would fail) and returns a consistent snapshot', async () => {
     const ctx = await setup();
     await server(ctx, 'x', current(['online']));
-    const [d1, d2] = await Promise.all([ctx.store.dashboard({ actionsFor: null }), ctx.store.dashboard({ actionsFor: null })]);
+    const [d1, d2] = await Promise.all([ctx.store.dashboard({ actionsFor: null, scope: null }), ctx.store.dashboard({ actionsFor: null, scope: null })]);
     expect(d1.servers).toEqual(d2.servers);
     await expect(ctx.db.transaction(async (tx) => {
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');

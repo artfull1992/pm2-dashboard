@@ -6,6 +6,7 @@ import { createRateLimiter } from '../src/auth/rate-limit.js';
 import type { Role } from '../src/auth/rbac.js';
 import { LOG_LIMITS, LogHub } from '../src/servers/logs.js';
 import { captureLogs, fakeDatabase } from './helpers.js';
+import { FakeAccessChecker } from './support/fake-access.js';
 import { FakeAuthStore } from './support/fake-auth-store.js';
 import { FakeServerStore } from './support/fake-server-store.js';
 
@@ -19,6 +20,7 @@ let app: FastifyInstance;
 let auth: FakeAuthStore;
 let servers: FakeServerStore;
 let hub: LogHub;
+let access: FakeAccessChecker;
 let clock: number;
 let logs: ReturnType<typeof captureLogs>;
 
@@ -28,7 +30,7 @@ function build() {
     logLevel: 'info', readinessTimeoutMs: 200, createDatabase: () => fakeDatabase(), logStream: logs.stream,
     auth: {
       config: { allowedOrigins: [ORIGIN], cookieSecure: true, sessionTtlSeconds: 3600 },
-      createStore: () => auth, createServerStore: () => servers, logHub: hub,
+      createStore: () => auth, createServerStore: () => servers, logHub: hub, accessChecker: access,
       extra: {
         accountLimiter: createRateLimiter({ max: 1000, windowMs: 60_000 }), addressLimiter: createRateLimiter({ max: 1000, windowMs: 60_000 }),
         agentTokenLimiter: createRateLimiter({ max: 1000, windowMs: 60_000 }), agentAddressLimiter: createRateLimiter({ max: 1000, windowMs: 60_000 }),
@@ -39,6 +41,8 @@ function build() {
 
 beforeEach(() => {
   auth = new FakeAuthStore(); servers = new FakeServerStore(); clock = Date.now(); hub = new LogHub(() => clock);
+  // These lifecycle tests are not about grants (see the scope tests below): every user is treated as granted.
+  access = new FakeAccessChecker(async (id) => (await servers.get(id, null)) !== null); access.allowUngranted = true;
   build();
 });
 afterEach(async () => { await app.close(); });
@@ -173,6 +177,21 @@ describe('request lifecycle', () => {
     noSecrets();
   });
 
+  it('protocol v2 (ADR-028): an auto broker without allowlist; the reply declares scoped access; strict total/targets', async () => {
+    const admin = await session('admin');
+    const n = await node(admin);
+    const v2 = (over: Record<string, unknown> = {}) => ({ version: 2, mode: 'auto', broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: report().targets, total: 1, ...over });
+    const { held } = await connected(n, v2());
+    expect((await create(admin, n.serverId)).statusCode).toBe(202);
+    const reply = (await held).json<{ accessModel?: string; requests: unknown[] }>();
+    expect(reply.accessModel).toBe('scoped');
+    expect(reply.requests).toHaveLength(1);
+    const many = Array.from({ length: 501 }, (_, i) => ({ targetKey: `n-${String(i)}`, name: `s${String(i)}`, pmId: i, matchStatus: 'ok' }));
+    for (const b of [v2({ targets: many, total: 501 }), v2({ mode: 'open' }), { ...v2(), version: 1 }, v2({ total: -1 })]) {
+      expect((await agentPoll(n.token, b)).statusCode).toBe(400);
+    }
+  });
+
   it('deadline: an unanswered request expires; a late result is refused; results are dropped after the TTL', async () => {
     const admin = await session('admin');
     const n = await node(admin);
@@ -214,7 +233,7 @@ describe('LogHub (bounded memory)', () => {
     const results: string[] = [];
     for (let i = 0; i < 31; i++) {
       void poll();
-      const r = h.create({ serverId, targetKey: 'api', actorUserId: 'u1', lines: 10 });
+      const r = h.create({ serverId, targetKey: 'api', serviceName: 'api', actorUserId: 'u1', lines: 10 });
       if (typeof r === 'string') { results.push(r); break; }
       h.agentResult(serverId, r.request.requestId, { outcome: 'ok', reason: null, readAt: new Date(now).toISOString(), stdout: null, stderr: null });
       now += 100;
@@ -222,7 +241,7 @@ describe('LogHub (bounded memory)', () => {
     expect(results).toEqual(['rate_limited']);
     now += 61_000;
     void poll();
-    expect(typeof h.create({ serverId, targetKey: 'api', actorUserId: 'u1', lines: 10 })).toBe('object');
+    expect(typeof h.create({ serverId, targetKey: 'api', serviceName: 'api', actorUserId: 'u1', lines: 10 })).toBe('object');
     h.close();
   });
 
@@ -271,7 +290,7 @@ describe('result waiters (bounded)', () => {
   const tick = () => new Promise((r) => setTimeout(r, 5));
   function open(h: LogHub, serverId: string, actorUserId: string): string {
     void h.agentPoll(serverId, rep, () => undefined);
-    const r = h.create({ serverId, targetKey: 'api', actorUserId, lines: 10 });
+    const r = h.create({ serverId, targetKey: 'api', serviceName: 'api', actorUserId, lines: 10 });
     if (typeof r === 'string') throw new Error(r);
     return r.request.requestId;
   }

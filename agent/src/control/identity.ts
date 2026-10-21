@@ -40,15 +40,36 @@ export function stateOf(view: RawProcessView): { status: ProcessState; restarts:
   return { status, restarts, startedAt };
 }
 
+/** Short identity of a definition sent to the API (ADR-028): 16 hex of the fingerprint — no path/args leave the host. */
+export function identityOf(view: RawProcessView): string {
+  return fingerprintOf(view).slice('sha256:'.length, 'sha256:'.length + 16);
+}
+
+/** Target key of a service in auto mode (ADR-028): derived from the PM2 name only, never from pm_id. */
+export function autoTargetKey(name: string): string {
+  return `n-${createHash('sha256').update(name, 'utf8').digest('hex').slice(0, 24)}`;
+}
+
 export type Match = { status: Exclude<MatchStatus, 'ok' | 'daemon_unavailable'> } | { status: 'ok'; view: RawProcessView };
 
-export function matchEntry(entry: AllowlistEntry, raw: readonly unknown[]): Match {
-  const candidates = raw.map(viewOf).filter((v): v is RawProcessView => v !== null && v.name === entry.name);
+/** Exactly one fork-mode, single-instance process carries the name (no fingerprint: auto mode). */
+export function matchName(name: string, raw: readonly unknown[]): Match {
+  const candidates = raw.map(viewOf).filter((v): v is RawProcessView => v !== null && v.name === name);
   if (candidates.length === 0) return { status: 'not_found' };
   if (candidates.length > 1) return { status: 'ambiguous' };
   const [view] = candidates as [RawProcessView];
   const instances = view.env.instances;
   if (view.env.exec_mode !== 'fork_mode' || (instances !== undefined && instances !== 1 && instances !== '1')) return { status: 'cluster_unsupported' };
-  if (fingerprintOf(view) !== entry.fingerprint) return { status: 'fingerprint_mismatch' };
   return { status: 'ok', view };
+}
+
+export function matchEntry(entry: AllowlistEntry, raw: readonly unknown[]): Match {
+  const m = matchName(entry.name, raw);
+  if (m.status === 'ok' && fingerprintOf(m.view) !== entry.fingerprint) return { status: 'fingerprint_mismatch' };
+  return m;
+}
+
+/** Distinct valid PM2 names of the daemon (auto mode targets), sorted. Names unfit for the protocol are skipped. */
+export function processNames(raw: readonly unknown[], valid: (name: string) => boolean): string[] {
+  return [...new Set(raw.map(viewOf).filter((v): v is RawProcessView => v !== null && valid(v.name)).map((v) => v.name))].sort();
 }

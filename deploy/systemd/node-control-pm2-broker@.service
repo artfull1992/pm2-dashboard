@@ -1,7 +1,9 @@
 # Node Control — local PM2 control broker (ADR-017). Instance name = the Linux user that owns PM2 (never
 # root: the broker refuses UID 0 itself, exit 2), e.g. node-control-pm2-broker@deploy.service.
-# Executes ONLY typed start/stop/restart for targets in the ROOT-OWNED allowlist; no shell, no network.
-# Config (no secrets): /etc/node-control-pm2-broker/%i.env — NC_PM2_HOME, NC_BROKER_ALLOWLIST.
+# Executes ONLY typed start/stop/restart (and bounded log tails); no shell, no network.
+# Mode (ADR-028): NC_BROKER_MODE=auto — every process of this PM2 owner, each command authorised by the API per user
+# and service (protocol v2 only, identity checked before acting); absent/allowlist — only ROOT-OWNED allowlist targets.
+# Config (no secrets): /etc/node-control-pm2-broker/%i.env — NC_PM2_HOME, NC_BROKER_MODE, NC_BROKER_ALLOWLIST.
 # Socket: /run/node-control-pm2-broker/broker.sock (0660 %i:nc-pm2-control → the Agent only).
 # Journal (dedup): /var/lib/node-control-pm2-broker (0700). Stopping the broker never stops PM2 processes.
 # There is deliberately no ConditionUser= (it would test the manager's user, not User=; see ADR-016/Task 008.1).

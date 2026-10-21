@@ -286,7 +286,9 @@ Rollback inventory (PM2 і проєкти не зачіпаються): `systemc
 
 ### Керування PM2 (Task 009, ADR-017) — production enable лише явно
 
-Типовий стан після деплою: `PM2_CONTROL_ENABLED` не задано (= `false`), Agent без `NC_AGENT_CONTROL_SOCKET`, broker не встановлений. Будь-який із трьох кроків нижче, не виконаний, лишає керування вимкненим (fail closed). PM2 і проєкти при встановленні не перезапускаються.
+> З ADR-028 (розділ «Доступи за ролями й сервісами» нижче): `PM2_CONTROL_ENABLED` типово `true` (лише аварійний вимикач), новий broker встановлюється в режимі `auto` без allowlist, а хто й чим керує, визначають ролі й «Доступи». Нижче — ручний маршрут режиму allowlist, який лишається підтримуваним.
+
+Типовий стан після деплою (до ADR-028): `PM2_CONTROL_ENABLED` не задано (= `false`), Agent без `NC_AGENT_CONTROL_SOCKET`, broker не встановлений. Будь-який із трьох кроків нижче, не виконаний, лишає керування вимкненим (fail closed). PM2 і проєкти при встановленні не перезапускаються.
 
 **Потрібно від оператора:** для кожного процесу — ім'я в PM2, бажаний `targetKey` (`^[a-z0-9][a-z0-9._-]{0,63}$`) і дозволені дії (`start`/`stop`/`restart`). Cluster-процеси та процеси з повторюваними іменами не підтримуються.
 
@@ -325,6 +327,28 @@ journalctl -u node-control-agent -n 5 -o cat                             # "cont
 Перевірка: UI → сервер → «Сервіси сервера» (або «Застосунки», ADR-024) → колонка «Дії»: дозволені процеси мають активне меню; operator/admin виконує дію з підтвердженням; статус «Виконано й підтверджено»; audit `process.command_*`.
 
 **Rollback / аварійне вимкнення** (у будь-якому порядку, PM2-процеси не зупиняються): `PM2_CONTROL_ENABLED=false` + restart API (нові команди → 409, черга не видається й експірує); прибрати `NC_AGENT_CONTROL_SOCKET` з `agent.env` + restart Agent; `systemctl disable --now node-control-pm2-broker@<owner>`; спорожнити allowlist. Журнал broker (`/var/lib/node-control-pm2-broker`) не видаляти: він захищає від повторного виконання. Таблиці керування лишаються (additive).
+
+### Доступи за ролями й сервісами (ADR-028)
+
+Міграція `1791900000009_access-grants` — additive: таблиці `user_server_access`/`user_service_access`, `users.access_revision`, нові колонки `control_commands` (`service_name`, `target_identity`), `server_control_targets` (`identity`, `logs`), `server_control_status` (`protocol`, `mode`, `targets_total`). Наслідок для користувачів: **operator і viewer після оновлення API не бачать нічого**, доки admin не надасть доступи («Користувачі» → «Дії» → «Доступи»). Admin — без змін (повний доступ).
+
+**Rollout (у цьому порядку; production-деплой — лише за окремим погодженням):**
+
+1. Backup лише `node_control_db` (`pg_dump -Fc` → `pg_restore --list`), як у «Міграції: backup, recovery, rollback».
+2. `migrate.js status` → `up` → `status` (pending = 0).
+3. Активувати реліз API/UI, restart лише `node-control-api`; health, журнал без нових помилок.
+4. Перевірка доступів (admin у UI): admin бачить усе; тестовий operator/viewer без доступів бачить «Немає наданих серверів»; після надання одного сервера/сервісу — лише його (сервери, «Застосунки», огляд, сповіщення, історія команд). Прямий URL чужого сервера → «Сервер не знайдено». Audit `access.updated` (ідентифікатори й кількості, без назв сервісів).
+5. Надати доступи реальним operator/viewer (рішення власника системи; автоматичного «доступу до всього» немає).
+6. Оновити реліз Agent на керованих серверах (Agent і broker — один артефакт; `server-release.js` + restart Agent і broker). Старий Agent з allowlist продовжує працювати з новим API (протокол v1).
+7. Явний перехід на автоматичну готовність, по одному серверу: `install/agent.js plan … --enable-control --control-mode auto` → `apply` (резервна копія `<owner>.env.bak-<час>`, `NC_BROKER_MODE=auto`, restart broker; ключ Agent не змінюється). Allowlist лишається на диску й не читається.
+8. Перевірки: `journalctl -u node-control-pm2-broker@<owner> -n 5 -o cat` («broker started»), `journalctl -u node-control-agent -n 20 -o cat` (`control poll` / `logs poll` — `ok`, без «does not support scoped access»); у UI на сторінці сервера — «Broker: режим auto»; operator із доступом бачить лише надані сервіси й може виконати дію/відкрити логи, без доступу — `404`; viewer — без кнопок, API `403`.
+
+**Rollback (fail closed).** Старий API не знає призначень і **повернув би operator/viewer глобальний доступ**, тож просте `server-release.js rollback` небезпечне. Варіанти:
+
+- переважно — виправлений реліз уперед;
+- якщо rollback API неминучий — **спершу** деактивувати всіх активних не-admin користувачів (UI «Користувачі» → «Деактивувати»; кожна дія в audit, сесії завершуються), потім `server-release.js rollback` + restart API, і активувати їх лише після повернення scoped-релізу. Схема БД не відкочується (старий API нові таблиці ігнорує).
+- Agent: broker у режимі `auto` зі старим API нічого не виконує (Agent пише попередження) — це fail closed. Щоб повернути керування за allowlist: `install/agent.js apply … --enable-control --control-mode allowlist` (рядок стає `NC_BROKER_MODE=allowlist`, наявний allowlist знову діє) або відновити `<owner>.env.bak-<час>` + restart broker.
+- Аварійно для всіх: `PM2_CONTROL_ENABLED=false` + restart API (нові команди → 409, черга не видається).
 
 ### Автозапуск PM2 після reboot (окремо від Agent)
 

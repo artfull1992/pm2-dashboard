@@ -18,6 +18,9 @@ export type { MenuItem } from './ActionMenu';
 
 export type RowActions = (app: ApplicationItem) => ReactNode;
 
+/** Targets one broker report carries at most (ADR-028); a larger total is said, never cut silently. */
+export const CONTROL_TARGETS_MAX = 500;
+
 export function ProcessControl({ serverId, serverName, onFinished, children }: {
   serverId: string; serverName: string; onFinished: () => void;
   children: (actions: RowActions | undefined) => ReactNode;
@@ -75,7 +78,15 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
           {current.broker && (current.broker.state !== 'ok' || !current.broker.fresh) ? (
             <p className="notice notice--warning" role="status">{`Broker ${current.broker.state === 'ok' ? 'давно не звітував' : 'недоступний'} (останній звіт ${formatDate(current.broker.reportedAt)}).`}</p>
           ) : null}
-          {current.broker?.allowlist === 'invalid' ? <p className="notice notice--warning" role="status">Локальний allowlist некоректний — усі дії відхиляються.</p> : null}
+          {current.broker?.allowlist === 'invalid' ? <p className="notice notice--warning" role="status">
+            {current.broker.mode === 'auto' ? 'Broker у режимі auto відхиляє застарілий протокол — оновіть Agent.' : 'Локальний allowlist некоректний — усі дії відхиляються.'}
+          </p> : null}
+          {current.broker?.total !== null && current.broker?.total !== undefined && current.broker.total > CONTROL_TARGETS_MAX ? (
+            <p className="notice notice--warning" role="status">{`На сервері ${String(current.broker.total)} процесів PM2 — керування доступне лише для перших ${String(CONTROL_TARGETS_MAX)} за іменем.`}</p>
+          ) : null}
+          {current.broker ? <p className="hint">{current.broker.mode === 'auto'
+            ? 'Broker: режим auto — доступні всі процеси власника PM2; що саме вам дозволено, визначають роль і надані доступи.'
+            : 'Broker: режим allowlist — доступні лише процеси з локального allowlist сервера.'}</p> : null}
           {current.enabled && current.serverStatus !== 'online' ? <p className="notice notice--warning" role="status">Сервер не онлайн — дії недоступні.</p> : null}
         </>
       ) : null}
@@ -87,7 +98,7 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
           <summary>Останні команди</summary>
           <ul className="control-history">
             {list.map((c) => (
-              <li key={c.id}><span className="hint num">{formatDate(c.requestedAt)}</span> {ACTION_LABELS[c.action]} <span className="mono">{c.targetKey}</span> — {commandStatusText(c)}</li>
+              <li key={c.id}><span className="hint num">{formatDate(c.requestedAt)}</span> {ACTION_LABELS[c.action]} <span className="mono">{c.serviceName ?? c.targetKey}</span> — {commandStatusText(c)}</li>
             ))}
           </ul>
         </details>

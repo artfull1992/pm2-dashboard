@@ -1,4 +1,5 @@
 import { insertAudit } from '../auth/store.js';
+import { type Scope, serverVisibleSql } from '../auth/scope.js';
 import type { Database } from '../database.js';
 import { normalizeSnapshot, type ServerSnapshot } from './snapshot.js';
 
@@ -29,8 +30,10 @@ export interface Actor {
 }
 
 export interface ServerStore {
-  list(input: { limit: number; afterId: string | null }): Promise<{ items: ServerSummary[]; nextAfterId: string | null }>;
-  get(id: string): Promise<ServerDetail | null>;
+  /** Only servers visible in `scope` (ADR-028), filtered before the page limit. */
+  list(input: { limit: number; afterId: string | null; scope: Scope }): Promise<{ items: ServerSummary[]; nextAfterId: string | null }>;
+  /** null: missing OR not visible in `scope` (the same answer — existence is not disclosed). */
+  get(id: string, scope: Scope): Promise<ServerDetail | null>;
   create(input: { name: string } & Actor): Promise<ServerSummary | 'name_taken'>;
   /** Revokes any active credential and stores the new digest, atomically with the audit row. */
   issueCredential(input: { serverId: string; tokenHash: Buffer } & Actor): Promise<{ issuedAt: Date; rotated: boolean } | 'not_found' | 'inactive'>;
@@ -70,21 +73,22 @@ const UNIQUE_VIOLATION = '23505';
 // EARLIER than a credential a concurrent transaction just created, which would violate revoked_at >= created_at.
 export function createPgServerStore(db: Database): ServerStore {
   return {
-    async list({ limit, afterId }) {
+    async list({ limit, afterId, scope }) {
       const { rows } = await db.query<SummaryRow>(
         `${SUMMARY_SELECT}
-          WHERE $1::uuid IS NULL OR (s.created_at, s.id) > (SELECT created_at, id FROM servers WHERE id = $1::uuid)
+          WHERE ${serverVisibleSql('s.id', '$3')}
+            AND ($1::uuid IS NULL OR (s.created_at, s.id) > (SELECT created_at, id FROM servers WHERE id = $1::uuid))
           ORDER BY s.created_at, s.id LIMIT $2`,
-        [afterId, limit + 1],
+        [afterId, limit + 1, scope],
       );
       const page = rows.slice(0, limit).map(toSummary);
       return { items: page, nextAfterId: rows.length > limit ? (page.at(-1)?.id ?? null) : null };
     },
 
-    async get(id) {
+    async get(id, scope) {
       const { rows } = await db.query<SummaryRow & { snapshot: unknown }>(
-        `SELECT h.snapshot, ${SUMMARY_COLUMNS} ${SUMMARY_FROM} WHERE s.id = $1`,
-        [id],
+        `SELECT h.snapshot, ${SUMMARY_COLUMNS} ${SUMMARY_FROM} WHERE s.id = $1 AND ${serverVisibleSql('s.id', '$2')}`,
+        [id, scope],
       );
       const row = rows[0];
       // Rows written before ADR-023 still hold legacy keys (memory, uptime, cpuCount): read through the current contract.

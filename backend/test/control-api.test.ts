@@ -23,7 +23,7 @@ let servers: FakeServerStore;
 let logs: ReturnType<typeof captureLogs>;
 
 const command = (over: Partial<CommandView> = {}): CommandView => ({
-  id: randomUUID(), serverId: SERVER, targetKey: 'api', action: 'restart', status: 'queued', reason: null, requestedBy: randomUUID(),
+  id: randomUUID(), serverId: SERVER, targetKey: 'api', serviceName: 'api', action: 'restart', status: 'queued', reason: null, requestedBy: randomUUID(),
   requestedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 120_000).toISOString(), dispatchedAt: null, completedAt: null,
   attempts: 0, before: null, after: null, ...over,
 });
@@ -221,6 +221,34 @@ describe('machine: poll and result', () => {
     ];
     for (const b of bad) expect((await machine(token, '/api/agent/control/poll', b)).statusCode).toBe(400);
     expect(control.polls).toHaveLength(0);
+  });
+
+  it('protocol v2 (ADR-028): mode, identity and total accepted; the reply declares scoped access and carries the identity', async () => {
+    build();
+    const token = await agentToken();
+    const t = { targetKey: 'n-0123456789abcdef01234567', name: 'api', pmId: 1, actions: ['start', 'stop', 'restart'], matchStatus: 'ok', identity: 'a'.repeat(16) };
+    const v2 = (over: Record<string, unknown> = {}) => ({ version: 2, mode: 'auto', broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: [t], total: 1, ...over });
+    control.pollResult = { commands: [{ id: randomUUID(), attempt: 1, targetKey: t.targetKey, action: 'restart', deadlineAt: new Date().toISOString(), identity: t.identity }] };
+    const ok = await machine(token, '/api/agent/control/poll', v2());
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ accessModel: 'scoped', commands: [{ identity: t.identity }] });
+    expect(control.polls[0]?.report).toMatchObject({ version: 2, mode: 'auto', total: 1 });
+    // 500 targets fit; total may say there are more (explicit cut).
+    const many = Array.from({ length: 500 }, (_, i) => ({ ...t, targetKey: `n-${String(i).padStart(24, '0')}`, name: `svc-${String(i)}` }));
+    expect((await machine(token, '/api/agent/control/poll', v2({ targets: many, total: 640 }))).statusCode).toBe(200);
+    // A v1 reply never declares the access model (an old Agent ignores unknown fields anyway).
+    control.pollResult = { commands: [] };
+    expect((await machine(token, '/api/agent/control/poll', report())).json()).not.toHaveProperty('accessModel');
+    const bad: unknown[] = [
+      v2({ targets: [...many, { ...t, targetKey: 'n-x', name: 'x' }] }), // > 500
+      v2({ total: 0 }), // fewer than listed
+      v2({ targets: [{ ...t, identity: null }] }), // auto: matched without identity
+      v2({ targets: [{ ...t, identity: 'xyz' }] }),
+      v2({ mode: 'open' }),
+      { ...v2(), version: 1 }, // v1 does not take mode/total
+      report({ targets: [{ ...report().targets[0], identity: 'a'.repeat(16) } as never] }), // v1 does not take identity
+    ];
+    for (const b of bad) expect((await machine(token, '/api/agent/control/poll', b)).statusCode).toBe(400);
   });
 
   it('control disabled: polls still report state but get the slow interval and never a command', async () => {

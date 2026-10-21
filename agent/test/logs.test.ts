@@ -11,7 +11,7 @@ import { type AllowlistEntry, AllowlistError, parseAllowlist } from '../src/cont
 import { createBroker, listenBroker } from '../src/control/broker.js';
 import { BrokerError, brokerCall } from '../src/control/client.js';
 import { listTargets } from '../src/control/executor.js';
-import { fingerprintOf, viewOf } from '../src/control/identity.js';
+import { autoTargetKey, fingerprintOf, viewOf } from '../src/control/identity.js';
 import { Journal } from '../src/control/journal.js';
 import {
   allowedLogPath, buildStreams, maskSecrets, prepareLines, readLogs, readTail, sanitizeLine, shrinkToFrame,
@@ -231,13 +231,13 @@ const servers: Server[] = [];
 afterEach(async () => { await Promise.all(servers.splice(0).map((s) => new Promise((r) => { s.close(r); }))); });
 
 describe('broker socket and agent loop', () => {
-  async function broker(logDirs: string[], p: ReturnType<typeof proc>, entries: AllowlistEntry[]) {
+  async function broker(logDirs: string[], p: ReturnType<typeof proc>, entries: AllowlistEntry[], mode: 'allowlist' | 'auto' = 'allowlist') {
     const sockDir = fresh();
     const sock = join(sockDir, 'b.sock');
     const jdir = join(sockDir, 'j');
     mkdirSync(jdir, { mode: 0o700 });
     const { server } = createBroker({
-      loadAllowlist: () => Promise.resolve(entries), list: () => Promise.resolve([p]), act: () => Promise.resolve(), journal: new Journal(jdir), logDirs,
+      loadAllowlist: () => Promise.resolve(entries), list: () => Promise.resolve([p]), act: () => Promise.resolve(), journal: new Journal(jdir), logDirs, mode,
     }, { info: () => undefined, warn: () => undefined });
     servers.push(server);
     await listenBroker(server, sock);
@@ -281,7 +281,7 @@ describe('broker socket and agent loop', () => {
       return Promise.resolve(new Response(JSON.stringify({ status: 'recorded' }), { status: 200 }));
     };
     await runLogs(config, controller.signal, { fetchImpl, logger: { info: (e) => logged.push(JSON.stringify(e)), warn: (e) => logged.push(JSON.stringify(e)) }, sleep: (_m, s) => abortableSleep(1, s) });
-    expect(polls[0]).toMatchObject({ version: 1, broker: 'ok', targets: [{ targetKey: 'api', matchStatus: 'ok' }] });
+    expect(polls[0]).toMatchObject({ version: 2, mode: 'allowlist', total: 1, broker: 'ok', targets: [{ targetKey: 'api', matchStatus: 'ok' }] });
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ version: 1, requestId, outcome: 'ok', stdout: { text: 'line with password=***\nvisible text' } });
     expect(logged.join('\n')).not.toMatch(new RegExp(`visible text|${SECRET}|${TOKEN}`));
@@ -311,6 +311,56 @@ describe('broker socket and agent loop', () => {
     });
     expect(oldPolls[0]).toMatchObject({ broker: 'unsupported', targets: [] });
     expect(oldResults[0]).toMatchObject({ outcome: 'failed', reason: 'broker_unsupported', stdout: null });
+  });
+
+  it('version negotiation (ADR-028): allowlist broker falls back to v1 for an old API; an auto broker never does', async () => {
+    const dir = fresh();
+    writeFileSync(join(dir, 'o.log'), 'auto line\n');
+    const p = proc(3, 'api', join(dir, 'o.log'), join(dir, 'e.log'));
+    const requestId = randomUUID();
+    const run = async (sock: string, api: (body: Record<string, unknown>, n: number) => Response) => {
+      const config = loadAgentConfig({ NC_AGENT_API_URL: 'https://x.example.test', NC_AGENT_TOKEN: TOKEN, NC_AGENT_CONTROL_SOCKET: sock });
+      const controller = new AbortController();
+      const polls: Record<string, unknown>[] = [];
+      const results: Record<string, unknown>[] = [];
+      const warned: string[] = [];
+      await runLogs(config, controller.signal, {
+        fetchImpl: (url, init) => {
+          const body = JSON.parse(init.body as string) as Record<string, unknown>;
+          if (!url.endsWith('/poll')) { results.push(body); return Promise.resolve(new Response(JSON.stringify({ status: 'recorded' }), { status: 200 })); }
+          polls.push(body);
+          if (polls.length >= 3) controller.abort();
+          return Promise.resolve(api(body, polls.length));
+        },
+        logger: { info: () => undefined, warn: (e) => warned.push(JSON.stringify(e)) }, sleep: (_m, s) => abortableSleep(1, s),
+      });
+      return { polls, results, warned };
+    };
+    const oneRequest = (targetKey: string, extra: Record<string, unknown> = {}) =>
+      new Response(JSON.stringify({ requests: [{ requestId, targetKey, lines: 5, deadlineAt: new Date(Date.now() + 10_000).toISOString() }], ...extra }), { status: 200 });
+    const oldApi = (body: Record<string, unknown>, n: number) => (body.version === 2 ? new Response('{}', { status: 400 }) : n === 2 ? oneRequest('api') : new Response('{"requests":[]}', { status: 200 }));
+
+    // Allowlist broker + old API: v2 rejected → the v1 subset; the root-owned allowlist still bounds what is read.
+    const al = await run(await broker([dir], p, [entry(p)]), oldApi);
+    expect(al.polls.map((x) => x.version)).toEqual([2, 1, 1]);
+    expect(al.polls[1]).toEqual({ version: 1, broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: [{ targetKey: 'api', name: 'api', pmId: 3, matchStatus: 'ok' }] });
+    expect(al.results).toHaveLength(1);
+
+    // Auto broker + old API: no fallback, nothing served, an explicit warning.
+    const autoSock = await broker([dir], p, [], 'auto');
+    const au = await run(autoSock, oldApi);
+    expect(au.polls.every((x) => x.version === 2 && x.mode === 'auto')).toBe(true);
+    expect(au.results).toEqual([]);
+    expect(au.warned.join('\n')).toMatch(/does not support scoped access/);
+
+    // Auto broker + new API that does not declare scoped access: requests are ignored (fail closed).
+    const key = autoTargetKey('api');
+    const unscoped = await run(autoSock, (_b, n) => (n === 1 ? oneRequest(key) : new Response('{"requests":[]}', { status: 200 })));
+    expect(unscoped.results).toEqual([]);
+    // …and with accessModel 'scoped' the read is served as protocol v2.
+    const scoped = await run(autoSock, (_b, n) => (n === 1 ? oneRequest(key, { accessModel: 'scoped' }) : new Response('{"requests":[],"accessModel":"scoped"}', { status: 200 })));
+    expect(scoped.polls[0]).toMatchObject({ version: 2, mode: 'auto', total: 1, targets: [{ targetKey: key, name: 'api', matchStatus: 'ok' }] });
+    expect(scoped.results).toEqual([expect.objectContaining({ requestId, outcome: 'ok', stdout: expect.objectContaining({ text: 'auto line' }) as unknown })]);
   });
 
   it('agent: an older API (404) gets the long backoff; no control socket → no log polling', async () => {

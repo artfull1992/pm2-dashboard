@@ -400,9 +400,12 @@ node server-bundle/install/agent.js apply --artifact $A --api-url https://contro
 # + список PM2-процесів (inventory)
 node server-bundle/install/agent.js apply --artifact $A --api-url https://control.example.com --token-file agent.key \
      --pm2-owner deploy --pm2-home /home/deploy/.pm2
-# + broker для керування й логів (allowlist створюється ПОРОЖНІМ)
+# + broker для керування й логів (новий broker — режим auto: доступ визначає API за ролями й «Доступами»)
 node server-bundle/install/agent.js apply --artifact $A --api-url https://control.example.com --token-file agent.key \
      --pm2-owner deploy --pm2-home /home/deploy/.pm2 --enable-control
+# або лише ручний allowlist (створюється ПОРОЖНІМ)
+node server-bundle/install/agent.js apply --artifact $A --api-url https://control.example.com --token-file agent.key \
+     --pm2-owner deploy --pm2-home /home/deploy/.pm2 --enable-control --control-mode allowlist
 ```
 
 Ключ можна також передати через `--token-stdin` (автоматизація) або ввести в прихований запит (без `--token-file`). Можливості додаються й пізніше: повторний `apply` з новими параметрами лише доводить відсутнє. Після встановлення `agent.key` видаліть (`shred -u agent.key`).
@@ -417,7 +420,7 @@ node server-bundle/install/agent.js apply --artifact $A --api-url https://contro
 | Конфігурація | `/etc/node-control-agent` (750 `root:nodecontrol-agent`) → `agent.env` (600 `nodecontrol-agent`, атомарно): `NC_AGENT_API_URL`, `NC_AGENT_TOKEN` (+ ключі inventory/керування) — лише якщо файлу немає; інакше додаються лише відсутні ключі з `agent.env.bak-<час>` | наявний ключ ніколи не ротується |
 | Unit | `node-control-agent.service` із релізу, `verify` → встановлення → `daemon-reload` — **до** `enable/start` | наявний інший unit Agent, exporter чи broker — зупинка ще в перевірках, до будь-яких змін |
 | Inventory | група `nc-pm2-inventory`, членство Agent, `/var/lib/node-control-pm2` (2750 `<owner>:nc-pm2-inventory`), `/etc/node-control-pm2-exporter/<owner>.env` (644), units exporter, один пробний запуск, `enable --now` таймера | `journalctl -u node-control-pm2-exporter@<owner> -n 20 -o cat`; PM2 не змінювався |
-| Керування | група `nc-pm2-control`, `/etc/node-control-pm2-broker/<owner>.env` (644), **порожня** allowlist (root, 644; наявна не змінюється), unit і служба broker, членство Agent | `journalctl -u node-control-pm2-broker@<owner> -n 20 -o cat` |
+| Керування | група `nc-pm2-control`, `/etc/node-control-pm2-broker/<owner>.env` (root, 644; новий — `NC_BROKER_MODE=auto`, з `--control-mode allowlist` — `NC_BROKER_ALLOWLIST` і **порожня** allowlist, наявна не змінюється), unit і служба broker, членство Agent. Наявний `<owner>.env` змінюється лише явним `--control-mode` (резервна копія `<owner>.env.bak-<час>`, restart broker); інший `NC_PM2_HOME` — конфлікт без змін | `journalctl -u node-control-pm2-broker@<owner> -n 20 -o cat` |
 | Служба Agent | `enable` + `start` (`restart`, якщо змінено конфігурацію, unit або групи) | `journalctl -u node-control-agent -n 20 -o cat`; exit 2 — помилка конфігурації |
 
 Результат: «служба запущена» → «зв'язок Agent підтверджено». Підтвердження дає лише **поточний запуск** Agent: інсталятор бере його `InvocationID` (`systemctl show --property=InvocationID --value node-control-agent`) і читає записи тільки цього запуску (`journalctl _SYSTEMD_INVOCATION_ID=<id> -o cat --no-pager -q`) потоково: з усього журналу запуску зберігається лише результат **останнього** рядка heartbeat (і останнього рядка inventory); сирий текст не зберігається й не виводиться.
@@ -433,9 +436,29 @@ node server-bundle/install/agent.js apply --artifact $A --api-url https://contro
 
 Що саме доводить успіх: процес поточного запуску Agent (той самий ключ і конфігурація) отримав від API підтвердження heartbeat і після цього не записав іншого результату. Agent пише рядок лише при зміні результату. Тому на незміненому працюючому Agent (повторний `apply`, без restart) підтвердження спирається на останню зміну в цьому запуску, а не на свіжий мережевий запит у момент перевірки. Записи попередніх запусків не враховуються. Якщо під час перевірки systemd перезапустив Agent, очікується звіт нового запуску. Сам `active` не є підтвердженням. `unauthorized` — ключ відхилено (не той сервер, відкликаний або сервер деактивовано); `network`/`timeout` — немає зв'язку або TLS; `unavailable` — помилка API. Для inventory додатково показується стан першого звіту.
 
-### 3.3 Керування й логи: явна allowlist
+### 3.3 Керування й логи: режими broker
 
-`--enable-control` нічого не дозволяє: broker відхиляє всі дії, доки ви не додасте конкретні процеси.
+Broker працює від власника PM2 і виконує лише типізовані `start`/`stop`/`restart` та обмежене читання хвоста логів; shell, шляхів чи аргументів немає. Режим задає `/etc/node-control-pm2-broker/<owner>.env` (ADR-028):
+
+| Режим | Що доступно | Хто вирішує, хто й чим керує |
+|---|---|---|
+| `auto` (новий broker за замовчуванням) | усі процеси цього власника PM2 (до 500; більше — явне попередження в UI, не мовчазне обрізання) | API: роль (admin — усе; operator — керування й логи; viewer — лише перегляд) + надані сервери/сервіси в UI «Користувачі» → «Доступи». Без доступів operator/viewer нічого не бачать |
+| `allowlist` | лише цілі root-allowlist (`"logs": true` — окремо) | API (ролі + «Доступи») **і** локальний allowlist |
+
+В обох режимах перед кожною дією broker перевіряє, що ім'я відповідає рівно одному fork-процесу, і (протокол v2) що визначення процесу не змінилось з моменту авторизації в API; неоднозначні імена й cluster-процеси відхиляються. Broker у режимі `auto` працює лише з Agent і API, що підтримують scoped-доступ: старий Agent отримує відмову (`allowlist_invalid`), а новий Agent зі старим API нічого не виконує й пише попередження (fail closed). Broker у режимі `allowlist` зі старим API працює як раніше (протокол v1).
+
+**Перехід наявного broker на `auto`** — без перевстановлення й без ротації ключа Agent, після оновлення API до версії зі scoped-доступом і надання доступів користувачам:
+
+```bash
+node server-bundle/install/agent.js plan  --artifact $A --api-url https://control.example.com \
+     --pm2-owner deploy --pm2-home /home/deploy/.pm2 --enable-control --control-mode auto   # покаже «перемкнути режим allowlist → auto»
+node server-bundle/install/agent.js apply --artifact $A --api-url https://control.example.com \
+     --pm2-owner deploy --pm2-home /home/deploy/.pm2 --enable-control --control-mode auto
+```
+
+Інсталятор зберігає копію `<owner>.env.bak-<час>`, додає `NC_BROKER_MODE=auto` і перезапускає broker; allowlist залишається на місці (не читається). Повернення — той самий виклик із `--control-mode allowlist` (рядок замінюється на `NC_BROKER_MODE=allowlist`). Без `--control-mode` повторний `apply` режим не змінює.
+
+**Режим `allowlist`** нічого не дозволяє, доки ви не додасте конкретні процеси:
 
 ```bash
 OWNER=deploy; PM2_HOME=/home/deploy/.pm2; A=/etc/node-control-pm2-broker/$OWNER.allowlist.json
@@ -448,7 +471,7 @@ cp -p $A $A.bak-$(date -u +%Y%m%dT%H%M%SZ)
 # "logs": true у записі — читання логів цього процесу, лише за окремим погодженням.
 ```
 
-Broker перечитує allowlist сам. На центральному сервері керування вмикається один раз: `server.js apply --artifact <api-артефакт> --enable-pm2-control` (додає `PM2_CONTROL_ENABLED=true`, якщо ключа немає, і перезапускає API). Cluster-процеси та процеси з повторюваними іменами не підтримуються. Повний опис — [DEPLOYMENT](DEPLOYMENT.md), «Керування PM2» і «Перегляд логів».
+Broker перечитує allowlist сам. На центральному сервері керування увімкнене за замовчуванням (`PM2_CONTROL_ENABLED` типово `true`); `PM2_CONTROL_ENABLED=false` — аварійне вимкнення всіх команд (стан видно в UI). `server.js apply … --enable-pm2-control` лише записує `PM2_CONTROL_ENABLED=true` явно. Повний опис — [DEPLOYMENT](DEPLOYMENT.md), «Керування PM2» і «Перегляд логів».
 
 ## 4. Повторні запуски й часткові збої
 

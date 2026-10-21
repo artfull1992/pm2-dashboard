@@ -69,13 +69,23 @@ function expectNoToken(token: string, ...responses: LightMyRequestResponse[]) {
 }
 
 describe('browser API permissions', () => {
-  it.each(['viewer', 'operator', 'admin'] as const)('%s can read the registry; only admin can manage', async (role) => {
+  it.each(['viewer', 'operator', 'admin'] as const)('%s reads only granted servers (admin: all); only admin can manage', async (role) => {
     build();
     const admin = role === 'admin' ? await session('admin') : await (async () => { await auth.addUser({ email: 'admin@example.test', password: PASSWORD, role: 'admin' }); return null; })();
     const s = admin ?? await session(role);
-    servers.servers.push({ id: '11111111-1111-4111-8111-111111111111', name: 'seed', isActive: true, createdAt: new Date() });
-    expect((await app.inject({ method: 'GET', url: '/api/servers', headers: { cookie: s.cookie } })).statusCode).toBe(200);
-    expect((await app.inject({ method: 'GET', url: '/api/servers/11111111-1111-4111-8111-111111111111', headers: { cookie: s.cookie } })).statusCode).toBe(200);
+    const SEED = '11111111-1111-4111-8111-111111111111';
+    servers.servers.push({ id: SEED, name: 'seed', isActive: true, createdAt: new Date() });
+    const list = async () => (await app.inject({ method: 'GET', url: '/api/servers', headers: { cookie: s.cookie } })).json<{ items: { id: string }[] }>().items.map((i) => i.id);
+    const detail = async () => (await app.inject({ method: 'GET', url: `/api/servers/${SEED}`, headers: { cookie: s.cookie } })).statusCode;
+    if (role !== 'admin') {
+      // ADR-028: without a grant the server is neither listed nor readable — 404 like a missing one.
+      expect(await list()).toEqual([]);
+      expect(await detail()).toBe(404);
+      const userId = [...auth.users.values()].find((u) => u.email === `${role}@example.test`)?.id ?? '';
+      servers.grants.set(userId, new Set([SEED]));
+    }
+    expect(await list()).toEqual([SEED]);
+    expect(await detail()).toBe(200);
     const manage = [
       await browserPost(s, '/api/servers', { name: `new-${role}` }),
       await browserPost(s, '/api/servers/11111111-1111-4111-8111-111111111111/agent-credentials'),

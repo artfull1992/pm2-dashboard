@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { AUTH_MESSAGES } from '../auth/plugin.js';
 import { hasPermission } from '../auth/rbac.js';
+import { scopeOf } from '../auth/scope.js';
 import { describeError, PublicHttpError } from '../errors.js';
 import type { EngineStats, RuntimeSource } from './engine.js';
 import { RULES } from './rules.js';
@@ -56,7 +57,7 @@ export function registerAlertRoutes(app: FastifyInstance, options: AlertRoutesOp
     if (!auth) throw new PublicHttpError(401, AUTH_MESSAGES.unauthenticated);
     const q = request.query as { state: 'active' | 'resolved'; limit: number; before?: string };
     try {
-      return await store.listIncidents({ state: q.state, limit: q.limit, before: q.before ?? null, withDelivery: hasPermission(auth.role, 'alerts:manage') });
+      return await store.listIncidents({ state: q.state, limit: q.limit, before: q.before ?? null, withDelivery: hasPermission(auth.role, 'alerts:manage'), scope: scopeOf(auth) });
     } catch (error) {
       request.log.error({ error: describeError(error) }, 'Alerts query failed');
       throw unavailable();
@@ -92,7 +93,7 @@ export function registerAlertRoutes(app: FastifyInstance, options: AlertRoutesOp
     let summary;
     let rt;
     try {
-      summary = await store.summary(admin);
+      summary = await store.summary(admin, scopeOf(auth));
       rt = await source.load();
     } catch (error) {
       request.log.error({ error: describeError(error) }, 'Alerts status query failed');

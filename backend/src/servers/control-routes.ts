@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { BusyError, createLimiter, type Limiter } from '../auth/password.js';
+import { requestScope } from '../auth/scope.js';
 import { describeError, PublicHttpError } from '../errors.js';
 import {
   commandBodySchema, commandViewSchema, type ControlAction, type PollReport, pollProblem, pollSchema, POLL_BODY_LIMIT,
@@ -57,10 +58,12 @@ export function registerControlRoutes(app: FastifyInstance, options: ControlRout
             serverStatus: { type: 'string', enum: ['online', 'offline', 'never_connected'] },
             broker: {
               anyOf: [{ type: 'null' }, {
-                type: 'object', additionalProperties: false, required: ['state', 'daemon', 'allowlist', 'reportedAt', 'fresh'],
+                type: 'object', additionalProperties: false, required: ['state', 'daemon', 'allowlist', 'reportedAt', 'fresh', 'mode', 'protocol', 'total'],
                 properties: {
                   state: { type: 'string', enum: ['ok', 'unavailable'] }, daemon: { type: ['string', 'null'] }, allowlist: { type: ['string', 'null'] },
                   reportedAt: { type: 'string' }, fresh: { type: 'boolean' },
+                  mode: { type: ['string', 'null'], enum: ['allowlist', 'auto', null] }, protocol: { type: 'integer', enum: [1, 2] },
+                  total: { type: ['integer', 'null'] },
                 },
               }],
             },
@@ -71,7 +74,8 @@ export function registerControlRoutes(app: FastifyInstance, options: ControlRout
     },
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const view = await guarded(request.log, 'Control view', () => store.controlView(id));
+    const scope = requestScope(request.auth);
+    const view = await guarded(request.log, 'Control view', () => store.controlView(id, scope));
     if (!view) throw new PublicHttpError(404, 'Server not found');
     return { ...view, enabled, targetFreshSeconds: TARGET_FRESH_SECONDS };
   });
@@ -89,7 +93,8 @@ export function registerControlRoutes(app: FastifyInstance, options: ControlRout
   }, async (request) => {
     const { id } = request.params as { id: string };
     const { limit, targetKey } = request.query as { limit: number; targetKey?: string };
-    const items = await guarded(request.log, 'Command list', () => store.listCommands(id, limit, targetKey ?? null));
+    const scope = requestScope(request.auth);
+    const items = await guarded(request.log, 'Command list', () => store.listCommands(id, limit, targetKey ?? null, scope));
     if (!items) throw new PublicHttpError(404, 'Server not found');
     return { items };
   });
@@ -99,7 +104,8 @@ export function registerControlRoutes(app: FastifyInstance, options: ControlRout
     schema: { params: idParams, response: { 200: commandViewSchema } },
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const command = await guarded(request.log, 'Command lookup', () => store.getCommand(id));
+    const scope = requestScope(request.auth);
+    const command = await guarded(request.log, 'Command lookup', () => store.getCommand(id, scope));
     if (!command) throw new PublicHttpError(404, 'Command not found');
     return command;
   });
@@ -114,7 +120,7 @@ export function registerControlRoutes(app: FastifyInstance, options: ControlRout
     const { id } = request.params as { id: string };
     const body = request.body as { targetKey: string; action: ControlAction; idempotencyKey: string };
     const result = await guarded(request.log, 'Command creation', () => store.createCommand({
-      serverId: id, targetKey: body.targetKey, action: body.action, idempotencyKey: body.idempotencyKey, actorUserId: auth.userId, requestId: request.id,
+      serverId: id, targetKey: body.targetKey, action: body.action, idempotencyKey: body.idempotencyKey, actorUserId: auth.userId, actorRole: auth.role, requestId: request.id,
     }));
     if (result === 'not_found') throw new PublicHttpError(404, 'Server not found');
     if (typeof result === 'string') throw new PublicHttpError(409, CONFLICT_MESSAGES[result]);
@@ -132,11 +138,16 @@ export function registerControlRoutes(app: FastifyInstance, options: ControlRout
           type: 'object', additionalProperties: false, required: ['controlEnabled', 'commands', 'intervalSeconds'],
           properties: {
             controlEnabled: { type: 'boolean' }, intervalSeconds: { type: 'integer' },
+            // Version 2 only (ADR-028): tells a v2 Agent that this API authorises every command per resource.
+            accessModel: { type: 'string', enum: ['scoped'] },
             commands: {
               type: 'array', maxItems: 1,
               items: {
                 type: 'object', additionalProperties: false, required: ['id', 'attempt', 'targetKey', 'action', 'deadlineAt'],
-                properties: { id: { type: 'string' }, attempt: { type: 'integer' }, targetKey: { type: 'string' }, action: { type: 'string' }, deadlineAt: { type: 'string' } },
+                properties: {
+                  id: { type: 'string' }, attempt: { type: 'integer' }, targetKey: { type: 'string' }, action: { type: 'string' }, deadlineAt: { type: 'string' },
+                  identity: { type: ['string', 'null'] },
+                },
               },
             },
           },
@@ -150,7 +161,10 @@ export function registerControlRoutes(app: FastifyInstance, options: ControlRout
     if (pollProblem(report)) throw new PublicHttpError(400, 'Invalid control report');
     const result = await guarded(request.log, 'Control poll', () => store.poll({ tokenHash: agent.tokenHash, report, controlEnabled: enabled }));
     if (result === 'unauthorized') throw new PublicHttpError(401, 'Agent credential missing or invalid');
-    return { controlEnabled: enabled, commands: result.commands, intervalSeconds: enabled ? POLL_INTERVAL_ENABLED_SECONDS : POLL_INTERVAL_DISABLED_SECONDS };
+    return {
+      controlEnabled: enabled, commands: result.commands, intervalSeconds: enabled ? POLL_INTERVAL_ENABLED_SECONDS : POLL_INTERVAL_DISABLED_SECONDS,
+      ...(report.version === 2 ? { accessModel: 'scoped' as const } : {}),
+    };
   });
 
   app.post('/api/agent/control/result', {

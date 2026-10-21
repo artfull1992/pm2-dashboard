@@ -64,7 +64,7 @@ async function allPages(inventory: InventoryStore, filter: { serverId: string | 
   let cursor: string | null = null;
   let pages = 0;
   do {
-    const page: Awaited<ReturnType<InventoryStore['listApplications']>> = await inventory.listApplications({ limit, cursor: cursor ? decodeCursor(cursor) : null, ...filter, context });
+    const page: Awaited<ReturnType<InventoryStore['listApplications']>> = await inventory.listApplications({ limit, cursor: cursor ? decodeCursor(cursor) : null, ...filter, context, scope: null });
     seen.push(...page.items.map((i) => `${i.name}|${i.serverId}|${String(i.pmId)}`));
     cursor = page.nextCursor;
     if (cursor) expect(decodeCursor(cursor)?.context).toBe(context);
@@ -83,7 +83,7 @@ describe('application name search (real DB, 520+ applications)', () => {
     expect(total.n).toBeGreaterThanOrEqual(515);
 
     // The match sorts after ~510 other rows: it is NOT on the first page of the unfiltered list…
-    const firstPage = await ctx.inventory.listApplications({ limit: 50, cursor: null, serverId: null, status: null });
+    const firstPage = await ctx.inventory.listApplications({ limit: 50, cursor: null, serverId: null, status: null, scope: null });
     expect(firstPage.items.some((i) => i.name === 'zz-billing-api')).toBe(false);
     // …but the search finds it on both servers, case-insensitively.
     expect(await allPages(ctx.inventory, { serverId: null, status: null, q: 'BILLING' })).toEqual([`zz-billing-api|${a}|900`, `zz-billing-api|${b}|900`].sort());
@@ -140,14 +140,14 @@ describe('command history of one control target (real DB)', () => {
     await insert(a, "'other-' || (i % 3)", 1, 30);
     await insert(a, "'api-prod'", 100, 3);
     await insert(b, "'api-prod'", 1, 5); // same key, other server
-    const history = await ctx.control.listCommands(a, 10, 'api-prod');
+    const history = await ctx.control.listCommands(a, 10, 'api-prod', null);
     expect(history?.map((c) => c.targetKey)).toEqual(['api-prod', 'api-prod', 'api-prod']);
     expect(history?.every((c) => c.serverId === a)).toBe(true);
     const times = history?.map((c) => Date.parse(c.requestedAt)) ?? [];
     expect([...times].sort((x, y) => y - x)).toEqual(times); // newest first
-    expect((await ctx.control.listCommands(a, 10))?.some((c) => c.targetKey === 'api-prod')).toBe(false); // unfiltered: newest 10 only
-    expect(await ctx.control.listCommands(a, 10, 'never-used')).toEqual([]);
-    expect((await ctx.control.listCommands(b, 2, 'api-prod'))?.length).toBe(2);
-    expect(await ctx.control.listCommands('11111111-1111-4111-8111-111111111111', 10, 'api-prod')).toBeNull();
+    expect((await ctx.control.listCommands(a, 10, null, null))?.some((c) => c.targetKey === 'api-prod')).toBe(false); // unfiltered: newest 10 only
+    expect(await ctx.control.listCommands(a, 10, 'never-used', null)).toEqual([]);
+    expect((await ctx.control.listCommands(b, 2, 'api-prod', null))?.length).toBe(2);
+    expect(await ctx.control.listCommands('11111111-1111-4111-8111-111111111111', 10, 'api-prod', null)).toBeNull();
   });
 });

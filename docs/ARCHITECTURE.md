@@ -132,3 +132,30 @@ flowchart LR
 | `deploy/systemd/node-control-pm2-broker@.service` | broker від власника PM2, без мережі |
 
 Довільного remote execution немає: від API до broker доходять лише `targetKey` і дія з enum; broker виконує лише три PM2-методи для цілей з root-owned allowlist.
+
+## Доступи за ролями, серверами й сервісами (ADR-028)
+
+Доступ = дозвіл ролі на операцію (ADR-011) **і** призначення на ресурс. `admin` — усі сервери й сервіси, зокрема майбутні; `operator` — перегляд, керування й логи в межах призначень; `viewer` — лише перегляд у межах призначень. Без призначень operator/viewer не бачать нічого.
+
+```mermaid
+flowchart LR
+  Admin[UI «Користувачі» → «Доступи» / admin] -- PUT expectedRevision, CSRF --> API[Central API]
+  API -- одна транзакція --> G[(user_server_access / user_service_access + audit access.updated)]
+  User[operator / viewer] -- будь-який запит --> API
+  API -- scope у SQL до LIMIT/count --> Data[(servers, inventory, dashboard, alerts, control, logs)]
+  API -- poll v2: accessModel scoped, identity --> Agent[Agent]
+  Agent -- протокол v2 --> Broker[Broker auto / allowlist]
+  Broker -- identity перед дією --> PM2[PM2 daemon власника]
+```
+
+| Шлях | Відповідальність |
+|---|---|
+| `backend/migrations/1791900000009_access-grants.sql` | таблиці призначень, `users.access_revision`, `service_name`/`target_identity` команд, `identity`/`protocol`/`mode`/`targets_total` статусу broker |
+| `backend/src/auth/scope.ts` | спільні SQL-фрагменти `serverVisibleSql`/`serviceVisibleSql`, `serviceGranted` (FOR SHARE), `AccessChecker` для логів |
+| `backend/src/auth/access-store.ts`, `access-routes.ts` | адміністрування призначень (admin): атомарна заміна, ревізія → 409, валідація, audit |
+| `backend/src/servers/*-store.ts` | усі списки, пошук, пагінація, агрегати й історія фільтруються scope; claim команди повторно перевіряє роль, призначення й identity |
+| `agent/src/control/` | протокол v2 (mode, identity, до 500 цілей, `total`), режим `auto` (цілі — усі процеси власника, ключ `n-<sha256(name)[:24]>`), узгодження версій з fail closed |
+| `installer/src/agent.ts` | `--control-mode auto|allowlist`: новий broker — `auto`; наявний перемикається лише явно, з резервною копією |
+| `frontend/src/components/AccessDialog.tsx` | редактор доступів (пошук серверів, режим «Усі сервіси»/«Вибрані», сервіси, що зникли, позначені «недоступний») |
+
+Ідентичність сервісу — `(server_id, назва PM2-процесу)`; `pm_id` не використовується. 403 — брак дозволу ролі, 404 — ресурс не надано або не існує (без розкриття існування).

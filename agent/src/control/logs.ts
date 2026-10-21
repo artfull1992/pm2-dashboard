@@ -3,9 +3,10 @@ import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, normalize } from 'node:path';
 import type { AllowlistEntry } from './allowlist.js';
 import { AllowlistError } from './allowlist.js';
-import { matchEntry, type RawProcessView } from './identity.js';
+import { autoTargetKey, type Match, matchEntry, matchName, processNames, type RawProcessView } from './identity.js';
+import { isProcessName } from './protocol.js';
 import {
-  LOG_LIMITS, type LogReason, type LogsRequest, type LogsResponse, type LogStream, type LogTarget, type LogTargetsResponse,
+  type BrokerMode, LOG_LIMITS, MAX_LOG_TARGETS_V2, type LogReason, type LogsRequest, type LogsResponse, type LogStream, type LogTarget, type LogTargetsResponse,
 } from './logs-protocol.js';
 
 // Bounded, read-only log tail for the broker (ADR-018). Paths come ONLY from the matched PM2 process metadata
@@ -19,6 +20,8 @@ export interface LogDeps {
   list: () => Promise<unknown[]>;
   /** Allowed log directories (normalized, absolute, already resolved to their real path). */
   logDirs: readonly string[];
+  /** Default 'allowlist' (explicit `logs: true` entries); 'auto': every process of the PM2 owner (ADR-028). */
+  mode?: BrokerMode;
   now?: () => number;
 }
 
@@ -177,10 +180,31 @@ async function loadEntries(deps: Pick<LogDeps, 'loadAllowlist'>): Promise<Allowl
   }
 }
 
-/** Targets whose logs may be read (explicit `logs: true`), with their current identity match. */
-export async function listLogTargets(deps: Pick<LogDeps, 'loadAllowlist' | 'list'>): Promise<LogTargetsResponse> {
+/**
+ * Targets whose logs may be read: allowlist mode — explicit `logs: true` entries; auto mode — every process of the
+ * owner (authorisation per user and service is the API's job). Auto mode answers a version-1 caller with nothing.
+ */
+export async function listLogTargets(deps: Pick<LogDeps, 'loadAllowlist' | 'list' | 'mode'>, version: 1 | 2 = 1): Promise<LogTargetsResponse> {
+  const mode = deps.mode ?? 'allowlist';
+  const reply = (r: Omit<LogTargetsResponse, 'v' | 'op' | 'mode' | 'total'>, total: number): LogTargetsResponse =>
+    (version === 2 ? { v: 2, op: 'logTargets', ...r, mode, total } : { v: 1, op: 'logTargets', ...r });
+  if (mode === 'auto') {
+    if (version === 1) return reply({ daemon: 'ok', allowlist: 'invalid', targets: [] }, 0);
+    let raw: unknown[];
+    try {
+      raw = await deps.list();
+    } catch {
+      return reply({ daemon: 'unavailable', allowlist: 'ok', targets: [] }, 0);
+    }
+    const all = processNames(raw, () => true);
+    const targets = all.filter(isProcessName).slice(0, MAX_LOG_TARGETS_V2).map((name): LogTarget => {
+      const m = matchName(name, raw);
+      return { targetKey: autoTargetKey(name), name, pmId: m.status === 'ok' ? m.view.pmId : null, matchStatus: m.status };
+    });
+    return reply({ daemon: 'ok', allowlist: 'ok', targets }, all.length);
+  }
   const entries = await loadEntries(deps);
-  if (!entries) return { v: 1, op: 'logTargets', daemon: 'ok', allowlist: 'invalid', targets: [] };
+  if (!entries) return reply({ daemon: 'ok', allowlist: 'invalid', targets: [] }, 0);
   let raw: unknown[] | null;
   try {
     raw = await deps.list();
@@ -192,30 +216,42 @@ export async function listLogTargets(deps: Pick<LogDeps, 'loadAllowlist' | 'list
     const m = matchEntry(e, raw);
     return { targetKey: e.id, name: e.name, pmId: m.status === 'ok' ? m.view.pmId : null, matchStatus: m.status };
   });
-  return { v: 1, op: 'logTargets', daemon: raw ? 'ok' : 'unavailable', allowlist: 'ok', targets };
+  return reply({ daemon: raw ? 'ok' : 'unavailable', allowlist: 'ok', targets }, targets.length);
 }
 
 export async function readLogs(req: LogsRequest, deps: LogDeps): Promise<LogsResponse> {
   const now = deps.now ?? Date.now;
   const readAt = () => new Date(now()).toISOString();
   const fail = (outcome: 'rejected' | 'failed', reason: LogReason): LogsResponse =>
-    ({ v: 1, op: 'logs', requestId: req.requestId, outcome, reason, readAt: readAt(), stdout: null, stderr: null });
+    ({ v: req.v, op: 'logs', requestId: req.requestId, outcome, reason, readAt: readAt(), stdout: null, stderr: null });
 
   const deadline = Date.parse(req.deadlineAt);
   if (now() > deadline) return fail('rejected', 'deadline_passed');
   if (deadline - now() > 5 * 60_000) return fail('rejected', 'invalid_deadline');
-  const entries = await loadEntries(deps);
-  if (!entries) return fail('rejected', 'allowlist_invalid');
-  const entry = entries.find((e) => e.id === req.targetKey);
-  if (!entry) return fail('rejected', 'not_allowlisted');
-  if (entry.logs !== true) return fail('rejected', 'logs_not_allowed');
+  const auto = (deps.mode ?? 'allowlist') === 'auto';
+  let entry: AllowlistEntry | null = null;
+  if (auto) {
+    if (req.v !== 2) return fail('rejected', 'allowlist_invalid');
+  } else {
+    const entries = await loadEntries(deps);
+    if (!entries) return fail('rejected', 'allowlist_invalid');
+    entry = entries.find((e) => e.id === req.targetKey) ?? null;
+    if (!entry) return fail('rejected', 'not_allowlisted');
+    if (entry.logs !== true) return fail('rejected', 'logs_not_allowed');
+  }
   let raw: unknown[];
   try {
     raw = await deps.list();
   } catch {
     return fail('failed', 'daemon_unavailable');
   }
-  const match = matchEntry(entry, raw);
+  let match: Match;
+  if (entry) {
+    match = matchEntry(entry, raw);
+  } else {
+    const name = processNames(raw, isProcessName).find((n) => autoTargetKey(n) === req.targetKey);
+    match = name === undefined ? { status: 'not_found' } : matchName(name, raw);
+  }
   if (match.status !== 'ok') return fail('rejected', match.status);
   const view: RawProcessView = match.view;
   const outPath = allowedLogPath(view.env.pm_out_log_path, deps.logDirs);
@@ -226,7 +262,7 @@ export async function readLogs(req: LogsRequest, deps: LogDeps): Promise<LogsRes
     errPath && !merged ? readTail(errPath) : Promise.resolve<FileRead>({ state: 'unavailable' }),
   ]);
   const streams = buildStreams(out, err, req.lines, merged);
-  const response: LogsResponse = { v: 1, op: 'logs', requestId: req.requestId, outcome: 'ok', reason: null, readAt: readAt(), ...streams };
+  const response: LogsResponse = { v: req.v, op: 'logs', requestId: req.requestId, outcome: 'ok', reason: null, readAt: readAt(), ...streams };
   return shrinkToFrame(response);
 }
 

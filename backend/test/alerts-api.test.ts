@@ -31,17 +31,19 @@ class FakeAlerts implements AlertsStore {
   fail = false;
   pending: ClaimedItem[] = [];
   finished: string[] = [];
-  lastList: { withDelivery: boolean } | null = null;
+  lastList: { withDelivery: boolean; scope?: string | null } | null = null;
+  summaryScopes: (string | null | undefined)[] = [];
   evaluateOnce() { this.evaluations += 1; return Promise.resolve({ skipped: false, opened: 0, resolved: 0, observed: 0, enqueued: 0, dropped: 0, retired: 0, at: '2026-10-14T10:02:00.000Z' }); }
   claim() { this.claims += 1; return Promise.resolve(this.pending.splice(0)); }
   finish(i: { id: string }, o: { status: string; code?: string }) { this.finished.push(`${i.id}:${o.status}:${o.code ?? ''}`); return Promise.resolve(true); }
-  listIncidents(input: { withDelivery: boolean }) {
+  listIncidents(input: { withDelivery: boolean; scope?: string | null }) {
     if (this.fail) return Promise.reject(new Error(`relation alert_incidents ${WEBHOOK}`));
     this.lastList = input;
     const item = incident();
     return Promise.resolve({ items: [{ ...item, notification: input.withDelivery ? item.notification : null, leakedWebhook: WEBHOOK } as IncidentView], nextBefore: null });
   }
-  summary(withQueue: boolean) {
+  summary(withQueue: boolean, scope?: string | null) {
+    this.summaryScopes.push(scope);
     return Promise.resolve({ active: 1, queue: withQueue ? { queued: 2, sending: 0, sent: 5, failed: 1, unknown: 0, dropped: 0, cancelled: 0 } : null, lastSentAt: null });
   }
 }
@@ -97,9 +99,22 @@ describe('GET /api/alerts and /api/alerts/status', () => {
       expect(list.statusCode).toBe(200);
       expect(list.json<{ items: IncidentView[] }>().items[0]?.notification).toBeNull();
       expect(store.lastList?.withDelivery).toBe(false);
+      // ADR-028: incidents and the active count are limited to the user's grants (scope = own user id).
+      expect(typeof store.lastList?.scope).toBe('string');
       const status = (await a.inject({ method: 'GET', url: '/api/alerts/status', headers: { cookie } })).json<Record<string, unknown>>();
+      expect(store.summaryScopes.at(-1)).toBe(store.lastList?.scope);
       expect(status).toEqual({ engine: { enabled: false, running: false, lastEvaluationAt: null, lastEvaluationOk: null }, delivery: { enabled: false }, activeCount: 1, admin: null });
     }
+  });
+
+  it('admin: incidents and active count are global (scope null)', async () => {
+    const store = new FakeAlerts();
+    const { app: a, login } = build(undefined, store);
+    const cookie = await login('admin');
+    expect((await a.inject({ method: 'GET', url: '/api/alerts', headers: { cookie } })).statusCode).toBe(200);
+    expect(store.lastList?.scope).toBeNull();
+    expect((await a.inject({ method: 'GET', url: '/api/alerts/status', headers: { cookie } })).statusCode).toBe(200);
+    expect(store.summaryScopes.at(-1)).toBeNull();
   });
 
   it('admin: delivery state and non-secret configuration; the webhook URL is never in any response or log', async () => {

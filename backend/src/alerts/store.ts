@@ -1,4 +1,5 @@
 import type { Database, QueryClient } from '../database.js';
+import { type Scope, serverVisibleSql, serviceVisibleSql } from '../auth/scope.js';
 import { INVENTORY_STATE_SQL, SERVER_STATUS_SQL } from '../servers/inventory-store.js';
 import { type ConditionRow, type Detail, evaluate, type EvaluationResult, MAX_SAMPLES, type ProcessObs, type Resolution, RETIRED_RULES, type Rule, type ServerObs, type Severity, type Transition } from './rules.js';
 import type { MessageIncident } from './slack.js';
@@ -40,13 +41,19 @@ export interface AlertsStore {
   /** Claims only items of the given integration generation (never another address). */
   claim(limit: number, generation: number): Promise<ClaimedItem[]>;
   finish(item: { id: string; attempts: number }, outcome: { status: 'sent' } | { status: 'queued'; code: string; delaySeconds: number } | { status: 'failed' | 'unknown'; code: string }): Promise<boolean>;
-  listIncidents(input: { state: 'active' | 'resolved'; limit: number; before: string | null; withDelivery: boolean }): Promise<{ items: IncidentView[]; nextBefore: string | null }>;
-  summary(withQueue: boolean): Promise<{ active: number; queue: Record<OutboxStatus, number> | null; lastSentAt: string | null }>;
+  /** Only incidents visible in `scope` (ADR-028): server incidents → visible server; process incidents → visible service. */
+  listIncidents(input: { state: 'active' | 'resolved'; limit: number; before: string | null; withDelivery: boolean; scope: Scope }): Promise<{ items: IncidentView[]; nextBefore: string | null }>;
+  /** `active` counts only incidents visible in `scope`; the delivery queue is admin data (withQueue). */
+  summary(withQueue: boolean, scope: Scope): Promise<{ active: number; queue: Record<OutboxStatus, number> | null; lastSentAt: string | null }>;
 }
 
 type Row = Record<string, unknown>;
 const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : null);
 const ms = (v: unknown) => (v instanceof Date ? v.getTime() : null);
+
+/** Server incidents need the server, process incidents the service (ADR-028). */
+const incidentVisible = (alias: string, p: string) =>
+  `((${alias}.process_name IS NULL AND ${serverVisibleSql(`${alias}.server_id`, p)}) OR (${alias}.process_name IS NOT NULL AND ${serviceVisibleSql(`${alias}.server_id`, `${alias}.process_name`, p)}))`;
 
 async function loadSnapshot(tx: QueryClient): Promise<ServerObs[]> {
   const servers = (await tx.query(`
@@ -336,18 +343,19 @@ export function createPgAlertsStore(db: Database): AlertsStore {
         [item.id, item.attempts, outcome.status, outcome.code])).rowCount ?? 0) > 0;
     },
 
-    async listIncidents({ state, limit, before, withDelivery }) {
+    async listIncidents({ state, limit, before, withDelivery, scope }) {
       const status = state === 'active' ? 'firing' : 'resolved';
       const order = state === 'active' ? 'i.opened_at DESC, i.id DESC' : 'i.resolved_at DESC, i.id DESC';
+      // The cursor anchor must itself be visible: a hidden incident id positions nothing (empty page).
       const cursor = state === 'active'
-        ? '(i.opened_at, i.id) < (SELECT opened_at, id FROM alert_incidents WHERE id = $2::uuid)'
-        : '(i.resolved_at, i.id) < (SELECT resolved_at, id FROM alert_incidents WHERE id = $2::uuid)';
+        ? `(i.opened_at, i.id) < (SELECT opened_at, id FROM alert_incidents x WHERE x.id = $2::uuid AND ${incidentVisible('x', '$4')})`
+        : `(i.resolved_at, i.id) < (SELECT resolved_at, id FROM alert_incidents x WHERE x.id = $2::uuid AND ${incidentVisible('x', '$4')})`;
       const { rows } = await db.query(
         `SELECT ${INCIDENT_COLUMNS}, s.is_active, ${SERVER_STATUS_SQL} AS server_status, o.status AS o_status, o.attempts AS o_attempts, o.last_error AS o_error
            FROM alert_incidents i JOIN servers s ON s.id = i.server_id LEFT JOIN server_heartbeats h ON h.server_id = i.server_id
            LEFT JOIN LATERAL (SELECT status, attempts, last_error FROM alert_outbox WHERE incident_id = i.id ORDER BY id DESC LIMIT 1) o ON true
-          WHERE i.status = $1 AND ($2::uuid IS NULL OR ${cursor})
-          ORDER BY ${order} LIMIT $3`, [status, before, limit + 1]);
+          WHERE i.status = $1 AND ${incidentVisible('i', '$4')} AND ($2::uuid IS NULL OR ${cursor})
+          ORDER BY ${order} LIMIT $3`, [status, before, limit + 1, scope]);
       const page = rows.slice(0, limit);
       return {
         items: page.map((r: Row): IncidentView => ({
@@ -359,8 +367,8 @@ export function createPgAlertsStore(db: Database): AlertsStore {
       };
     },
 
-    async summary(withQueue) {
-      const active = Number((await db.query("SELECT count(*) AS n FROM alert_incidents WHERE status = 'firing'")).rows[0]?.n ?? 0);
+    async summary(withQueue, scope) {
+      const active = Number((await db.query(`SELECT count(*) AS n FROM alert_incidents i WHERE i.status = 'firing' AND ${incidentVisible('i', '$1')}`, [scope])).rows[0]?.n ?? 0);
       if (!withQueue) return { active, queue: null, lastSentAt: null };
       const { rows } = await db.query('SELECT status, count(*) AS n FROM alert_outbox GROUP BY status');
       const queue: Record<OutboxStatus, number> = { queued: 0, sending: 0, sent: 0, failed: 0, unknown: 0, dropped: 0, cancelled: 0 };

@@ -76,8 +76,9 @@ export function Dialog({ title, children, onClose, actions, className, dismissib
  * inert and the form cannot be submitted (not even by Enter or requestSubmit). "Back" returns focus to the field that
  * was focused before the question (or the first field).
  */
-export function FormDialog({ title, submitLabel, pendingLabel, pending, dirty, onSubmit, onClose, children }: {
+export function FormDialog({ title, submitLabel, pendingLabel, pending, dirty, onSubmit, onClose, children, className }: {
   title: string;
+  className?: string;
   submitLabel: string;
   pendingLabel: string;
   pending: boolean;
@@ -112,7 +113,7 @@ export function FormDialog({ title, submitLabel, pendingLabel, pending, dirty, o
   }, [discard]);
 
   return (
-    <Dialog title={title} onClose={request} dismissible={!pending}>
+    <Dialog title={title} onClose={request} dismissible={!pending} {...(className ? { className } : {})}>
       <form className="form-grid" aria-label={title} noValidate
         onSubmit={(event) => { if (discard || pending) { event.preventDefault(); return; } onSubmit(event); }}>
         <div ref={fieldsRef} className="form-grid" hidden={discard ? true : undefined} inert={discard ? true : undefined}>{children}</div>

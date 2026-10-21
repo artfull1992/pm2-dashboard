@@ -4,6 +4,7 @@ import {
   type LogRequestView, type LogTargetsView, parseLogRequestCreated, parseLogRequestView, parseLogTargets,
   parseDashboard, type DashboardView, parseSettingsView, parseSlackTestResult, type SettingsView, type SlackTestResult, parseAlertsStatus, parseIncidentPage, type AlertsStatus, type IncidentPage, parseRevokeResult, parseServerApplications, parseUserPage, parseUserView, type Role, type UserPage, type UserView, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
   type ProcessStatus, type ServerApplications, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
+  type AccessMode, parseServerOptionPage, parseServiceOptionList, parseUserAccess, type ServerOptionPage, type ServiceOptionList, type UserAccess,
 } from './types';
 
 // Central API client (ADR-012):
@@ -177,6 +178,36 @@ export const dashboardApi = {
 
 // --- Users (Task 011, ADR-019) -----------------------------------------------------------------------------------
 export const USERS_PAGE_SIZE = 100;
+
+/** Resource grants (ADR-028), users:manage only. The save carries the revision the editor was based on (409 if stale). */
+export const accessApi = {
+  get: (userId: string, signal?: AbortSignal): Promise<UserAccess> => {
+    if (!UUID_RE.test(userId)) throw new ApiError('invalid_request');
+    return apiRequest(`/api/users/${userId}/access`, {
+      parse: (v) => { const a = parseUserAccess(v); if (a.userId !== userId) throw new ContractError(); return a; },
+      ...(signal ? { signal } : {}),
+    });
+  },
+  save: (userId: string, input: { expectedRevision: number; servers: { serverId: string; mode: AccessMode; services: string[] }[] }, csrfToken: string, signal?: AbortSignal): Promise<UserAccess> => {
+    if (!UUID_RE.test(userId)) throw new ApiError('invalid_request');
+    return apiRequest(`/api/users/${userId}/access`, {
+      method: 'PUT', body: input, csrfToken,
+      parse: (v) => { const a = parseUserAccess(v); if (a.userId !== userId) throw new ContractError(); return a; },
+      ...(signal ? { signal } : {}),
+    });
+  },
+  servers: (q: string, afterName: string | null, signal?: AbortSignal): Promise<ServerOptionPage> => {
+    const query = new URLSearchParams({ limit: '50' });
+    if (q.trim() !== '') query.set('q', q.trim().slice(0, 100));
+    if (afterName !== null) query.set('afterName', afterName);
+    return apiRequest(`/api/access/servers?${query.toString()}`, { parse: parseServerOptionPage, ...(signal ? { signal } : {}) });
+  },
+  services: (serverId: string, q: string, signal?: AbortSignal): Promise<ServiceOptionList> => {
+    if (!UUID_RE.test(serverId)) throw new ApiError('invalid_request');
+    const query = q.trim() === '' ? '' : `?${new URLSearchParams({ q: q.trim().slice(0, 128) }).toString()}`;
+    return apiRequest(`/api/access/servers/${serverId}/services${query}`, { parse: (v) => parseServiceOptionList(v, serverId), ...(signal ? { signal } : {}) });
+  },
+};
 
 export const usersApi = {
   /** One keyset page; `after` is the opaque user-id cursor from the previous page's `nextAfter` (never an email). */

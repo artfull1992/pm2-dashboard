@@ -1,6 +1,6 @@
 import { expect, type Page, test } from '@playwright/test';
 import { startAgent } from '../support/agent.js';
-import { inRunSchema } from '../support/db.js';
+import { grantAccess, inRunSchema } from '../support/db.js';
 import { credentials, type E2eRole } from '../support/env.js';
 
 async function login(page: Page, role: E2eRole) {
@@ -15,7 +15,7 @@ async function login(page: Page, role: E2eRole) {
 test('admin provisions a server, the Agent reports in, revoke stops it; viewer cannot manage', async ({ page, browser }) => {
   test.setTimeout(150_000);
   await login(page, 'admin');
-  await page.getByRole('link', { name: 'Сервери' }).click();
+  await page.getByRole('link', { name: 'Сервери', exact: true }).click();
   await page.getByRole('button', { name: 'Додати сервер' }).click();
   const createDialog = page.getByRole('dialog', { name: 'Новий сервер' });
   await createDialog.getByLabel('Назва нового сервера').fill('e2e-node');
@@ -42,6 +42,8 @@ test('admin provisions a server, the Agent reports in, revoke stops it; viewer c
     await expect(page.getByText('linux / ').or(page.getByText('darwin / '))).toBeVisible();
 
     // Viewer: sees the server, has no credential controls, and the API refuses even with a valid CSRF token.
+    // ADR-028: the viewer sees the server only once it is granted.
+    await grantAccess(credentials('viewer').email, new URL(page.url()).pathname.split('/').at(-1) ?? '');
     const viewerContext = await browser.newContext();
     const viewer = await viewerContext.newPage();
     await login(viewer, 'viewer');

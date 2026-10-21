@@ -116,7 +116,7 @@ export function registerSettingsRoutes(app: FastifyInstance, options: SettingsRo
   const view = async () => {
     const rt = await source.load();
     const integration = await settings.getIntegration();
-    const summary = await options.alerts.summary(true);
+    const summary = await options.alerts.summary(true, null); // settings are admin-only: global scope
     const s: AlertSettings = rt.settings;
     const t = s.thresholds;
     const lastTest = integration.lastTest && integration.lastTest.generation === integration.generation

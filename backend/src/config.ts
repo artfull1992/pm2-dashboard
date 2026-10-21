@@ -221,7 +221,8 @@ export function loadConfig(env: EnvSource): AppConfig {
 
   const alerts = loadAlertsConfig(value, issues);
 
-  const controlRaw = value('PM2_CONTROL_ENABLED', 'false');
+  // ADR-028: on by default — an emergency kill switch (false), no longer a hidden precondition of a new installation.
+  const controlRaw = value('PM2_CONTROL_ENABLED', 'true');
   if (controlRaw !== 'true' && controlRaw !== 'false') issues.push('PM2_CONTROL_ENABLED must be true or false');
 
   const config: AppConfig = {

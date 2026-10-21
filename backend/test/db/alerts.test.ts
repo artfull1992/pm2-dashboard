@@ -157,7 +157,7 @@ describe('alerts persistence (real SQL)', () => {
     if (!other) throw new Error('nothing claimed');
     expect(await store.finish(other, { status: 'queued', code: 'rate_limited', delaySeconds: 3600 })).toBe(true);
     expect(await store.claim(10, 1)).toEqual(expect.not.arrayContaining([expect.objectContaining({ id: other.id })])); // not before its time
-    expect((await store.summary(true)).queue).toMatchObject({ sent: 1, sending: 4, queued: 1 });
+    expect((await store.summary(true, null)).queue).toMatchObject({ sent: 1, sending: 4, queued: 1 });
   });
 
   it('retention removes only old finished outbox rows and old resolved incidents of this feature', async () => {
@@ -182,15 +182,15 @@ describe('alerts persistence (real SQL)', () => {
     for (let i = 0; i < 3; i++) await server(ctx, `l${String(i)}`, 600);
     const store = createPgAlertsStore(ctx.db);
     await store.evaluateOnce(alertsConfig());
-    const page1 = await store.listIncidents({ state: 'active', limit: 2, before: null, withDelivery: false });
+    const page1 = await store.listIncidents({ state: 'active', limit: 2, before: null, withDelivery: false, scope: null });
     expect(page1.items).toHaveLength(2);
     expect(page1.items[0]?.notification).toBeNull();
-    const page2 = await store.listIncidents({ state: 'active', limit: 2, before: page1.nextBefore, withDelivery: true });
+    const page2 = await store.listIncidents({ state: 'active', limit: 2, before: page1.nextBefore, withDelivery: true, scope: null });
     expect(page2.items).toHaveLength(1);
     expect(page2.items[0]?.notification).toMatchObject({ notify: true, state: 'queued' });
     expect(new Set([...page1.items, ...page2.items].map((i) => i.id)).size).toBe(3);
     const dump = JSON.stringify((await ctx.sql('SELECT * FROM alert_incidents')).rows) + JSON.stringify((await ctx.sql('SELECT * FROM alert_outbox')).rows) + JSON.stringify((await ctx.sql('SELECT * FROM alert_conditions')).rows);
     expect(dump).not.toContain('hooks.slack.com');
-    expect(await createPgAlertsStore(ctx.db).listIncidents({ state: 'resolved', limit: 5, before: randomUUID(), withDelivery: false })).toEqual({ items: [], nextBefore: null });
+    expect(await createPgAlertsStore(ctx.db).listIncidents({ state: 'resolved', limit: 5, before: randomUUID(), withDelivery: false, scope: null })).toEqual({ items: [], nextBefore: null });
   });
 });

@@ -44,7 +44,7 @@ export const SERVER_USAGE = `Node Control — встановлення Central A
   --db-env <файл>            DB_NAME/DB_USER/DB_HOST/DB_PORT/DB_PASS (root, 600) — лише для першого створення api.env
   --public-url <https-origin> публічна адреса UI (AUTH_ALLOWED_ORIGINS, ALERTS_PUBLIC_URL) — для першого встановлення
   --behind-nginx             додати API_TRUSTED_PROXIES=127.0.0.1 (лише коли Nginx уже проксіює за наданим шаблоном)
-  --enable-pm2-control       додати PM2_CONTROL_ENABLED=true (керування PM2 на рівні API; на нодах — окремо)
+  --enable-pm2-control       записати PM2_CONTROL_ENABLED=true явно (типово й так true; false — аварійне вимкнення)
   --admin-email <email>      створити першого адміністратора через bootstrap-admin.js (пароль — прихований ввід)
   --admin-password-file <ф>  пароль адміністратора з файлу (root, 600) замість введення
   -h, --help                 ця довідка

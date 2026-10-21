@@ -270,6 +270,23 @@ describe('browser routes', () => {
     expect((await get(fresh.serverId)).json()).toMatchObject({ inventory: { state: 'not_reported', processCount: null }, items: [] });
   });
 
+  it('scope (ADR-028): admin reads globally; operator/viewer reads are limited to their grants (scope = own user id)', async () => {
+    const { admin, a } = await seeded();
+    const read = async (cookie: string) => {
+      expect((await app.inject({ method: 'GET', url: '/api/applications', headers: { cookie } })).statusCode).toBe(200);
+      const list = inventory.scopes.at(-1);
+      await app.inject({ method: 'GET', url: `/api/servers/${a.serverId}/applications`, headers: { cookie } });
+      return [list, inventory.scopes.at(-1)];
+    };
+    expect(await read(admin.cookie)).toEqual([null, null]);
+    for (const role of ['operator', 'viewer'] as const) {
+      const s = await session(role);
+      const [list, detail] = await read(s.cookie);
+      expect(typeof list, role).toBe('string');
+      expect(detail).toBe(list);
+    }
+  });
+
   it('store failure → 503', async () => {
     const { admin, a } = await seeded();
     inventory.failing = true;

@@ -10,10 +10,10 @@ import { type AllowlistEntry, AllowlistError, parseAllowlist, readAllowlist } fr
 import { createBroker, listenBroker, loadBrokerConfig } from '../src/control/broker.js';
 import { BrokerError, brokerRequest } from '../src/control/client.js';
 import { executeCommand, type ExecutorDeps, listTargets, type Pm2ActionMethod } from '../src/control/executor.js';
-import { fingerprintOf, matchEntry, viewOf } from '../src/control/identity.js';
+import { autoTargetKey, fingerprintOf, identityOf, matchEntry, viewOf } from '../src/control/identity.js';
 import { Journal } from '../src/control/journal.js';
 import { type ControlCommand, deliver, parsePollReply, runControl } from '../src/control/loop.js';
-import type { BrokerRequest } from '../src/control/protocol.js';
+import { type BrokerRequest, parseBrokerRequest, parseBrokerResponse } from '../src/control/protocol.js';
 import { RpcError } from '../src/pm2/rpc.js';
 
 const TOKEN = `ncag_${'C'.repeat(43)}`;
@@ -72,7 +72,7 @@ function deps(pm2: ReturnType<typeof fakePm2>, entries: AllowlistEntry[] | (() =
     list: pm2.list, act: pm2.act, journal: new Journal(freshDir()), sleep: () => Promise.resolve(), verifyTimeoutMs: 50, ...extra,
   };
 }
-const exec = (targetKey: string, action: 'start' | 'stop' | 'restart', over: Partial<Extract<BrokerRequest, { op: 'execute' }>> = {}) =>
+const exec = (targetKey: string, action: 'start' | 'stop' | 'restart', over: Partial<Extract<BrokerRequest, { op: 'execute'; v: 1 }>> = {}) =>
   ({ v: 1 as const, op: 'execute' as const, commandId: randomUUID(), targetKey, action, deadlineAt: new Date(Date.now() + 60_000).toISOString(), ...over });
 
 // ---- allowlist ------------------------------------------------------------------------------------------------
@@ -246,13 +246,13 @@ describe('broker executor', () => {
     const api = proc(1, 'api');
     const pm2 = fakePm2([api, proc(2, 'dup'), proc(3, 'dup')]);
     const res = await listTargets({ loadAllowlist: () => Promise.resolve([entryFor(api, 'api-prod'), entryFor(proc(2, 'dup'))]), list: pm2.list });
-    expect(res).toEqual({ daemon: 'ok', allowlist: 'ok', targets: [
+    expect(res).toEqual({ mode: 'allowlist', daemon: 'ok', allowlist: 'ok', total: 2, targets: [
       { targetKey: 'api-prod', name: 'api', pmId: 1, actions: ['start', 'stop', 'restart'], matchStatus: 'ok' },
       { targetKey: 'dup', name: 'dup', pmId: null, actions: ['start', 'stop', 'restart'], matchStatus: 'ambiguous' },
     ] });
     pm2.setDown(true);
     expect((await listTargets({ loadAllowlist: () => Promise.resolve([entryFor(api)]), list: pm2.list })).targets[0]?.matchStatus).toBe('daemon_unavailable');
-    expect(await listTargets({ loadAllowlist: () => Promise.reject(new AllowlistError('x')), list: pm2.list })).toEqual({ daemon: 'ok', allowlist: 'invalid', targets: [] });
+    expect(await listTargets({ loadAllowlist: () => Promise.reject(new AllowlistError('x')), list: pm2.list })).toEqual({ mode: 'allowlist', daemon: 'ok', allowlist: 'invalid', targets: [], total: 0 });
   });
 });
 
@@ -351,6 +351,117 @@ describe('broker socket', () => {
 });
 
 
+// ---- auto mode + protocol version 2 (ADR-028) -----------------------------------------------------------------
+describe('broker auto mode and protocol v2', () => {
+  const idOf = (p: FakeProc) => identityOf(viewOf(p) ?? (() => { throw new Error('x'); })());
+  const exec2 = (name: string, action: 'start' | 'stop' | 'restart', identity: string | null, over: Partial<Extract<BrokerRequest, { op: 'execute'; v: 2 }>> = {}) =>
+    ({ v: 2 as const, op: 'execute' as const, commandId: randomUUID(), targetKey: autoTargetKey(name), action, deadlineAt: new Date(Date.now() + 60_000).toISOString(), identity, ...over });
+  const auto = (pm2: ReturnType<typeof fakePm2>) => deps(pm2, () => Promise.reject(new Error('allowlist must not be read in auto mode')), { mode: 'auto' });
+
+  it('target keys derive from the name only (never pm_id); identity is 16 hex of the definition, no secret', () => {
+    expect(autoTargetKey('api')).toMatch(/^n-[0-9a-f]{24}$/);
+    expect(autoTargetKey('api')).toBe(autoTargetKey('api'));
+    expect(autoTargetKey('api')).not.toBe(autoTargetKey('api2'));
+    expect(idOf(proc(1, 'api'))).toBe(idOf(proc(9, 'api')));
+    expect(idOf(proc(1, 'api'))).not.toBe(idOf(proc(1, 'api', 'online', { pm_cwd: '/srv/evil' })));
+    expect(idOf(proc(1, 'api'))).toMatch(/^[0-9a-f]{16}$/);
+    expect(idOf(proc(1, 'api'))).not.toContain(SECRET);
+  });
+
+  it('list v2: every process of the owner, no allowlist; ambiguous/cluster explicit; a v1 caller gets nothing', async () => {
+    const pm2 = fakePm2([proc(1, 'api'), proc(2, 'dup'), proc(3, 'dup'), proc(4, 'clu', 'online', { exec_mode: 'cluster_mode' })]);
+    const d = auto(pm2);
+    expect(await listTargets(d, 2)).toEqual({ mode: 'auto', daemon: 'ok', allowlist: 'ok', total: 3, targets: [
+      { targetKey: autoTargetKey('api'), name: 'api', pmId: 1, actions: ['start', 'stop', 'restart'], matchStatus: 'ok', identity: idOf(proc(1, 'api')) },
+      { targetKey: autoTargetKey('clu'), name: 'clu', pmId: null, actions: ['start', 'stop', 'restart'], matchStatus: 'cluster_unsupported', identity: null },
+      { targetKey: autoTargetKey('dup'), name: 'dup', pmId: null, actions: ['start', 'stop', 'restart'], matchStatus: 'ambiguous', identity: null },
+    ] });
+    expect(await listTargets(d, 1)).toEqual({ mode: 'auto', daemon: 'ok', allowlist: 'invalid', targets: [], total: 0 });
+    pm2.setDown(true);
+    expect(await listTargets(d, 2)).toEqual({ mode: 'auto', daemon: 'unavailable', allowlist: 'ok', targets: [], total: 0 });
+  });
+
+  it('list v2: 500 processes fit; beyond that (or names the protocol cannot carry) the total says so — never silently cut', async () => {
+    const many = Array.from({ length: 501 }, (_, i) => proc(i, `svc-${String(i).padStart(3, '0')}`));
+    const r = await listTargets(auto(fakePm2(many)), 2);
+    expect(r.targets).toHaveLength(500);
+    expect(r.total).toBe(501);
+    const odd = await listTargets(auto(fakePm2([proc(1, 'ok'), proc(2, 'bad\u0007name')])), 2);
+    expect(odd.targets.map((t) => t.name)).toEqual(['ok']);
+    expect(odd.total).toBe(2);
+    // Allowlist mode, version 2: identity of matched entries.
+    const api = proc(1, 'api');
+    const al = await listTargets(deps(fakePm2([api]), [entryFor(api, 'api-prod')]), 2);
+    expect(al).toMatchObject({ mode: 'allowlist', total: 1, targets: [{ targetKey: 'api-prod', identity: idOf(api) }] });
+  });
+
+  it('execute v2 (auto): only with the authorised identity; v1, unknown, ambiguous, cluster, changed definition are refused before PM2', async () => {
+    const api = proc(1, 'api');
+    const pm2 = fakePm2([api, proc(2, 'dup'), proc(3, 'dup'), proc(4, 'clu', 'online', { instances: 2 })]);
+    const d = auto(pm2);
+    expect(await executeCommand(exec2('api', 'restart', idOf(api)), d)).toMatchObject({ v: 2, outcome: 'succeeded' });
+    expect(pm2.calls).toEqual([['restartProcessId', 1]]);
+    const refused: [ReturnType<typeof exec2> | ReturnType<typeof exec>, string][] = [
+      [exec(autoTargetKey('api'), 'restart'), 'allowlist_invalid'], // version 1 caller (old Agent) → fail closed
+      [exec2('api', 'restart', null), 'identity_changed'],
+      [exec2('api', 'restart', 'f'.repeat(16)), 'identity_changed'],
+      [exec2('ghost', 'restart', 'f'.repeat(16)), 'not_found'],
+      [exec2('dup', 'restart', 'f'.repeat(16)), 'ambiguous'],
+      [exec2('clu', 'restart', 'f'.repeat(16)), 'cluster_unsupported'],
+    ];
+    for (const [req, reason] of refused) expect(await executeCommand(req, d)).toMatchObject({ outcome: 'rejected', reason });
+    // pm_id reused by a different definition under the same name: the authorised identity no longer matches.
+    pm2.procs.splice(0, 1, proc(1, 'api', 'online', { pm_exec_path: '/srv/other/index.js' }));
+    expect(await executeCommand(exec2('api', 'restart', idOf(api)), d)).toMatchObject({ outcome: 'rejected', reason: 'identity_changed' });
+    expect(pm2.calls).toHaveLength(1);
+  });
+
+  it('execute v2 (allowlist): identity, when given, must still match; the allowlist stays authoritative', async () => {
+    const api = proc(1, 'api');
+    const pm2 = fakePm2([api]);
+    const d = deps(pm2, [entryFor(api, 'api-prod')]);
+    expect(await executeCommand(exec2('api', 'stop', 'f'.repeat(16), { targetKey: 'api-prod' }), d)).toMatchObject({ outcome: 'rejected', reason: 'identity_changed' });
+    expect(await executeCommand(exec2('api', 'stop', null, { targetKey: 'api-prod' }), d)).toMatchObject({ v: 2, outcome: 'succeeded' });
+    expect(await executeCommand(exec2('api', 'start', idOf(api), { targetKey: 'other' }), d)).toMatchObject({ outcome: 'rejected', reason: 'not_allowlisted' });
+  });
+
+  it('protocol: v2 requests/answers are parsed strictly', () => {
+    const base = { v: 2, op: 'execute', commandId: randomUUID(), targetKey: 'n-abc', action: 'stop', deadlineAt: new Date().toISOString() };
+    expect(parseBrokerRequest({ ...base, identity: 'a'.repeat(16) })).toMatchObject({ v: 2, identity: 'a'.repeat(16) });
+    expect(parseBrokerRequest({ ...base, identity: null })).toMatchObject({ v: 2, identity: null });
+    expect(parseBrokerRequest(base)).toBeNull(); // identity is required in v2
+    expect(parseBrokerRequest({ ...base, identity: 'xyz' })).toBeNull();
+    expect(parseBrokerRequest({ ...base, v: 1, identity: null })).toBeNull(); // no identity in v1
+    expect(parseBrokerRequest({ v: 3, op: 'list' })).toBeNull();
+    const t = { targetKey: 'n-a', name: 'a', pmId: 1, actions: ['stop'], matchStatus: 'ok', identity: 'a'.repeat(16) };
+    const list = { v: 2, op: 'list', mode: 'auto', daemon: 'ok', allowlist: 'ok', targets: [t], total: 1 };
+    expect(parseBrokerResponse(list, { v: 2, op: 'list' })).toMatchObject({ mode: 'auto', total: 1 });
+    expect(parseBrokerResponse({ ...list, targets: [{ ...t, identity: null }] }, { v: 2, op: 'list' })).toBeNull();
+    expect(parseBrokerResponse({ ...list, targets: [{ ...t, matchStatus: 'ambiguous', pmId: null }] }, { v: 2, op: 'list' })).toBeNull();
+    expect(parseBrokerResponse({ ...list, total: 0 }, { v: 2, op: 'list' })).toBeNull();
+    expect(parseBrokerResponse({ ...list, mode: 'open' }, { v: 2, op: 'list' })).toBeNull();
+    expect(parseBrokerResponse(list, { v: 1, op: 'list' })).toBeNull(); // version must answer the request
+  });
+
+  it('socket: a 500-target v2 list (> 64 KiB) round-trips; NC_BROKER_MODE=auto needs no allowlist', async () => {
+    const many = Array.from({ length: 500 }, (_, i) => proc(i, `service-with-a-longer-name-${String(i).padStart(3, '0')}`));
+    const dir = freshDir(0o750);
+    const sock = join(dir, 'b.sock');
+    const { server } = createBroker(auto(fakePm2(many)), { info: () => undefined, warn: () => undefined });
+    servers.push(server);
+    await listenBroker(server, sock);
+    const r = await brokerRequest(sock, { v: 2, op: 'list' }, 5000);
+    expect(r).toMatchObject({ op: 'list', mode: 'auto', total: 500 });
+    expect(r.op === 'list' && r.targets.length).toBe(500);
+    expect(await brokerRequest(sock, { v: 1, op: 'list' }, 5000)).toMatchObject({ allowlist: 'invalid', targets: [] });
+    expect(loadBrokerConfig({ NC_PM2_HOME: '/home/u/.pm2', NC_BROKER_MODE: 'auto' }, 1000)).toMatchObject({ mode: 'auto', allowlistPath: '' });
+    expect(loadBrokerConfig({ NC_PM2_HOME: '/home/u/.pm2', NC_BROKER_MODE: 'auto', NC_BROKER_ALLOWLIST: '/etc/x.json' }, 1000)).toMatchObject({ mode: 'auto' });
+    expect(loadBrokerConfig({ NC_PM2_HOME: '/home/u/.pm2', NC_BROKER_ALLOWLIST: '/etc/x.json' }, 1000)).toMatchObject({ mode: 'allowlist' });
+    expect(() => loadBrokerConfig({ NC_PM2_HOME: '/home/u/.pm2', NC_BROKER_MODE: 'open', NC_BROKER_ALLOWLIST: '/etc/x.json' }, 1000)).toThrow();
+    expect(() => loadBrokerConfig({ NC_PM2_HOME: '/home/u/.pm2', NC_BROKER_MODE: 'auto' }, 0)).toThrow(); // never root
+  });
+});
+
 // ---- agent side -------------------------------------------------------------------------------------------------
 describe('agent control delivery', () => {
   const cmd = (attempt = 1): ControlCommand => ({ id: randomUUID(), attempt, targetKey: 'api', action: 'restart', deadlineAt: new Date(Date.now() + 60_000).toISOString() });
@@ -426,6 +537,72 @@ describe('agent control delivery', () => {
     expect(results.every((r) => JSON.stringify(r) === JSON.stringify(results[0]))).toBe(true);
     expect(heartbeats).toBeGreaterThanOrEqual(3);
     expect(logged.join('\n')).not.toContain(TOKEN);
+  });
+
+  it('version negotiation (ADR-028): old broker → v1; old API → v1 only for an allowlist broker; an auto broker acts only for a scoped API', async () => {
+    const config = loadAgentConfig({ NC_AGENT_API_URL: 'https://x.example.test', NC_AGENT_TOKEN: TOKEN, NC_AGENT_CONTROL_SOCKET: '/run/b.sock' });
+    const identity = 'a'.repeat(16);
+    const target = { targetKey: 'n-api', name: 'api', pmId: 1, actions: ['restart' as const], matchStatus: 'ok' as const };
+    const fakeBroker = (kind: 'old' | 'allowlist' | 'auto', executed: BrokerRequest[]): typeof brokerRequest => (_s, req) => {
+      if (req.op === 'list') {
+        if (req.v === 2 && kind === 'old') return Promise.reject(new BrokerError('transport', true)); // drops the unknown version
+        if (req.v === 2) return Promise.resolve({ v: 2, op: 'list', mode: kind === 'auto' ? 'auto' : 'allowlist', daemon: 'ok', allowlist: 'ok', targets: [{ ...target, identity }], total: 1 });
+        return Promise.resolve({ v: 1, op: 'list', daemon: 'ok', allowlist: 'ok', targets: [target] });
+      }
+      executed.push(req);
+      return Promise.resolve({ v: req.v, op: 'execute', commandId: req.commandId, outcome: 'succeeded', reason: null, before: null, after: null });
+    };
+    const run = async (kind: 'old' | 'allowlist' | 'auto', api: (body: Record<string, unknown>, n: number) => Response) => {
+      const controller = new AbortController();
+      const polls: Record<string, unknown>[] = [];
+      const executed: BrokerRequest[] = [];
+      const warned: string[] = [];
+      await runControl(config, controller.signal, {
+        broker: fakeBroker(kind, executed),
+        fetchImpl: (url, init) => {
+          const body = JSON.parse(init.body as string) as Record<string, unknown>;
+          if (url.endsWith('/result')) return Promise.resolve(new Response(JSON.stringify({ status: 'recorded' }), { status: 200 }));
+          polls.push(body);
+          if (polls.length >= 3) controller.abort();
+          return Promise.resolve(api(body, polls.length));
+        },
+        logger: { info: () => undefined, warn: (e) => warned.push(JSON.stringify(e)) }, sleep: (_m, s) => abortableSleep(1, s), random: () => 0,
+      });
+      return { polls, executed, warned };
+    };
+    const command = () => ({ id: randomUUID(), attempt: 1, targetKey: 'n-api', action: 'restart', deadlineAt: new Date(Date.now() + 60_000).toISOString() });
+    const reply = (commands: unknown[], extra: Record<string, unknown> = {}) => new Response(JSON.stringify({ controlEnabled: true, commands, intervalSeconds: 5, ...extra }), { status: 200 });
+    const oldApi = (body: Record<string, unknown>, n: number) => (body.version === 2 ? new Response('{}', { status: 400 }) : reply(n === 2 ? [command()] : []));
+
+    const old = await run('old', (_b, n) => reply(n === 1 ? [command()] : []));
+    expect(old.polls[0]).toMatchObject({ version: 1, targets: [target] });
+    expect(old.executed.map((r) => r.v)).toEqual([1]);
+
+    const al = await run('allowlist', oldApi);
+    expect(al.polls.map((p) => p.version)).toEqual([2, 1, 1]);
+    expect(al.polls[1]).toEqual({ version: 1, broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: [target] });
+    expect(al.executed).toHaveLength(1);
+
+    const au = await run('auto', oldApi);
+    expect(au.polls.every((p) => p.version === 2 && p.mode === 'auto')).toBe(true);
+    expect(au.executed).toEqual([]);
+    expect(au.warned.join('\n')).toMatch(/does not support scoped access/);
+
+    const unscoped = await run('auto', (_b, n) => reply(n === 1 ? [{ ...command(), identity }] : []));
+    expect(unscoped.executed).toEqual([]);
+
+    const scoped = await run('auto', (_b, n) => reply(n === 1 ? [{ ...command(), identity }] : [], { accessModel: 'scoped' }));
+    expect(scoped.polls[0]).toEqual({ version: 2, mode: 'auto', broker: 'ok', daemon: 'ok', allowlist: 'ok', targets: [{ ...target, identity }], total: 1 });
+    expect(scoped.executed).toEqual([expect.objectContaining({ v: 2, targetKey: 'n-api', identity })]);
+  });
+
+  it('poll reply v2: accessModel and command identity are parsed strictly', () => {
+    const c = { id: randomUUID(), attempt: 1, targetKey: 'n-api', action: 'restart', deadlineAt: new Date().toISOString() };
+    expect(parsePollReply(JSON.stringify({ controlEnabled: true, commands: [{ ...c, identity: 'b'.repeat(16) }], intervalSeconds: 10, accessModel: 'scoped' })))
+      .toMatchObject({ accessModel: 'scoped', commands: [{ identity: 'b'.repeat(16) }] });
+    expect(parsePollReply(JSON.stringify({ controlEnabled: true, commands: [{ ...c, identity: null }], intervalSeconds: 10 }))).toMatchObject({ commands: [{ identity: null }] });
+    expect(parsePollReply(JSON.stringify({ controlEnabled: true, commands: [{ ...c, identity: 'xyz' }], intervalSeconds: 10 }))).toBeNull();
+    expect(parsePollReply(JSON.stringify({ controlEnabled: true, commands: [], intervalSeconds: 10, accessModel: 'global' }))).toBeNull();
   });
 
   it('control disabled in the Agent (no NC_AGENT_CONTROL_SOCKET) → no polling at all', async () => {

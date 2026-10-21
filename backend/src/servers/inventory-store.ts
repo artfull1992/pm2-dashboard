@@ -1,3 +1,4 @@
+import { type Scope, serverVisibleSql, serviceVisibleSql } from '../auth/scope.js';
 import type { Database } from '../database.js';
 import {
   type ApplicationCursor, encodeCursor, INVENTORY_FRESH_SECONDS, type InventoryReport, type ProcessStatus,
@@ -46,8 +47,10 @@ export interface ApplicationItem {
 export interface InventoryStore {
   recordInventory(input: { tokenHash: Buffer; report: InventoryReport }): Promise<{ serverId: string; receivedAt: Date; status: 'accepted' | 'ignored' } | 'unauthorized'>;
   /** `q`: case-insensitive literal substring of the name (no wildcards). `context`: written into the next cursor. */
-  listApplications(input: { limit: number; cursor: ApplicationCursor | null; serverId: string | null; status: ProcessStatus | null; q?: string | null; context?: string | null }): Promise<{ items: ApplicationItem[]; nextCursor: string | null }>;
-  serverApplications(serverId: string): Promise<{ serverId: string; serverStatus: ServerStatus; inventory: InventoryInfo; items: ApplicationItem[] } | null>;
+  /** Only services visible in `scope` (ADR-028), filtered in SQL before the page limit. */
+  listApplications(input: { limit: number; cursor: ApplicationCursor | null; serverId: string | null; status: ProcessStatus | null; q?: string | null; context?: string | null; scope: Scope }): Promise<{ items: ApplicationItem[]; nextCursor: string | null }>;
+  /** null: server missing or not visible. For a scoped user `processCount` counts only the visible services. */
+  serverApplications(serverId: string, scope: Scope): Promise<{ serverId: string; serverStatus: ServerStatus; inventory: InventoryInfo; items: ApplicationItem[] } | null>;
 }
 
 const FRESH = `make_interval(secs => ${String(INVENTORY_FRESH_SECONDS)})`;
@@ -178,24 +181,25 @@ export function createPgInventoryStore(db: Database): InventoryStore {
       });
     },
 
-    async listApplications({ limit, cursor, serverId, status, q = null, context = null }) {
+    async listApplications({ limit, cursor, serverId, status, q = null, context = null, scope }) {
       // strpos: a literal substring — %, _ and backslashes in the search are plain characters (no LIKE patterns).
       const { rows } = await db.query<AppRow>(
         `${APP_SELECT}
-          WHERE ($1::uuid IS NULL OR a.server_id = $1::uuid)
+          WHERE ${serviceVisibleSql('a.server_id', 'a.name', '$8')}
+            AND ($1::uuid IS NULL OR a.server_id = $1::uuid)
             AND ($2::text IS NULL OR a.status = $2::text)
             AND ($7::text IS NULL OR strpos(lower(a.name), lower($7::text)) > 0)
             AND ($3::text IS NULL OR (a.name, a.server_id, a.pm_id) > ($3::text, $4::uuid, $5::int))
           ORDER BY a.name, a.server_id, a.pm_id
           LIMIT $6`,
-        [serverId, status, cursor?.name ?? null, cursor?.serverId ?? null, cursor?.pmId ?? null, limit + 1, q],
+        [serverId, status, cursor?.name ?? null, cursor?.serverId ?? null, cursor?.pmId ?? null, limit + 1, q, scope],
       );
       const items = rows.slice(0, limit).map(toItem);
       const last = items.at(-1);
       return { items, nextCursor: rows.length > limit && last ? encodeCursor({ name: last.name, serverId: last.serverId, pmId: last.pmId, context }) : null };
     },
 
-    async serverApplications(serverId) {
+    async serverApplications(serverId, scope) {
       const head = await db.query<{
         server_status: ServerStatus; inventory_state: InventoryState; reason: string | null; source: string | null;
         inventory_captured_at: Date | null; inventory_collected_at: Date | null; reported_at: Date | null; process_count: number | null;
@@ -206,18 +210,23 @@ export function createPgInventoryStore(db: Database): InventoryStore {
            FROM servers s
            LEFT JOIN server_heartbeats h ON h.server_id = s.id
            LEFT JOIN server_inventories i ON i.server_id = s.id
-          WHERE s.id = $1`,
-        [serverId],
+          WHERE s.id = $1 AND ${serverVisibleSql('s.id', '$2')}`,
+        [serverId, scope],
       );
       const r = head.rows[0];
       if (!r) return null;
-      const apps = await db.query<AppRow>(`${APP_SELECT} WHERE a.server_id = $1 ORDER BY a.name, a.pm_id LIMIT 500`, [serverId]);
+      const apps = await db.query<AppRow>(
+        `${APP_SELECT} WHERE a.server_id = $1 AND ${serviceVisibleSql('a.server_id', 'a.name', '$2')} ORDER BY a.name, a.pm_id LIMIT 500`,
+        [serverId, scope],
+      );
       return {
         serverId,
         serverStatus: r.server_status,
         inventory: {
           state: r.inventory_state, reason: r.reason, source: r.source, capturedAt: iso(r.inventory_captured_at),
-          collectedAt: iso(r.inventory_collected_at), reportedAt: iso(r.reported_at), processCount: r.process_count,
+          collectedAt: iso(r.inventory_collected_at), reportedAt: iso(r.reported_at),
+          // A scoped user never learns how many services are hidden: the count covers only what they may see.
+          processCount: scope === null || r.process_count === null ? r.process_count : apps.rows.length,
         },
         items: apps.rows.map(toItem),
       };

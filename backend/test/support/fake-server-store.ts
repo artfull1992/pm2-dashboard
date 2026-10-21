@@ -36,17 +36,25 @@ export class FakeServerStore implements ServerStore {
     this.audit.push({ ...entry, actorUserId });
   }
 
-  list({ limit, afterId }: { limit: number; afterId: string | null }) {
+  /** Grants of the scoped (non-admin) users: userId → visible server ids. Scope null (admin) sees everything. */
+  readonly grants = new Map<string, Set<string>>();
+  private visible(scope: string | null, serverId: string): boolean {
+    return scope === null || (this.grants.get(scope)?.has(serverId) ?? false);
+  }
+
+  list({ limit, afterId, scope = null }: { limit: number; afterId: string | null; scope?: string | null }) {
     this.check();
-    const start = afterId ? this.servers.findIndex((s) => s.id === afterId) + 1 : 0;
-    const slice = this.servers.slice(start, start + limit + 1);
+    // Filtered BEFORE paging, like the SQL store.
+    const visible = this.servers.filter((s) => this.visible(scope, s.id));
+    const start = afterId ? visible.findIndex((s) => s.id === afterId) + 1 : 0;
+    const slice = visible.slice(start, start + limit + 1);
     const items = slice.slice(0, limit).map((s) => this.summary(s));
     return Promise.resolve({ items, nextAfterId: slice.length > limit ? (items.at(-1)?.id ?? null) : null });
   }
 
-  get(id: string): Promise<ServerDetail | null> {
+  get(id: string, scope: string | null = null): Promise<ServerDetail | null> {
     this.check();
-    const s = this.servers.find((x) => x.id === id);
+    const s = this.servers.find((x) => x.id === id && this.visible(scope, x.id));
     return Promise.resolve(s ? { ...this.summary(s), snapshot: this.heartbeats.get(id)?.snapshot ?? null } : null);
   }
 

@@ -16,7 +16,10 @@ import { artifactRef, filePath, httpsOrigin, InputError, linuxName, safeAbsolute
 // Agent installer for a managed server that already runs PM2 applications. Installs Node Control only: no pm2
 // command is ever executed (even `pm2 --version` may start a daemon), PM2 processes, PM2_HOME and PM2 startup are not
 // touched. Capabilities are explicit: heartbeat always; PM2 inventory only with --pm2-owner/--pm2-home; control and
-// logs only with --enable-control, and even then with an EMPTY allowlist that the operator fills in.
+// logs only with --enable-control. Broker mode (ADR-028): a NEW broker starts in 'auto' (every process of the PM2
+// owner; who may act on which service is decided by the API from roles and grants); 'allowlist' keeps the root-owned
+// list. An existing broker configuration is never switched silently: only an explicit --control-mode changes it,
+// with a backup copy first.
 
 export const AGENT = Object.freeze({
   user: 'nodecontrol-agent',
@@ -34,6 +37,9 @@ export const AGENT = Object.freeze({
 });
 export const TOKEN_RE = /^ncag_[A-Za-z0-9_-]{43}$/;
 const RESTART = 'restart-agent';
+const RESTART_BROKER = 'restart-broker';
+export const CONTROL_MODES = ['auto', 'allowlist'] as const;
+export type ControlMode = (typeof CONTROL_MODES)[number];
 
 export const AGENT_USAGE = `Node Control — встановлення Agent на сервер із PM2-застосунками (Ubuntu + systemd, Node.js 22 — ${RUNTIME.node}).
 PM2 і застосунки не змінюються й не перезапускаються; жодна команда pm2 не виконується.
@@ -47,7 +53,11 @@ PM2 і застосунки не змінюються й не перезапус
   --token-stdin               прочитати ключ зі stdin (для автоматизації)
   --pm2-owner <user>          Linux-користувач, від якого працює PM2 (не root) — вмикає inventory
   --pm2-home <шлях>           абсолютний PM2_HOME цього користувача, напр. /home/deploy/.pm2
-  --enable-control            встановити broker з ПОРОЖНІМ allowlist (керування й логи — лише після його заповнення)
+  --enable-control            встановити broker для керування й логів (новий — у режимі auto)
+  --control-mode <auto|allowlist>
+                              режим broker: auto — усі процеси власника PM2, доступ визначає API за ролями й «Доступами»;
+                              allowlist — лише цілі з root-allowlist (порожній за замовчуванням). Для наявного broker —
+                              явне перемикання (з резервною копією конфігурації); без параметра наявний режим не змінюється
   -h, --help                  ця довідка
 Ключ потрібен лише для першого створення agent.env; наявний файл не перезаписується (ротація — docs/INSTALLATION.md).
 Докладно: docs/INSTALLATION.md.`;
@@ -60,6 +70,8 @@ export interface AgentOptions {
   tokenStdin: boolean;
   pm2: { owner: string; home: string } | null;
   enableControl: boolean;
+  /** Explicit broker mode; null = new broker 'auto', an existing one unchanged. */
+  controlMode: ControlMode | null;
   releaseTool: string;
 }
 
@@ -69,7 +81,7 @@ export function parseAgentArgs(argv: readonly string[], cwd: string, releaseTool
     options: {
       artifact: { type: 'string' }, 'api-url': { type: 'string' }, 'token-file': { type: 'string' },
       'token-stdin': { type: 'boolean', default: false }, 'pm2-owner': { type: 'string' }, 'pm2-home': { type: 'string' },
-      'enable-control': { type: 'boolean', default: false }, help: { type: 'boolean', short: 'h', default: false },
+      'enable-control': { type: 'boolean', default: false }, 'control-mode': { type: 'string' }, help: { type: 'boolean', short: 'h', default: false },
     },
   });
   const [command, ...rest] = positionals;
@@ -81,6 +93,9 @@ export function parseAgentArgs(argv: readonly string[], cwd: string, releaseTool
   const home = values['pm2-home'];
   if ((owner === undefined) !== (home === undefined)) throw new InputError('--pm2-owner і --pm2-home задаються разом');
   if (values['enable-control'] && owner === undefined) throw new InputError('--enable-control потребує --pm2-owner і --pm2-home');
+  const controlMode = values['control-mode'];
+  if (controlMode !== undefined && !(CONTROL_MODES as readonly string[]).includes(controlMode)) throw new InputError('--control-mode: auto або allowlist');
+  if (controlMode !== undefined && !values['enable-control']) throw new InputError('--control-mode задається разом із --enable-control');
   return {
     mode: command,
     artifact: filePath(values.artifact, '--artifact', cwd),
@@ -89,6 +104,7 @@ export function parseAgentArgs(argv: readonly string[], cwd: string, releaseTool
     tokenStdin: values['token-stdin'],
     pm2: owner === undefined ? null : { owner: linuxName(owner, '--pm2-owner'), home: safeAbsolutePath(home, '--pm2-home') },
     enableControl: values['enable-control'],
+    controlMode: (controlMode ?? null) as ControlMode | null,
     releaseTool,
   };
 }
@@ -169,9 +185,9 @@ function exporterStep(owner: string): Step {
   };
 }
 
-/** Root-owned allowlist; created EMPTY once and never rewritten (the operator owns its content). */
+/** Root-owned allowlist (allowlist mode only); created EMPTY once and never rewritten (the operator owns its content). */
 function allowlistStep(owner: string): Step {
-  const path = `${AGENT.brokerConfigDir}/${owner}.allowlist.json`;
+  const path = allowlistPath(owner);
   return {
     id: `allowlist:${owner}`,
     title: `allowlist broker ${path}`,
@@ -185,6 +201,68 @@ function allowlistStep(owner: string): Step {
     },
     apply({ host }) { host.writeFileAtomic(path, '{"version":1,"targets":[]}\n', { mode: 0o644, uid: 0, gid: 0 }); },
     recovery: `перевірте каталог ${AGENT.brokerConfigDir} і повторіть`,
+  };
+}
+
+const brokerEnvPath = (owner: string) => `${AGENT.brokerConfigDir}/${owner}.env`;
+const allowlistPath = (owner: string) => `${AGENT.brokerConfigDir}/${owner}.allowlist.json`;
+
+/**
+ * Mode of an existing broker configuration (no NC_BROKER_MODE = the original allowlist broker). Without a config, an
+ * existing allowlist file still means the operator chose allowlist; null: nothing yet.
+ */
+export function existingBrokerMode(host: Host, owner: string): ControlMode | null {
+  const info = host.stat(brokerEnvPath(owner));
+  if (info?.kind !== 'file') return host.stat(allowlistPath(owner)) ? 'allowlist' : null;
+  return parseEnvText(host.readFile(brokerEnvPath(owner))).NC_BROKER_MODE === 'auto' ? 'auto' : 'allowlist';
+}
+
+/** The text with KEY set to value: an existing line is replaced, otherwise the entry is appended. Other lines stay. */
+function setKey(text: string, key: string, value: string): string {
+  const line = renderEnv([[key, value]]).trimEnd();
+  const re = new RegExp(`^${key}=.*$`, 'm');
+  if (re.test(text)) return text.replace(re, line);
+  return appendMissing(text, [[key, value]]).text;
+}
+
+/**
+ * Broker configuration root:root 644. Created in the chosen mode; an existing file is only switched by an explicit
+ * --control-mode (backup <file>.bak-<time> first; NC_PM2_HOME and the allowlist stay as they are).
+ */
+function brokerEnvStep(owner: string, home: string, requested: ControlMode | null): Step {
+  const path = brokerEnvPath(owner);
+  const fresh = (mode: ControlMode) => renderEnv(mode === 'auto'
+    ? [['NC_PM2_HOME', home], ['NC_BROKER_MODE', 'auto']]
+    : [['NC_PM2_HOME', home], ['NC_BROKER_ALLOWLIST', allowlistPath(owner)]]);
+  return {
+    id: `file:${path}`,
+    title: `конфігурація broker ${owner}.env`,
+    check({ host }) {
+      const info = host.stat(path);
+      if (!info) return { state: 'pending', detail: `${path} (root:root 644), режим ${requested ?? existingBrokerMode(host, owner) ?? 'auto'}` };
+      if (info.kind !== 'file' || info.uid !== 0 || (info.mode & 0o022) !== 0) {
+        return { state: 'conflict', detail: `${path} має бути файлом root і не доступним на запис іншим`, fix: `chown root:root ${path}; chmod 644 ${path}` };
+      }
+      const env = parseEnvText(host.readFile(path));
+      if (env.NC_PM2_HOME !== home) {
+        return { state: 'conflict', detail: `${path} вказує інший PM2_HOME — інсталятор його не перезаписує`, fix: 'перевірте --pm2-home; якщо файл застарілий — збережіть копію й видаліть його, потім повторіть' };
+      }
+      const current = existingBrokerMode(host, owner);
+      if (requested === null || requested === current) return { state: 'done', detail: `режим ${current ?? 'allowlist'} (без змін)` };
+      return { state: 'pending', detail: `перемкнути режим ${current ?? 'allowlist'} → ${requested} (резервна копія ${owner}.env.bak-<час>; allowlist не змінюється)` };
+    },
+    apply({ host }) {
+      const owner0 = { mode: 0o644, uid: 0, gid: 0 };
+      if (!host.stat(path)) { host.writeFileAtomic(path, fresh(requested ?? existingBrokerMode(host, owner) ?? 'auto'), owner0); return; }
+      if (!requested) return;
+      const text = host.readFile(path);
+      host.writeFileAtomic(`${path}.bak-${stamp(host.now())}`, text, owner0);
+      let next = setKey(text, 'NC_BROKER_MODE', requested);
+      if (requested === 'allowlist') next = appendMissing(next, [['NC_BROKER_ALLOWLIST', allowlistPath(owner)]]).text;
+      host.writeFileAtomic(path, next, owner0);
+    },
+    effects: [RESTART_BROKER],
+    recovery: `попередній вміст — у ${path}.bak-<час>; відновіть його й перезапустіть node-control-pm2-broker@${owner}.service`,
   };
 }
 
@@ -370,28 +448,39 @@ export async function buildAgentPlan(host: Host, o: AgentOptions, input: SecretI
       exporterStep(owner),
     );
   }
+  // Effective broker mode after this run: explicit choice, else the existing one, else 'auto' for a new broker.
+  const brokerMode: ControlMode | null = o.pm2 && o.enableControl ? (o.controlMode ?? existingBrokerMode(host, o.pm2.owner) ?? 'auto') : null;
   if (o.pm2 && o.enableControl) {
     const { owner, home } = o.pm2;
+    if (brokerMode === 'auto') p.notes.push(`broker ${owner}: режим auto — усі процеси власника PM2; хто й чим керує, визначає API (ролі + «Доступи»)`);
+    else p.notes.push(`broker ${owner}: режим allowlist — лише цілі з ${allowlistPath(owner)}`);
+    const current = existingBrokerMode(host, owner);
+    if (o.controlMode && current && current !== o.controlMode) p.warnings.push(`broker ${owner}: перемикання ${current} → ${o.controlMode} (конфігурацію буде збережено в резервну копію)`);
     steps.push(
       systemGroup(AGENT.controlGroup),
       directory(AGENT.brokerConfigDir, { mode: 0o755, user: 'root', group: 'root' }),
-      exactFile(`${AGENT.brokerConfigDir}/${owner}.env`, () => renderEnv([['NC_PM2_HOME', home], ['NC_BROKER_ALLOWLIST', `${AGENT.brokerConfigDir}/${owner}.allowlist.json`]]),
-        { mode: 0o644, user: 'root', group: 'root' }, `конфігурація broker ${owner}.env`),
-      allowlistStep(owner),
-      unitFile('node-control-pm2-broker@.service', rel('node-control-pm2-broker@.service')),
-      service(`node-control-pm2-broker@${owner}.service`, { title: `broker для ${owner}` }),
+      brokerEnvStep(owner, home, o.controlMode),
+      ...(brokerMode === 'allowlist' ? [allowlistStep(owner)] : []),
+      unitFile('node-control-pm2-broker@.service', rel('node-control-pm2-broker@.service'), [RESTART_BROKER]),
+      service(`node-control-pm2-broker@${owner}.service`, { title: `broker для ${owner}`, restartOn: RESTART_BROKER }),
       membership(AGENT.user, AGENT.controlGroup, [RESTART]),
     );
   }
   steps.push(service(AGENT.unit, { restartOn: RESTART }));
 
   const next = ['\nГотово: Agent встановлено, зв\'язок з API підтверджено. PM2-процеси не змінювались.'];
-  if (o.pm2 && o.enableControl) {
+  if (o.pm2 && o.enableControl && brokerMode === 'auto') {
     next.push(
-      'Керування й логи ще ВИМКНЕНІ: allowlist порожній. Щоб дозволити конкретні процеси (docs/INSTALLATION.md, «Керування й логи»):',
-      `  1. Fingerprint: runuser -u ${o.pm2.owner} -- env NC_PM2_HOME=${o.pm2.home} NC_BROKER_ALLOWLIST=${AGENT.brokerConfigDir}/${o.pm2.owner}.allowlist.json ${RUNTIME.node} ${AGENT.base}/current/agent/dist/pm2-broker.js fingerprint`,
-      `  2. Додати лише потрібні цілі в ${AGENT.brokerConfigDir}/${o.pm2.owner}.allowlist.json (root, 644); "logs": true — окремо й лише за погодженням.`,
-      '  3. На центральному сервері: PM2_CONTROL_ENABLED=true (install/server.js apply … --enable-pm2-control).',
+      'Керування й логи готові (broker у режимі auto). Доступ визначає API: admin — усе; operator/viewer — лише сервери й сервіси,',
+      '  надані в UI «Користувачі» → «Доступи». Потрібна версія API зі scoped-доступом: зі старішим API Agent нічого не виконує.',
+      `  Повернутися до allowlist: install/agent.js apply … --enable-control --control-mode allowlist (docs/INSTALLATION.md).`,
+    );
+  } else if (o.pm2 && o.enableControl) {
+    next.push(
+      'Broker у режимі allowlist: керування й логи — лише для цілей allowlist (docs/INSTALLATION.md, «Керування й логи»):',
+      `  1. Fingerprint: runuser -u ${o.pm2.owner} -- env NC_PM2_HOME=${o.pm2.home} NC_BROKER_ALLOWLIST=${allowlistPath(o.pm2.owner)} ${RUNTIME.node} ${AGENT.base}/current/agent/dist/pm2-broker.js fingerprint`,
+      `  2. Додати лише потрібні цілі в ${allowlistPath(o.pm2.owner)} (root, 644); "logs": true — окремо й лише за погодженням.`,
+      '  Без ручного allowlist: install/agent.js apply … --enable-control --control-mode auto (доступ — за ролями й «Доступами» в API).',
     );
   }
   return { preflight: p, pending, steps, verify: (ctx) => verifyAgent(ctx, o), next };

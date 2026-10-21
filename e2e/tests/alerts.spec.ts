@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { expect, type Page, test } from '@playwright/test';
-import { inRunSchema } from '../support/db.js';
+import { grantAccess, inRunSchema } from '../support/db.js';
 import { credentials, type E2eRole } from '../support/env.js';
 
 // Alerts (Task 013) against the real backend with the engine ON (evaluation only — no webhook, so nothing is sent)
@@ -10,13 +10,16 @@ import { credentials, type E2eRole } from '../support/env.js';
 const DOWN = `alert-down-${randomUUID().slice(0, 6)}`;
 const snapshot = { agentVersion: '0.4.0', hostname: 'alert-host', platform: 'linux', arch: 'x64', uptimeSeconds: 60, cpuCount: 1, loadAverage: [0, 0, 0], memory: { totalBytes: 1024, freeBytes: 512 } };
 
+let downId = '';
 test.beforeAll(async () => {
   await inRunSchema(async (q) => {
     // Engine on via settings (ADR-022), short cycle; delivery stays off (no Slack in tests).
     await q('UPDATE alert_settings SET engine_enabled = true, interval_seconds = 10, revision = revision + 1 WHERE id = 1');
     const id = (await q('INSERT INTO servers (name) VALUES ($1) RETURNING id', [DOWN])).rows[0]?.id as string;
     await q("INSERT INTO server_heartbeats (server_id, received_at, snapshot) VALUES ($1, now() - interval '10 minutes', $2::jsonb)", [id, JSON.stringify(snapshot)]);
+    downId = id;
   });
+  await grantAccess(credentials('operator').email, downId); // ADR-028: server incidents of granted servers only
 });
 
 // Leave the run schema as other specs expect it (they assert an empty server list); incidents cascade.

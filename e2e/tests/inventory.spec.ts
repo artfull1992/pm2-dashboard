@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, type Page, test } from '@playwright/test';
 import { startAgent } from '../support/agent.js';
-import { inRunSchema } from '../support/db.js';
+import { grantAccess, inRunSchema } from '../support/db.js';
 import { credentials, type E2eRole } from '../support/env.js';
 
 // Task 008 E2E: real backend + frontend + compiled Agent reading a SYNTHETIC, isolated exporter snapshot.
@@ -33,7 +33,7 @@ function writeSnapshot(file: string, body: Record<string, unknown>) {
 test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps the last data, labelled', async ({ page, browser }) => {
   test.setTimeout(150_000);
   await login(page, 'admin');
-  await page.getByRole('link', { name: 'Сервери' }).click();
+  await page.getByRole('link', { name: 'Сервери', exact: true }).click();
   await page.getByRole('button', { name: 'Додати сервер' }).click();
   const createDialog = page.getByRole('dialog', { name: 'Новий сервер' });
   await createDialog.getByLabel('Назва нового сервера').fill('e2e-pm2');
@@ -88,6 +88,8 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
     await expect(page.getByText('Онлайн', { exact: true })).toBeVisible();
 
     // Viewer reads the same inventory (monitoring:read).
+    // ADR-028: the viewer reads it once the server is granted.
+    await grantAccess(credentials('viewer').email, serverId);
     const viewerContext = await browser.newContext();
     const viewer = await viewerContext.newPage();
     await login(viewer, 'viewer');

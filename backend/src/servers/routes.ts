@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { type AuthState } from '../auth/plugin.js';
 import { BusyError, createLimiter, type Limiter } from '../auth/password.js';
+import { requestScope } from '../auth/scope.js';
 import { agentTokenDigest, newAgentToken } from '../auth/tokens.js';
 import { describeError, PublicHttpError } from '../errors.js';
 import { type IncomingSnapshot, normalizeSnapshot, snapshotProblem, snapshotSchema, snapshotViewSchema } from './snapshot.js';
@@ -66,7 +67,8 @@ export function registerServerRoutes(app: FastifyInstance, options: ServerRoutes
     },
   }, async (request) => {
     const { limit, afterId } = request.query as { limit: number; afterId?: string };
-    const page = await guarded(request.log, 'Server list', () => store.list({ limit, afterId: afterId ?? null }));
+    const scope = requestScope(request.auth);
+    const page = await guarded(request.log, 'Server list', () => store.list({ limit, afterId: afterId ?? null, scope }));
     return { ...page, onlineWindowSeconds: ONLINE_WINDOW_SECONDS };
   });
 
@@ -75,7 +77,9 @@ export function registerServerRoutes(app: FastifyInstance, options: ServerRoutes
     schema: { params: idParams, response: { 200: detailSchema } },
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const server = await guarded(request.log, 'Server lookup', () => store.get(id));
+    const scope = requestScope(request.auth);
+    // Missing and not granted look the same (ADR-028: 404 does not disclose existence).
+    const server = await guarded(request.log, 'Server lookup', () => store.get(id, scope));
     if (!server) throw new PublicHttpError(404, 'Server not found');
     return server;
   });

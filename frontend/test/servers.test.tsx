@@ -47,7 +47,8 @@ describe('servers list', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('Спробуйте через 20 с.');
     fail = false;
     await userEvent.setup().click(screen.getByRole('button', { name: 'Спробувати ще раз' }));
-    expect(await screen.findByRole('heading', { name: 'Ще немає підключених серверів' })).toBeTruthy();
+    // Operator: scoped visibility (ADR-028) — an empty list means no granted servers, said explicitly.
+    expect(await screen.findByRole('heading', { name: 'Немає наданих серверів' })).toBeTruthy();
   });
 
   it('401 from the list clears the session; 403 shows forbidden', async () => {

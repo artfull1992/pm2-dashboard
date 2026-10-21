@@ -49,8 +49,12 @@ export class FakeInventoryStore implements InventoryStore {
     }));
   }
 
-  listApplications({ limit, cursor, serverId, status, q = null, context = null }: { limit: number; cursor: ApplicationCursor | null; serverId: string | null; status: ProcessStatus | null; q?: string | null; context?: string | null }) {
+  /** Scope each read was asked for (ADR-028: null = admin/global, else the user id). */
+  scopes: (string | null | undefined)[] = [];
+
+  listApplications({ limit, cursor, serverId, status, q = null, context = null, scope }: { limit: number; cursor: ApplicationCursor | null; serverId: string | null; status: ProcessStatus | null; q?: string | null; context?: string | null; scope?: string | null }) {
     if (this.failing) return Promise.reject(new Error('synthetic'));
+    this.scopes.push(scope);
     const all = [...this.rows.entries()].flatMap(([id, row]) => this.items(id, row))
       .filter((a) => (serverId === null || a.serverId === serverId) && (status === null || a.status === status) && (q === null || a.name.toLowerCase().includes(q.toLowerCase())))
       .sort((a, b) => a.name.localeCompare(b.name) || a.serverId.localeCompare(b.serverId) || a.pmId - b.pmId)
@@ -60,8 +64,9 @@ export class FakeInventoryStore implements InventoryStore {
     return Promise.resolve({ items, nextCursor: all.length > limit && last ? encodeCursor({ name: last.name, serverId: last.serverId, pmId: last.pmId, context }) : null });
   }
 
-  serverApplications(serverId: string) {
+  serverApplications(serverId: string, scope?: string | null) {
     if (this.failing) return Promise.reject(new Error('synthetic'));
+    this.scopes.push(scope);
     if (!this.servers.servers.some((s) => s.id === serverId)) return Promise.resolve(null);
     const row = this.rows.get(serverId);
     const inventory: InventoryInfo = row

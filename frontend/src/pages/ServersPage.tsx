@@ -121,8 +121,8 @@ export function ServersPage() {
         <ErrorState title="Не вдалося оновити список" onRetry={reload}>{`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}`}</ErrorState>
       ) : null}
       {data && data.items.length === 0 ? (
-        <EmptyState title="Ще немає підключених серверів">
-          {manage ? 'Додайте сервер і видайте йому ключ агента.' : 'Сервери з’являться тут після підключення агента.'}
+        <EmptyState title={manage ? 'Ще немає підключених серверів' : 'Немає наданих серверів'}>
+          {manage ? 'Додайте сервер і видайте йому ключ агента.' : 'Ви бачите лише сервери, до яких адміністратор надав доступ («Користувачі» → «Доступи»). Доступів ще немає.'}
         </EmptyState>
       ) : null}
       {data && data.items.length > 0 ? (

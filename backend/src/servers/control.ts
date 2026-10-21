@@ -26,7 +26,10 @@ export const MAX_ATTEMPTS = 3;
 export const TARGET_FRESH_SECONDS = 60;
 export const POLL_INTERVAL_ENABLED_SECONDS = 10;
 export const POLL_INTERVAL_DISABLED_SECONDS = 60;
-export const POLL_BODY_LIMIT = 32 * 1024;
+/** Version 2 reports every process of the PM2 owner (auto broker, ADR-028): up to the inventory bound. */
+export const MAX_TARGETS_V1 = 50;
+export const MAX_TARGETS_V2 = 500;
+export const POLL_BODY_LIMIT = 256 * 1024;
 export const RESULT_BODY_LIMIT = 4 * 1024;
 
 const TARGET_KEY_PATTERN = '^[a-z0-9][a-z0-9._-]{0,63}$';
@@ -48,25 +51,57 @@ export const targetSchema = {
   },
 } as const;
 
-export interface ControlTarget { targetKey: string; name: string; pmId: number | null; actions: ControlAction[]; matchStatus: MatchStatus }
+/** Identity of the process definition the target refers to (auto broker; 16 hex of the definition digest). */
+export const IDENTITY_PATTERN = '^[0-9a-f]{16}$';
+
+export interface ControlTarget {
+  targetKey: string; name: string; pmId: number | null; actions: ControlAction[]; matchStatus: MatchStatus;
+  /** Version 2 only: definition identity (null when the target does not match exactly one process). */
+  identity?: string | null;
+}
+
+export type BrokerMode = 'allowlist' | 'auto';
 
 export interface PollReport {
-  version: 1;
+  version: 1 | 2;
+  /** Version 2 only. */
+  mode?: BrokerMode | null;
   broker: 'ok' | 'unavailable';
   daemon: 'ok' | 'unavailable' | null;
   allowlist: 'ok' | 'invalid' | null;
   targets: ControlTarget[];
+  /** Version 2 only. */
+  total?: number;
 }
 
+const pollCommon = {
+  broker: { type: 'string', enum: ['ok', 'unavailable'] },
+  daemon: { type: ['string', 'null'], enum: ['ok', 'unavailable', null] },
+  allowlist: { type: ['string', 'null'], enum: ['ok', 'invalid', null] },
+} as const;
+
+export const targetSchemaV2 = {
+  type: 'object', additionalProperties: false, required: ['targetKey', 'name', 'pmId', 'actions', 'matchStatus', 'identity'],
+  properties: { ...targetSchema.properties, identity: { type: ['string', 'null'], pattern: IDENTITY_PATTERN } },
+} as const;
+
+/** Version 1 (allowlist broker, ≤ 50 targets) or version 2 (ADR-028: mode, identity, ≤ 500 targets). */
 export const pollSchema = {
-  type: 'object', additionalProperties: false, required: ['version', 'broker', 'daemon', 'allowlist', 'targets'],
-  properties: {
-    version: { type: 'integer', enum: [1] },
-    broker: { type: 'string', enum: ['ok', 'unavailable'] },
-    daemon: { type: ['string', 'null'], enum: ['ok', 'unavailable', null] },
-    allowlist: { type: ['string', 'null'], enum: ['ok', 'invalid', null] },
-    targets: { type: 'array', maxItems: 50, items: targetSchema },
-  },
+  anyOf: [
+    {
+      type: 'object', additionalProperties: false, required: ['version', 'broker', 'daemon', 'allowlist', 'targets'],
+      properties: { version: { type: 'integer', enum: [1] }, ...pollCommon, targets: { type: 'array', maxItems: MAX_TARGETS_V1, items: targetSchema } },
+    },
+    {
+      type: 'object', additionalProperties: false, required: ['version', 'mode', 'broker', 'daemon', 'allowlist', 'targets'],
+      properties: {
+        version: { type: 'integer', enum: [2] }, mode: { type: ['string', 'null'], enum: ['allowlist', 'auto', null] }, ...pollCommon,
+        targets: { type: 'array', maxItems: MAX_TARGETS_V2, items: targetSchemaV2 },
+        // Targets the broker knows; more than reported = cut at MAX_TARGETS_V2 (shown in the UI, never silent).
+        total: { type: 'integer', minimum: 0, maximum: 100_000 },
+      },
+    },
+  ],
 } as const;
 
 export interface ResultReport {
@@ -97,6 +132,9 @@ export function pollProblem(r: PollReport): string | null {
   if (new Set(r.targets.map((t) => t.targetKey)).size !== r.targets.length) return 'duplicate target';
   if (r.targets.some((t) => (t.matchStatus === 'ok') !== (t.pmId !== null))) return 'pmId/matchStatus';
   if (r.broker === 'unavailable' && r.targets.length > 0) return 'targets without broker';
+  // Auto broker: a matched target always carries the identity of its process definition, an unmatched one never.
+  if (r.version === 2 && r.total !== undefined && r.total < r.targets.length) return 'total';
+  if (r.version === 2 && r.mode === 'auto' && r.targets.some((t) => (t.matchStatus === 'ok') !== (typeof t.identity === 'string'))) return 'identity/matchStatus';
   return null;
 }
 
@@ -114,7 +152,7 @@ export const commandBodySchema = {
 } as const;
 
 export const commandViewProperties = {
-  id: { type: 'string' }, serverId: { type: 'string' }, targetKey: { type: 'string' }, action: { type: 'string', enum: CONTROL_ACTIONS },
+  id: { type: 'string' }, serverId: { type: 'string' }, targetKey: { type: 'string' }, serviceName: { type: ['string', 'null'] }, action: { type: 'string', enum: CONTROL_ACTIONS },
   status: { type: 'string', enum: COMMAND_STATUSES }, reason: { type: ['string', 'null'] }, requestedBy: { type: 'string' },
   requestedAt: { type: 'string' }, deadlineAt: { type: 'string' }, dispatchedAt: { type: ['string', 'null'] },
   completedAt: { type: ['string', 'null'] }, attempts: { type: 'integer' }, before: snapshotSchema, after: snapshotSchema,
@@ -122,7 +160,7 @@ export const commandViewProperties = {
 export const commandViewSchema = { type: 'object', additionalProperties: false, required: Object.keys(commandViewProperties), properties: commandViewProperties } as const;
 
 export interface CommandView {
-  id: string; serverId: string; targetKey: string; action: ControlAction; status: CommandStatus; reason: string | null;
+  id: string; serverId: string; targetKey: string; serviceName: string | null; action: ControlAction; status: CommandStatus; reason: string | null;
   requestedBy: string; requestedAt: string; deadlineAt: string; dispatchedAt: string | null; completedAt: string | null;
   attempts: number; before: { status: string } | null; after: { status: string } | null;
 }

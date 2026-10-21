@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { BusyError, createLimiter, type Limiter } from '../auth/password.js';
+import { requestScope } from '../auth/scope.js';
 import { describeError, PublicHttpError } from '../errors.js';
 import { cursorContext, decodeCursor, INVENTORY_BODY_LIMIT, INVENTORY_FRESH_SECONDS, INVENTORY_INTERVAL_SECONDS, inventoryReportSchema, normalizeSearch, PROCESS_STATUSES, type ProcessStatus, type SchemaValidReport, toInventoryReport } from './inventory.js';
 import type { InventoryStore } from './inventory-store.js';
@@ -69,7 +70,7 @@ export function registerInventoryRoutes(app: FastifyInstance, options: Inventory
     if (cursor?.context && cursor.context !== context) throw new PublicHttpError(400, 'Invalid cursor');
     if (cursor && !cursor.context && filter.q !== null) throw new PublicHttpError(400, 'Invalid cursor');
     try {
-      const page = await store.listApplications({ limit: q.limit, cursor, ...filter, context });
+      const page = await store.listApplications({ limit: q.limit, cursor, ...filter, context, scope: requestScope(request.auth) });
       return { ...page, freshWindowSeconds: INVENTORY_FRESH_SECONDS };
     } catch (error) {
       request.log.error({ error: describeError(error) }, 'Application list failed');
@@ -101,9 +102,10 @@ export function registerInventoryRoutes(app: FastifyInstance, options: Inventory
     },
   }, async (request) => {
     const { id } = request.params as { id: string };
+    const scope = requestScope(request.auth);
     let result;
     try {
-      result = await store.serverApplications(id);
+      result = await store.serverApplications(id, scope);
     } catch (error) {
       request.log.error({ error: describeError(error) }, 'Server applications lookup failed');
       throw unavailable();

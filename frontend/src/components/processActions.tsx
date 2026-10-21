@@ -10,6 +10,9 @@ import { formatRetry } from './StatusMessage';
 // confirmation and the command lifecycle. Every operation is addressed by serverId + a broker-confirmed targetKey,
 // never by the visible name or PM2 id alone. A control POST is never retried automatically; "accepted" is not "done".
 
+/** Target keys of an auto broker (ADR-028) are derived from the name — technical, not shown to people. */
+const AUTO_KEY_RE = /^n-[0-9a-f]{24}$/;
+
 export const ACTION_LABELS: Record<ControlAction, string> = { start: 'Запустити', stop: 'Зупинити', restart: 'Перезапустити' };
 const ACTION_VERBS: Record<ControlAction, string> = { start: 'запуск', stop: 'зупинку', restart: 'перезапуск' };
 
@@ -258,7 +261,7 @@ export function useProcessCommands({ onChanged, verify }: {
         </>
       )}
     >
-      <p>{`Підтвердьте ${ACTION_VERBS[confirm.action]} процесу «${confirm.target.name}» (${confirm.target.targetKey}) на сервері «${confirm.serverName}».`}</p>
+      <p>{`Підтвердьте ${ACTION_VERBS[confirm.action]} процесу «${confirm.target.name}»${AUTO_KEY_RE.test(confirm.target.targetKey) ? '' : ` (${confirm.target.targetKey})`} на сервері «${confirm.serverName}».`}</p>
       {confirm.action !== 'start' ? <p className="hint">Застосунок буде недоступний, доки процес не запуститься знову.</p> : null}
       {error ? <p className="field__error" role="alert">{error}</p> : null}
     </Dialog>
@@ -277,7 +280,7 @@ export function CommandStatusList({ tracked, showServer }: { tracked: TrackedCom
     <div className="command-status">
       {tracked.map((t, i) => (
         <p key={t.command.id} ref={i === 0 ? first : undefined} tabIndex={-1} className={`notice ${t.command.status === 'succeeded' ? '' : 'notice--warning'}`} role="status" aria-live="polite">
-          {`${ACTION_LABELS[t.command.action]} «${t.command.targetKey}»${showServer ? ` на сервері «${t.serverName}»` : ''}: ${commandStatusText(t.command)}`}
+          {`${ACTION_LABELS[t.command.action]} «${t.command.serviceName ?? t.command.targetKey}»${showServer ? ` на сервері «${t.serverName}»` : ''}: ${commandStatusText(t.command)}`}
         </p>
       ))}
     </div>

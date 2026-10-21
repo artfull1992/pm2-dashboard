@@ -58,13 +58,18 @@ async function node(ctx: Ctx, name: string, heartbeat = true) {
   await ctx.servers.issueCredential({ serverId: created.id, tokenHash: agentTokenDigest(token), actorUserId: ctx.adminId, requestId: randomUUID() });
   const tokenHash = agentTokenDigest(token);
   if (heartbeat) await ctx.servers.recordHeartbeat({ tokenHash, snapshot: validSnapshot() });
+  // ADR-028: the operator who requests commands in these tests is granted the whole server.
+  await ctx.sql(`INSERT INTO user_server_access (user_id, server_id, mode) VALUES ($1, $2, 'all')`, [ctx.operatorId, created.id]);
   return { serverId: created.id, tokenHash };
 }
 
 const target = (key = 'api', overrides: Partial<ControlTarget> = {}): ControlTarget => ({ targetKey: key, name: key, pmId: 1, actions: ['start', 'stop', 'restart'], matchStatus: 'ok', ...overrides });
 const report = (targets: ControlTarget[] = [target()]): PollReport => ({ version: 1, broker: 'ok', daemon: 'ok', allowlist: 'ok', targets });
 const create = (ctx: Ctx, serverId: string, over: Partial<{ targetKey: string; action: 'start' | 'stop' | 'restart'; idempotencyKey: string; actorUserId: string }> = {}) =>
-  ctx.control.createCommand({ serverId, targetKey: 'api', action: 'restart', idempotencyKey: randomUUID(), actorUserId: ctx.operatorId, requestId: randomUUID(), ...over });
+  ctx.control.createCommand({
+    serverId, targetKey: 'api', action: 'restart', idempotencyKey: randomUUID(), actorUserId: ctx.operatorId, requestId: randomUUID(), ...over,
+    actorRole: (over.actorUserId ?? ctx.operatorId) === ctx.adminId ? 'admin' : 'operator',
+  });
 const result = (commandId: string, over: Partial<ResultReport> = {}): ResultReport =>
   ({ version: 1, commandId, attempt: 1, outcome: 'succeeded', reason: null, before: { status: 'online' }, after: { status: 'online' }, ...over });
 const events = async (ctx: Ctx, commandId: string) =>
@@ -164,7 +169,7 @@ describe('delivery lifecycle', () => {
     expect(await ctx.control.recordResult({ tokenHash: n.tokenHash, result: result(a) })).toBe('duplicate');
     expect(await ctx.control.recordResult({ tokenHash: n.tokenHash, result: result(a, { outcome: 'failed', reason: 'pm2_error' }) })).toBe('conflict');
     expect(await ctx.control.recordResult({ tokenHash: n.tokenHash, result: result(b) })).toBe('conflict'); // b never dispatched
-    expect(await ctx.control.getCommand(a)).toMatchObject({ status: 'succeeded', attempts: 1, before: { status: 'online' }, after: { status: 'online' } });
+    expect(await ctx.control.getCommand(a, null)).toMatchObject({ status: 'succeeded', attempts: 1, before: { status: 'online' }, after: { status: 'online' } });
     expect(await events(ctx, a)).toEqual(['process.command_requested', 'process.command_dispatched', 'process.command_succeeded']);
     expect(await ctx.control.poll({ tokenHash: n.tokenHash, report: report([target('api'), target('worker')]), controlEnabled: true })).toMatchObject({ commands: [{ id: b }] });
   });
@@ -190,15 +195,16 @@ describe('delivery lifecycle', () => {
     const a = commandId(await create(ctx, n.serverId));
     await ctx.sql(`UPDATE users SET role = 'viewer' WHERE id = $1`, [ctx.operatorId]);
     expect(await ctx.control.poll({ tokenHash: n.tokenHash, report: report([target('api'), target('worker'), target('db')]), controlEnabled: true })).toEqual({ commands: [] });
-    expect(await ctx.control.getCommand(a)).toMatchObject({ status: 'rejected', reason: 'actor_not_authorized' });
-    await ctx.sql(`UPDATE users SET role = 'operator', is_active = false WHERE id = $1`, [ctx.operatorId]);
+    expect(await ctx.control.getCommand(a, null)).toMatchObject({ status: 'rejected', reason: 'actor_not_authorized' });
+    await ctx.sql(`UPDATE users SET role = 'operator' WHERE id = $1`, [ctx.operatorId]);
     const b = commandId(await create(ctx, n.serverId, { targetKey: 'worker' }));
+    await ctx.sql(`UPDATE users SET is_active = false WHERE id = $1`, [ctx.operatorId]);
     await ctx.control.poll({ tokenHash: n.tokenHash, report: report([target('api'), target('worker'), target('db')]), controlEnabled: true });
-    expect(await ctx.control.getCommand(b)).toMatchObject({ status: 'rejected', reason: 'actor_not_authorized' });
+    expect(await ctx.control.getCommand(b, null)).toMatchObject({ status: 'rejected', reason: 'actor_not_authorized' });
     await ctx.sql(`UPDATE users SET is_active = true WHERE id = $1`, [ctx.operatorId]);
     const c = commandId(await create(ctx, n.serverId, { targetKey: 'db' }));
     await ctx.control.poll({ tokenHash: n.tokenHash, report: report([target('api'), target('worker'), target('db', { matchStatus: 'fingerprint_mismatch', pmId: null })]), controlEnabled: true });
-    expect(await ctx.control.getCommand(c)).toMatchObject({ status: 'rejected', reason: 'target_unavailable' });
+    expect(await ctx.control.getCommand(c, null)).toMatchObject({ status: 'rejected', reason: 'target_unavailable' });
     expect(await events(ctx, c)).toEqual(['process.command_requested', 'process.command_rejected']);
   });
 
@@ -209,7 +215,7 @@ describe('delivery lifecycle', () => {
     const q = commandId(await create(ctx, n.serverId, { targetKey: 'worker' }));
     await ctx.sql(`UPDATE control_commands SET requested_at = now() - interval '10 minutes', deadline_at = now() - interval '1 second' WHERE id = $1`, [q]);
     await ctx.control.poll({ tokenHash: n.tokenHash, report: report([target('api'), target('worker')]), controlEnabled: true });
-    expect(await ctx.control.getCommand(q)).toMatchObject({ status: 'expired', reason: 'not_dispatched', attempts: 0 });
+    expect(await ctx.control.getCommand(q, null)).toMatchObject({ status: 'expired', reason: 'not_dispatched', attempts: 0 });
 
     const a = commandId(await create(ctx, n.serverId));
     const tick = () => ctx.control.poll({ tokenHash: n.tokenHash, report: report([target('api'), target('worker')]), controlEnabled: true });
@@ -222,10 +228,10 @@ describe('delivery lifecycle', () => {
     expect(await tick()).toEqual({ commands: [] }); // no 4th delivery
     await ctx.sql(`UPDATE control_commands SET requested_at = now() - interval '10 minutes', deadline_at = now() - interval '121 seconds' WHERE id = $1`, [a]);
     await tick();
-    expect(await ctx.control.getCommand(a)).toMatchObject({ status: 'unknown', reason: 'no_result' });
+    expect(await ctx.control.getCommand(a, null)).toMatchObject({ status: 'unknown', reason: 'no_result' });
     // The broker journal later yields the real result: it replaces unknown/no_result.
     expect(await ctx.control.recordResult({ tokenHash: n.tokenHash, result: result(a, { attempt: 2 }) })).toBe('recorded');
-    expect(await ctx.control.getCommand(a)).toMatchObject({ status: 'succeeded' });
+    expect(await ctx.control.getCommand(a, null)).toMatchObject({ status: 'succeeded' });
     expect(await events(ctx, a)).toEqual(['process.command_requested', 'process.command_dispatched', 'process.command_dispatched', 'process.command_dispatched', 'process.command_unknown', 'process.command_succeeded']);
   });
 
@@ -238,7 +244,7 @@ describe('delivery lifecycle', () => {
     await ctx.sql(`UPDATE control_commands SET lease_until = now() - interval '1 second' WHERE id = $1`, [a]);
     await ctx.sql(`UPDATE users SET role = 'viewer' WHERE id = $1`, [ctx.operatorId]);
     expect(await ctx.control.poll({ tokenHash: n.tokenHash, report: report(), controlEnabled: true })).toEqual({ commands: [] });
-    expect(await ctx.control.getCommand(a)).toMatchObject({ status: 'dispatched' });
+    expect(await ctx.control.getCommand(a, null)).toMatchObject({ status: 'dispatched' });
   });
 
   it('concurrent polls of one server hand out a command once', async () => {

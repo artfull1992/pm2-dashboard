@@ -23,7 +23,9 @@ export const LOG_LIMITS = Object.freeze({
   maxWaitersPerRequest: 2,
   maxWaitersPerActor: 3,
   maxWaiters: 100,
-  pollBodyBytes: 32 * 1024,
+  pollBodyBytes: 256 * 1024,
+  maxTargetsV1: 50,
+  maxTargetsV2: 500,
   resultBodyBytes: 40 * 1024,
 });
 
@@ -41,7 +43,14 @@ const ISO_PATTERN = '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$';
 export interface LogStream { state: (typeof STREAM_STATES)[number]; text: string; lines: number; truncated: boolean; sizeBytes: number | null; modifiedAt: string | null }
 export interface LogTarget { targetKey: string; name: string; pmId: number | null; matchStatus: (typeof MATCH)[number] }
 export interface LogResult { outcome: 'ok' | 'rejected' | 'failed'; reason: string | null; readAt: string; stdout: LogStream | null; stderr: LogStream | null }
-export interface AgentLogReport { version: 1; broker: 'ok' | 'unavailable' | 'unsupported'; daemon: 'ok' | 'unavailable' | null; allowlist: 'ok' | 'invalid' | null; targets: LogTarget[] }
+export interface AgentLogReport {
+  version: 1 | 2;
+  /** Version 2 only (ADR-028): 'auto' = every process of the PM2 owner, no allowlist. */
+  mode?: 'allowlist' | 'auto' | null;
+  broker: 'ok' | 'unavailable' | 'unsupported'; daemon: 'ok' | 'unavailable' | null; allowlist: 'ok' | 'invalid' | null; targets: LogTarget[];
+  /** Version 2 only: log targets the broker knows (more than listed = cut). */
+  total?: number;
+}
 
 export const logStreamSchema = {
   anyOf: [{ type: 'null' }, {
@@ -62,13 +71,26 @@ export const logTargetSchema = {
   },
 } as const;
 
+const pollCommon = {
+  broker: { type: 'string', enum: ['ok', 'unavailable', 'unsupported'] },
+  daemon: { type: ['string', 'null'], enum: ['ok', 'unavailable', null] }, allowlist: { type: ['string', 'null'], enum: ['ok', 'invalid', null] },
+} as const;
+/** Version 1 (allowlist, ≤ 50 targets) or version 2 (mode, ≤ 500 targets — every process of the PM2 owner). */
 export const agentPollSchema = {
-  type: 'object', additionalProperties: false, required: ['version', 'broker', 'daemon', 'allowlist', 'targets'],
-  properties: {
-    version: { type: 'integer', enum: [1] }, broker: { type: 'string', enum: ['ok', 'unavailable', 'unsupported'] },
-    daemon: { type: ['string', 'null'], enum: ['ok', 'unavailable', null] }, allowlist: { type: ['string', 'null'], enum: ['ok', 'invalid', null] },
-    targets: { type: 'array', maxItems: 50, items: logTargetSchema },
-  },
+  anyOf: [
+    {
+      type: 'object', additionalProperties: false, required: ['version', 'broker', 'daemon', 'allowlist', 'targets'],
+      properties: { version: { type: 'integer', enum: [1] }, ...pollCommon, targets: { type: 'array', maxItems: LOG_LIMITS.maxTargetsV1, items: logTargetSchema } },
+    },
+    {
+      type: 'object', additionalProperties: false, required: ['version', 'mode', 'broker', 'daemon', 'allowlist', 'targets'],
+      properties: {
+        version: { type: 'integer', enum: [2] }, mode: { type: ['string', 'null'], enum: ['allowlist', 'auto', null] }, ...pollCommon,
+        targets: { type: 'array', maxItems: LOG_LIMITS.maxTargetsV2, items: logTargetSchema },
+        total: { type: 'integer', minimum: 0, maximum: 100_000 },
+      },
+    },
+  ],
 } as const;
 
 export const agentResultSchema = {
@@ -89,7 +111,7 @@ export function resultProblem(r: LogResult): string | null {
 }
 
 export type ViewStatus = 'pending' | 'done' | 'expired';
-export interface RequestView { requestId: string; serverId: string; targetKey: string; status: ViewStatus; deadlineAt: string; result: LogResult | null }
+export interface RequestView { requestId: string; serverId: string; targetKey: string; serviceName: string; status: ViewStatus; deadlineAt: string; result: LogResult | null }
 export interface Delivered { requestId: string; targetKey: string; lines: number; deadlineAt: string }
 /** null: unknown or not the requester's (no detail); limit_*: refused before any waiter/timer was created. */
 export type GetOutcome = RequestView | null | 'limit_request' | 'limit_actor' | 'limit_global';
@@ -98,7 +120,7 @@ export type CreateOutcome =
   | 'not_connected' | 'unsupported' | 'broker_unavailable' | 'target_not_allowed' | 'rate_limited' | 'busy';
 
 interface Entry {
-  id: string; serverId: string; targetKey: string; actorUserId: string; lines: number;
+  id: string; serverId: string; targetKey: string; serviceName: string; actorUserId: string; lines: number;
   deadline: number; state: 'pending' | 'delivered' | 'done' | 'expired'; result: LogResult | null; finishedAt: number | null;
   waiters: Set<() => void>;
 }
@@ -142,15 +164,17 @@ export class LogHub {
     if (!a || this.now() - a.seenAt > LOG_LIMITS.agentSeenMs) return { state: 'not_connected', reportedAt: a ? new Date(a.seenAt).toISOString() : null, targets: [] };
     const reportedAt = new Date(a.seenAt).toISOString();
     if (a.report.broker === 'unsupported') return { state: 'unsupported', reportedAt, targets: [] };
-    if (a.report.broker !== 'ok' || a.report.allowlist !== 'ok') return { state: 'broker_unavailable', reportedAt, targets: [] };
+    // An auto broker (version 2) has no allowlist at all; an allowlist broker needs a valid one.
+    if (a.report.broker !== 'ok' || (a.report.allowlist !== 'ok' && a.report.mode !== 'auto')) return { state: 'broker_unavailable', reportedAt, targets: [] };
     return { state: 'supported', reportedAt, targets: a.report.targets };
   }
 
-  create(input: { serverId: string; targetKey: string; actorUserId: string; lines: number }): CreateOutcome {
+  /** `serviceName`: the service the caller authorised (ADR-028); it must still be the reported name of the target. */
+  create(input: { serverId: string; targetKey: string; serviceName: string; actorUserId: string; lines: number }): CreateOutcome {
     this.cleanup();
     const st = this.status(input.serverId);
     if (st.state !== 'supported') return st.state;
-    if (!st.targets.some((t) => t.targetKey === input.targetKey && t.matchStatus === 'ok')) return 'target_not_allowed';
+    if (!st.targets.some((t) => t.targetKey === input.targetKey && t.name === input.serviceName && t.matchStatus === 'ok')) return 'target_not_allowed';
     const now = this.now();
     const hits = (this.rate.get(input.actorUserId) ?? []).filter((t) => now - t < 60_000);
     if (hits.length >= LOG_LIMITS.ratePerActorPerMinute) return 'rate_limited';
@@ -159,7 +183,7 @@ export class LogHub {
     hits.push(now);
     this.rate.set(input.actorUserId, hits);
     const entry: Entry = {
-      id: randomUUID(), serverId: input.serverId, targetKey: input.targetKey, actorUserId: input.actorUserId, lines: input.lines,
+      id: randomUUID(), serverId: input.serverId, targetKey: input.targetKey, serviceName: input.serviceName, actorUserId: input.actorUserId, lines: input.lines,
       deadline: now + LOG_LIMITS.requestDeadlineMs, state: 'pending', result: null, finishedAt: null, waiters: new Set(),
     };
     this.requests.set(entry.id, entry);
@@ -189,6 +213,12 @@ export class LogHub {
       state.waiter = { resolve, timer };
       onClose(() => { if (state.waiter?.resolve === resolve) this.release(state, []); });
     });
+  }
+
+  /** The requester's own request (server + service), without waiting — for the access re-check before a read. */
+  peek(requestId: string, actorUserId: string): { serverId: string; serviceName: string } | null {
+    const e = this.requests.get(requestId);
+    return e && e.actorUserId === actorUserId ? { serverId: e.serverId, serviceName: e.serviceName } : null;
   }
 
   agentResult(serverId: string, requestId: string, result: LogResult): 'recorded' | 'not_found' | 'conflict' {
@@ -266,7 +296,7 @@ export class LogHub {
 
   private view(e: Entry): RequestView {
     const status: ViewStatus = e.state === 'done' ? 'done' : e.state === 'expired' ? 'expired' : 'pending';
-    return { requestId: e.id, serverId: e.serverId, targetKey: e.targetKey, status, deadlineAt: new Date(e.deadline).toISOString(), result: e.state === 'done' ? e.result : null };
+    return { requestId: e.id, serverId: e.serverId, targetKey: e.targetKey, serviceName: e.serviceName, status, deadlineAt: new Date(e.deadline).toISOString(), result: e.state === 'done' ? e.result : null };
   }
 
   /** Expires overdue requests, drops finished ones after the TTL and prunes the throttling maps. */

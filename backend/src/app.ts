@@ -9,6 +9,9 @@ import type { Limiter } from './auth/password.js';
 import type { RateLimiter } from './auth/rate-limit.js';
 import { registerAuth } from './auth/plugin.js';
 import { type AuthStore, createPgAuthStore } from './auth/store.js';
+import { registerAccessRoutes } from './auth/access-routes.js';
+import { type AccessStore, createPgAccessStore } from './auth/access-store.js';
+import { type AccessChecker, createAccessChecker } from './auth/scope.js';
 import { registerUserRoutes } from './auth/users-routes.js';
 import { createPgUserStore, type UserStore } from './auth/users-store.js';
 import { createPgControlStore, type ControlStore } from './servers/control-store.js';
@@ -84,6 +87,9 @@ export interface BuildAppOptions {
     createUserStore?: (database: Database) => UserStore;
     /** Test seam: user administration rate limit per actor. */
     userAdminLimiter?: RateLimiter;
+    /** Test seams for resource grants (ADR-028): their administration and the checker used by the log routes. */
+    createAccessStore?: (database: Database) => AccessStore;
+    accessChecker?: AccessChecker;
     extra?: Omit<Parameters<typeof registerAuth>[1], 'config' | 'store'>;
   };
 }
@@ -182,6 +188,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       ...(options.auth.extra?.hashLimiter ? { hashLimiter: options.auth.extra.hashLimiter } : {}),
       ...(options.auth.userAdminLimiter ? { limiter: options.auth.userAdminLimiter } : {}),
     });
+    registerAccessRoutes(app, {
+      store: (options.auth.createAccessStore ?? createPgAccessStore)(database),
+      ...(options.auth.userAdminLimiter ? { limiter: options.auth.userAdminLimiter } : {}),
+    });
     registerServerRoutes(app, { store: serverStore, ...(options.auth.heartbeatLimiter ? { heartbeatLimiter: options.auth.heartbeatLimiter } : {}) });
     const inventoryStore = (options.auth.createInventoryStore ?? createPgInventoryStore)(database);
     registerInventoryRoutes(app, { store: inventoryStore, ...(options.auth.inventoryLimiter ? { inventoryLimiter: options.auth.inventoryLimiter } : {}) });
@@ -225,7 +235,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     });
     registerLogRoutes(app, {
       hub: options.auth.logHub ?? new LogHub(),
-      serverExists: async (id) => (await serverStore.get(id)) !== null,
+      access: options.auth.accessChecker ?? createAccessChecker(database),
       audit: (entry, context) => store.recordAudit(entry, context),
     });
   }

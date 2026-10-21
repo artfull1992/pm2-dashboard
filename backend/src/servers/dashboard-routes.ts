@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { AUTH_MESSAGES } from '../auth/plugin.js';
 import { hasPermission } from '../auth/rbac.js';
+import { scopeOf } from '../auth/scope.js';
 import { describeError, PublicHttpError } from '../errors.js';
 import type { DashboardStore } from './dashboard-store.js';
 
@@ -45,7 +46,7 @@ export const dashboardResponseSchema = obj({
     items: {
       type: 'array',
       items: obj({
-        id: { type: 'string' }, serverId: { type: 'string' }, serverName: { type: 'string' }, targetKey: { type: 'string' },
+        id: { type: 'string' }, serverId: { type: 'string' }, serverName: { type: 'string' }, targetKey: { type: 'string' }, serviceName: nullableString,
         action: { type: 'string' }, status: { type: 'string' }, reason: nullableString, requestedAt: { type: 'string' },
         completedAt: nullableString, requestedByMe: { type: 'boolean' }, overdue: { type: 'boolean' },
       }),
@@ -62,7 +63,7 @@ export function registerDashboardRoutes(app: FastifyInstance, options: { store: 
     const auth = request.auth;
     if (!auth) throw new PublicHttpError(401, AUTH_MESSAGES.unauthenticated);
     try {
-      return await options.store.dashboard({ actionsFor: hasPermission(auth.role, 'processes:control') ? auth.userId : null });
+      return await options.store.dashboard({ actionsFor: hasPermission(auth.role, 'processes:control') ? auth.userId : null, scope: scopeOf(auth) });
     } catch (error) {
       request.log.error({ error: describeError(error) }, 'Dashboard query failed');
       throw new PublicHttpError(503, AUTH_MESSAGES.unavailable, { 'retry-after': '5' });

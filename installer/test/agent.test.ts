@@ -170,17 +170,72 @@ describe('agent installer: PM2 inventory and control (explicit)', () => {
     expect(order.some((c) => c.includes('/home/deploy'))).toBe(false);
   });
 
-  it('control: broker config, EMPTY root-owned allowlist, broker service, Agent socket + group; nothing allowed yet', async () => {
+  it('control (new broker): auto mode — no allowlist, no fingerprint step; broker service, Agent socket + group', async () => {
     const h = host();
     const r = await run(h, ['apply', ...BASE, ...PM2, '--enable-control']);
     expect(r.code).toBe(0);
-    expect(h.text('/etc/node-control-pm2-broker/deploy.allowlist.json')).toBe('{"version":1,"targets":[]}\n');
-    expect(h.stat('/etc/node-control-pm2-broker/deploy.allowlist.json')).toMatchObject({ mode: 0o644, uid: 0, gid: 0 });
+    expect(h.text('/etc/node-control-pm2-broker/deploy.env')).toBe('NC_PM2_HOME=/home/deploy/.pm2\nNC_BROKER_MODE=auto\n');
+    expect(h.stat('/etc/node-control-pm2-broker/deploy.env')).toMatchObject({ mode: 0o644, uid: 0, gid: 0 });
+    expect(h.stat('/etc/node-control-pm2-broker/deploy.allowlist.json')).toBeNull();
     expect(h.units.get('node-control-pm2-broker@deploy.service')).toEqual({ enabled: true, active: true });
     expect(h.groupsOf(AGENT.user)).toContain(AGENT.controlGroup);
     expect(h.text(AGENT.config)).toMatch(/^NC_AGENT_CONTROL_SOCKET=\/run\/node-control-pm2-broker\/broker\.sock$/m);
-    expect(r.all).toMatch(/Керування й логи ще ВИМКНЕНІ: allowlist порожній/);
+    expect(r.all).toMatch(/Керування й логи готові \(broker у режимі auto\)/);
+    expect(r.all).not.toMatch(/fingerprint/);
     expect(pm2Commands(h)).toEqual([]);
+  });
+
+  it('control --control-mode allowlist: EMPTY root-owned allowlist; nothing allowed until the operator fills it in', async () => {
+    const h = host();
+    const r = await run(h, ['apply', ...BASE, ...PM2, '--enable-control', '--control-mode', 'allowlist']);
+    expect(r.code).toBe(0);
+    expect(h.text('/etc/node-control-pm2-broker/deploy.env')).toBe('NC_PM2_HOME=/home/deploy/.pm2\nNC_BROKER_ALLOWLIST=/etc/node-control-pm2-broker/deploy.allowlist.json\n');
+    expect(h.text('/etc/node-control-pm2-broker/deploy.allowlist.json')).toBe('{"version":1,"targets":[]}\n');
+    expect(h.stat('/etc/node-control-pm2-broker/deploy.allowlist.json')).toMatchObject({ mode: 0o644, uid: 0, gid: 0 });
+    expect(r.all).toMatch(/Broker у режимі allowlist/);
+  });
+
+  it('transition (ADR-028): an installed allowlist broker is switched only explicitly, with a backup; the allowlist stays; and back', async () => {
+    const h = host();
+    expect((await run(h, ['apply', ...BASE, ...PM2, '--enable-control', '--control-mode', 'allowlist'])).code).toBe(0);
+    const allowlist = '{"version":1,"targets":[{"id":"api-prod","name":"api","actions":["restart"],"fingerprint":"sha256:x"}]}\n';
+    h.file('/etc/node-control-pm2-broker/deploy.allowlist.json', allowlist);
+    const before = h.text('/etc/node-control-pm2-broker/deploy.env');
+    // Re-running without --control-mode never switches (no silent rewrite).
+    h.changes = [];
+    expect((await run(h, ['apply', ...BASE, ...PM2, '--enable-control'])).code).toBe(0);
+    expect(h.text('/etc/node-control-pm2-broker/deploy.env')).toBe(before);
+    expect(h.changes.some((c) => c.includes('/etc/node-control-pm2-broker/'))).toBe(false);
+    // Explicit switch: backup first, NC_BROKER_MODE=auto appended, broker restarted; no key rotation, no reinstall.
+    h.changes = [];
+    const plan = await run(h, ['plan', ...BASE, ...PM2, '--enable-control', '--control-mode', 'auto']);
+    expect(plan.all).toMatch(/перемкнути режим allowlist → auto/);
+    expect(h.changes).toEqual([]);
+    const sw = await run(h, ['apply', ...BASE, ...PM2, '--enable-control', '--control-mode', 'auto']);
+    expect(sw.code).toBe(0);
+    expect(h.text('/etc/node-control-pm2-broker/deploy.env')).toBe(`${before}NC_BROKER_MODE=auto\n`);
+    const backups = h.changes.filter((c) => c.startsWith('write /etc/node-control-pm2-broker/deploy.env.bak-'));
+    expect(backups).toHaveLength(1);
+    expect(h.changes).toContain('systemctl restart node-control-pm2-broker@deploy.service');
+    expect(h.text('/etc/node-control-pm2-broker/deploy.allowlist.json')).toBe(allowlist);
+    expect(h.changes.some((c) => c.includes('agent.env') && c.startsWith('write'))).toBe(false);
+    // And back to allowlist (rollback of the Agent side): the line is replaced, nothing else changes.
+    expect((await run(h, ['apply', ...BASE, ...PM2, '--enable-control', '--control-mode', 'allowlist'])).code).toBe(0);
+    expect(h.text('/etc/node-control-pm2-broker/deploy.env')).toBe(`${before}NC_BROKER_MODE=allowlist\n`);
+    expect(h.text('/etc/node-control-pm2-broker/deploy.allowlist.json')).toBe(allowlist);
+    expect(pm2Commands(h)).toEqual([]);
+  });
+
+  it('a broker config of another PM2_HOME is a conflict (kept); --control-mode needs --enable-control', async () => {
+    const h = host();
+    h.dir('/etc/node-control-pm2-broker');
+    h.file('/etc/node-control-pm2-broker/deploy.env', 'NC_PM2_HOME=/srv/pm2\n', 0o644, 0, 0);
+    const r = await run(h, ['apply', ...BASE, ...PM2, '--enable-control', '--control-mode', 'auto']);
+    expect(r.code).toBe(1);
+    expect(r.all).toMatch(/вказує інший PM2_HOME/);
+    expect(h.text('/etc/node-control-pm2-broker/deploy.env')).toBe('NC_PM2_HOME=/srv/pm2\n');
+    expect((await run(host(), ['apply', ...BASE, ...PM2, '--control-mode', 'auto'])).code).toBe(2);
+    expect((await run(host(), ['apply', ...BASE, ...PM2, '--enable-control', '--control-mode', 'open'])).code).toBe(2);
   });
 
   it('an existing allowlist with targets is never touched; inventory added to an existing install only appends keys', async () => {

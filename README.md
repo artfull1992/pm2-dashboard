@@ -222,6 +222,15 @@ Frontend flow: при старті `GET /api/auth/me` (401 → сторінка 
 
 Джерело — `backend/src/auth/rbac.ts`; `processes:control` і `logs:read` незалежні.
 
+**Доступ до ресурсів (ADR-028).** Дозвіл ролі діє лише на надані ресурси: `admin` — усі сервери й сервіси, зокрема майбутні; `operator`/`viewer` — лише сервери з призначенням («Усі сервіси» сервера — поточні й майбутні, або «Вибрані сервіси» за назвою PM2-процесу). Без призначень — нічого. Фільтр застосовується в SQL до пагінації й агрегатів для всіх списків, пошуку, огляду, сповіщень, inventory, керування, логів та історії команд. `403` — брак дозволу ролі; `404` — ресурс не надано або не існує (однаково).
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `GET /api/users/:id/access` | `users:manage` (admin) | `200 {userId, email, role, isActive, global, revision, servers:[{serverId, serverName, serverActive, mode:"all"\|"selected", grantedAt, services:[{name, available}]}]}` (`global` — admin) | 400, 401, 403, 404, 503 |
+| `PUT /api/users/:id/access` `{"expectedRevision", "servers":[{"serverId","mode","services":[]}]}` | `users:manage` + Origin + CSRF | `200` — новий стан; набір замінюється атомарно разом з audit `access.updated` | 400 (дубль сервера, невідомий сервер/сервіс, порожній «Вибрані», сервіси з «Усі»), 401, 403, 404, 409 (ревізія змінилась або ціль — admin), 429, 503 |
+| `GET /api/access/servers?q=&limit=1..100&afterName=` | `users:manage` | `200 {items:[{id, name, isActive}], nextAfterName}` | 400, 401, 403, 503 |
+| `GET /api/access/servers/:id/services?q=` | `users:manage` | `200 {serverId, items:[{name, processes}], truncated}` (≤ 500) | 400, 401, 403, 404, 503 |
+
 Конфігурація: `AUTH_ALLOWED_ORIGINS` (точні origin через кому; порожньо → login вимкнено), `AUTH_COOKIE_SECURE` (default `true`; `false` лише для loopback-розробки), `AUTH_SESSION_TTL_MINUTES` (15–1440, default 480). Rate limits: 5 спроб / 15 хв на акаунт, 30 / 15 хв на адресу клієнта (`request.ip`; за Nginx — адреса, яку proxy записав у `X-Forwarded-For`, лише якщо peer входить до `API_TRUSTED_PROXIES`); лише в пам'яті одного процесу.
 
 Перший адміністратор — лише CLI (DEPLOYMENT, «Bootstrap адміністратора»): `ENV_FILE=… node backend/dist/bootstrap-admin.js --email <email>` (пароль вводиться приховано двічі).
@@ -340,18 +349,18 @@ Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HO
 
 `stdout`/`stderr`: `{state: ok|empty|missing|unavailable|merged, text, lines, truncated, sizeBytes, modifiedAt}` — без шляхів і env. Дозвіл на ноді: `"logs": true` у записі allowlist broker (окремо від `actions`); `processes:control` не дає читання логів. Текст не зберігається.
 
-### Керування PM2-процесами (Task 009, ADR-017) — вимкнено за замовчуванням
+### Керування PM2-процесами (Task 009, ADR-017/028)
 
 | Запит | Доступ | Успіх | Помилки |
 |---|---|---|---|
-| `GET /api/servers/:id/control` | `monitoring:read` | `200 {serverId, enabled, serverStatus, broker:{state, daemon, allowlist, reportedAt, fresh}\|null, targets:[{targetKey, name, pmId, actions, matchStatus}], targetFreshSeconds}` | 400, 401, 403, 404, 503 |
+| `GET /api/servers/:id/control` | `monitoring:read` | `200 {serverId, enabled, serverStatus, broker:{state, daemon, allowlist, reportedAt, fresh, mode, protocol, total}\|null, targets:[{targetKey, name, pmId, actions, matchStatus}], targetFreshSeconds}` — цілі лише наданих сервісів | 400, 401, 403, 404, 503 |
 | `POST /api/servers/:id/control-commands` `{"targetKey","action":"start"\|"stop"\|"restart","idempotencyKey":"<uuid>"}` | `processes:control` (operator/admin) + Origin + CSRF | `201 CommandView` (нова) / `200 CommandView` (повтор з тим самим ключем) | 400, 401, 403, 404, 409 (вимкнено, сервер офлайн, ціль недоступна, дія не дозволена, команда вже виконується, конфлікт ключа), 503 |
 | `GET /api/servers/:id/control-commands?limit=1..50&targetKey=` | `monitoring:read` | `200 {items:[CommandView]}`; `targetKey` — лише команди цієї цілі allowlist (фільтр до limit, ADR-026) | 400, 401, 403, 404, 503 |
 | `GET /api/control-commands/:id` | `monitoring:read` | `200 CommandView` | 400, 401, 403, 404, 503 |
-| `POST /api/agent/control/poll` `{version:1, broker, daemon, allowlist, targets}` | **machine** | `200 {controlEnabled, commands:[≤1 {id, attempt, targetKey, action, deadlineAt}], intervalSeconds}` | 400, 401, 403, 413, 429, 503 |
+| `POST /api/agent/control/poll` `{version:1, broker, daemon, allowlist, targets(≤50)}` або `{version:2, mode, broker, daemon, allowlist, targets(≤500, + identity), total}` | **machine** | `200 {controlEnabled, commands:[≤1 {id, attempt, targetKey, action, deadlineAt, identity?}], intervalSeconds, accessModel?}` (`accessModel:"scoped"` — лише v2) | 400, 401, 403, 413, 429, 503 |
 | `POST /api/agent/control/result` `{version:1, commandId, attempt, outcome, reason, before, after}` | **machine** | `200 {status:"recorded"\|"duplicate"}` | 400, 401, 403, 404, 409, 413, 429, 503 |
 
-`CommandView = {id, serverId, targetKey, action, status: queued|dispatched|succeeded|failed|rejected|expired|unknown, reason, requestedBy, requestedAt, deadlineAt, dispatchedAt, completedAt, attempts, before:{status}|null, after:{status}|null}`. `succeeded` — лише після підтвердженого broker результату; `unknown` — дія могла виконатися. Вмикання: `PM2_CONTROL_ENABLED=true` (API), `NC_AGENT_CONTROL_SOCKET` (Agent), broker + root-owned allowlist на ноді — див. DEPLOYMENT.
+`CommandView = {id, serverId, targetKey, serviceName, action, status: queued|dispatched|succeeded|failed|rejected|expired|unknown, reason, requestedBy, requestedAt, deadlineAt, dispatchedAt, completedAt, attempts, before:{status}|null, after:{status}|null}`. `succeeded` — лише після підтвердженого broker результату; `unknown` — дія могла виконатися. `PM2_CONTROL_ENABLED` типово `true` (`false` — аварійне вимкнення); на ноді — `NC_AGENT_CONTROL_SOCKET` (Agent) і broker: `auto` (усі процеси власника PM2, доступ — за ролями й «Доступами») або `allowlist` (root-owned список) — див. INSTALLATION/DEPLOYMENT. Сумісність версій API/Agent/broker — fail closed (ADR-028).
 
 ```bash
 npm run test:agent:pm2   # opt-in: exporter + broker проти справжнього одноразового PM2
@@ -375,7 +384,7 @@ npm run db:check          # SELECT 1 через .env, без виводу пар
 
 ## Frontend (React + Vite)
 
-`frontend/` — React 19 + React Router 8 + Vite 8, TypeScript strict (ADR-012). Інтерфейс українською: вхід, Огляд, Сервери (дані heartbeat, сервіси сервера з діями, ключі агента для admin), Застосунки (PM2-процеси всіх серверів: пошук за назвою, фільтри, пагінація; розгорнута панель з оглядом, логами й історією команд; дії за правами), Сповіщення, Користувачі (`users:manage`), Журнал аудиту (`audit:read`), Налаштування (`alerts:manage`), Обліковий запис (зміна пароля), вихід. Стани loading / empty / error / forbidden / unavailable; адаптивний layout (sidebar на desktop, меню на мобільних), skip-link, видимий фокус.
+`frontend/` — React 19 + React Router 8 + Vite 8, TypeScript strict (ADR-012). Інтерфейс українською: вхід, Огляд, Сервери (дані heartbeat, сервіси сервера з діями, ключі агента для admin), Застосунки (PM2-процеси всіх серверів: пошук за назвою, фільтри, пагінація; розгорнута панель з оглядом, логами й історією команд; дії за правами), Сповіщення, Користувачі (`users:manage`; «Доступи» — сервери й сервіси operator/viewer), Журнал аудиту (`audit:read`), Налаштування (`alerts:manage`), Обліковий запис (зміна пароля), вихід. Стани loading / empty / error / forbidden / unavailable; адаптивний layout (sidebar на desktop, меню на мобільних), skip-link, видимий фокус.
 
 - **API-клієнт** (`frontend/src/api/`): лише відносні `/api`, `credentials: 'same-origin'`, timeout 10 с і скасування, без автоматичних повторів, runtime-валідація відповідей, `Retry-After` для 429/503; повідомлення формує UI, текст сервера не показується.
 - **Сесія** (`frontend/src/auth/`): стан лише в пам'яті React — без localStorage/sessionStorage/URL; cookie керує браузер (HttpOnly); `csrfToken` з `login`/`me` у пам'яті; пароль очищається після запиту. «Епохи» сесії: відповідь `me`/`login`, що прийшла після logout/expiry, ігнорується. 401 від будь-якого запиту → приватні дані скидаються.

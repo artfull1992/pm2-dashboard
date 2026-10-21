@@ -2,13 +2,15 @@ import { abortableSleep, type AgentLogger } from '../agent.js';
 import type { AgentConfig } from '../config.js';
 import { type FetchLike, machinePost } from '../heartbeat.js';
 import { BrokerError, brokerCall } from './client.js';
+import { MAX_RESPONSE_BYTES_V2 } from './protocol.js';
 import {
-  LOG_LIMITS, type LogsRequest, type LogsResponse, type LogTarget, type LogTargetsRequest, type LogTargetsResponse, parseLogsResponse,
+  type BrokerMode, LOG_LIMITS, MAX_LOG_TARGETS_V1, type LogsRequest, type LogsResponse, type LogTarget, type LogTargetsRequest, type LogTargetsResponse, parseLogsResponse,
 } from './logs-protocol.js';
 
 // Agent log loop (ADR-018): an outbound long-poll to the API for log-tail requests, served by the local broker.
 // Independent of heartbeat, inventory and control. The Agent never touches PM2 or files itself; the text it relays
-// is never logged.
+// is never logged. Version negotiation as in loop.ts (ADR-028): an AUTO broker is never reported to an API that does
+// not answer version 2 with accessModel 'scoped' — an older API would let any logs:read user read every process.
 
 export interface LogPollRequest { requestId: string; targetKey: string; lines: number; deadlineAt: string }
 export const LOG_POLL_TIMEOUT_MS = 35_000;
@@ -19,12 +21,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TARGET_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-export function parseLogPollReply(text: string): { requests: LogPollRequest[] } | null {
+export function parseLogPollReply(text: string): { requests: LogPollRequest[]; accessModel?: 'scoped' } | null {
   let body: unknown;
   try { body = JSON.parse(text); } catch { return null; }
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
-  const { requests } = body as Record<string, unknown>;
-  if (!Array.isArray(requests) || requests.length > MAX_REQUESTS_PER_POLL || Object.keys(body).length !== 1) return null;
+  const { requests, accessModel } = body as Record<string, unknown>;
+  if (accessModel !== undefined && accessModel !== 'scoped') return null;
+  if (!Array.isArray(requests) || requests.length > MAX_REQUESTS_PER_POLL || Object.keys(body).length !== (accessModel === undefined ? 1 : 2)) return null;
   const out: LogPollRequest[] = [];
   for (const r of requests as unknown[]) {
     if (typeof r !== 'object' || r === null || Object.keys(r).length !== 4) return null;
@@ -34,7 +37,7 @@ export function parseLogPollReply(text: string): { requests: LogPollRequest[] } 
     if (typeof deadlineAt !== 'string' || !ISO_RE.test(deadlineAt) || !Number.isFinite(Date.parse(deadlineAt))) return null;
     out.push({ requestId, targetKey, lines, deadlineAt });
   }
-  return { requests: out };
+  return { requests: out, ...(accessModel === 'scoped' ? { accessModel } : {}) };
 }
 
 export function parseLogResultReply(text: string): { status: 'recorded' } | null {
@@ -69,31 +72,69 @@ export async function runLogs(config: AgentConfig, signal: AbortSignal, deps: Lo
   let failures = 0;
   let polls = 0;
   let last = '';
+  let v1Polls = 0;
+  let lastMode: BrokerMode | null = null;
   while (!signal.aborted) {
     polls += 1;
     let broker: BrokerState = 'ok';
     let targets: LogTarget[] = [];
     let daemon: 'ok' | 'unavailable' | null = null;
     let allowlist: 'ok' | 'invalid' | null = null;
-    const targetsReq: LogTargetsRequest = { v: 1, op: 'logTargets' };
+    let brokerVersion: 1 | 2 = 2;
+    let mode: BrokerMode | null = null;
+    let total = 0;
+    const ask = async (v: 1 | 2) => {
+      const req: LogTargetsRequest = { v, op: 'logTargets' };
+      const max = v === 2 ? MAX_RESPONSE_BYTES_V2 : undefined;
+      return await call(control.socket, req, 10_000, (x) => parseLogsResponse(x, req), max) as LogTargetsResponse;
+    };
     try {
-      const r = await call(control.socket, targetsReq, 10_000, (v) => parseLogsResponse(v, targetsReq)) as LogTargetsResponse;
+      let r: LogTargetsResponse;
+      try {
+        r = await ask(2);
+      } catch (error) {
+        if (error instanceof BrokerError && !error.sent) throw error;
+        brokerVersion = 1; // an older broker drops the unknown request
+        r = await ask(1);
+      }
       ({ targets, daemon, allowlist } = r);
+      mode = r.mode ?? 'allowlist';
+      total = r.total ?? targets.length;
     } catch (error) {
       broker = stateOf(error);
     }
+    if (mode) lastMode = mode;
+    const auto = lastMode === 'auto';
+    if (total > targets.length) deps.logger.warn({ msg: 'log targets cut', reported: targets.length, total });
+    let version: 1 | 2 = brokerVersion === 1 || (v1Polls > 0 && !auto) ? 1 : 2;
+    const report = (v: 1 | 2) => (v === 2
+      ? { version: 2, mode, broker, daemon, allowlist, targets, total }
+      : { version: 1, broker, daemon, allowlist, targets: targets.slice(0, MAX_LOG_TARGETS_V1) });
     const startedAt = Date.now();
-    const poll = await machinePost(config, '/api/agent/logs/poll', { version: 1, broker, daemon, allowlist, targets }, signal, parseLogPollReply, deps.fetchImpl, LOG_POLL_TIMEOUT_MS);
+    let poll = await machinePost(config, '/api/agent/logs/poll', report(version), signal, parseLogPollReply, deps.fetchImpl, LOG_POLL_TIMEOUT_MS);
+    if (poll.kind === 'rejected' && version === 2) {
+      if (auto) {
+        deps.logger.warn({ msg: 'logs refused: the API does not support scoped access (auto broker needs it)', action: 'update the API' });
+      } else {
+        v1Polls = 30;
+        version = 1;
+        poll = await machinePost(config, '/api/agent/logs/poll', report(1), signal, parseLogPollReply, deps.fetchImpl, LOG_POLL_TIMEOUT_MS);
+      }
+    } else if (version === 1 && v1Polls > 0) {
+      v1Polls -= 1;
+    }
     if (poll.kind === 'aborted') break;
     let delay = 0;
     if (poll.kind === 'ok') {
       failures = 0;
-      if (poll.value.requests.length === 0) {
+      // An auto broker serves only an API that authorises every read per user and service.
+      const requests = auto && (version !== 2 || poll.value.accessModel !== 'scoped') ? [] : poll.value.requests;
+      if (requests.length === 0) {
         const elapsed = Date.now() - startedAt;
         if (elapsed < MIN_EMPTY_POLL_INTERVAL_MS) await sleep(MIN_EMPTY_POLL_INTERVAL_MS - elapsed, signal);
       }
-      for (const r of poll.value.requests) {
-        const result = await serve(r, broker);
+      for (const r of requests) {
+        const result = await serve(r, broker, brokerVersion);
         await machinePost(config, '/api/agent/logs/result', { version: 1, ...withoutEnvelope(result) }, signal, parseLogResultReply, deps.fetchImpl);
       }
     } else {
@@ -115,11 +156,11 @@ export async function runLogs(config: AgentConfig, signal: AbortSignal, deps: Lo
   }
   return polls;
 
-  async function serve(r: LogPollRequest, broker: BrokerState): Promise<LogsResponse> {
+  async function serve(r: LogPollRequest, broker: BrokerState, v: 1 | 2): Promise<LogsResponse> {
     const failed = (reason: 'broker_unavailable' | 'broker_unsupported' | 'timeout'): LogsResponse =>
-      ({ v: 1, op: 'logs', requestId: r.requestId, outcome: 'failed', reason, readAt: new Date().toISOString(), stdout: null, stderr: null });
+      ({ v, op: 'logs', requestId: r.requestId, outcome: 'failed', reason, readAt: new Date().toISOString(), stdout: null, stderr: null });
     if (broker !== 'ok' || !control) return failed(broker === 'unsupported' ? 'broker_unsupported' : 'broker_unavailable');
-    const req: LogsRequest = { v: 1, op: 'logs', requestId: r.requestId, targetKey: r.targetKey, lines: r.lines, deadlineAt: r.deadlineAt };
+    const req: LogsRequest = { v, op: 'logs', requestId: r.requestId, targetKey: r.targetKey, lines: r.lines, deadlineAt: r.deadlineAt };
     try {
       return await call(control.socket, req, LOG_LIMITS.readTimeoutMs + 3_000, (v) => parseLogsResponse(v, req)) as LogsResponse;
     } catch (error) {

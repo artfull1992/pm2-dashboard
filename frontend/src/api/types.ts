@@ -297,12 +297,23 @@ export interface ControlView {
   serverId: string;
   enabled: boolean;
   serverStatus: ServerStatus;
-  broker: { state: 'ok' | 'unavailable'; daemon: string | null; allowlist: string | null; reportedAt: string; fresh: boolean } | null;
+  broker: {
+    state: 'ok' | 'unavailable'; daemon: string | null; allowlist: string | null; reportedAt: string; fresh: boolean;
+    /** ADR-028: allowlist (root-owned list) or auto (every process; access by roles + grants); null = unknown/old Agent. */
+    mode: BrokerMode | null;
+    protocol: 1 | 2;
+    /** Targets the broker knows; more than reported = cut at 500 (shown, never silent). */
+    total: number | null;
+  } | null;
   targets: ControlTarget[];
   targetFreshSeconds: number;
 }
+export type BrokerMode = 'allowlist' | 'auto';
 export interface CommandView {
-  id: string; serverId: string; targetKey: string; action: ControlAction; status: CommandStatus; reason: string | null;
+  id: string; serverId: string; targetKey: string;
+  /** PM2 name the command was authorised for (ADR-028); null for commands created before it. */
+  serviceName: string | null;
+  action: ControlAction; status: CommandStatus; reason: string | null;
   requestedBy: string; requestedAt: string; deadlineAt: string; dispatchedAt: string | null; completedAt: string | null;
   attempts: number; before: { status: string } | null; after: { status: string } | null;
 }
@@ -322,14 +333,19 @@ function parseTarget(v: unknown): ControlTarget {
 }
 
 export function parseControlView(value: unknown): ControlView {
-  expect(isObject(value) && Array.isArray(value.targets) && value.targets.length <= 50);
+  // Up to 500 targets: an auto broker reports every process of the PM2 owner (ADR-028).
+  expect(isObject(value) && Array.isArray(value.targets) && value.targets.length <= 500);
   const { serverId, enabled, serverStatus, broker, targetFreshSeconds } = value;
   expect(isString(serverId, 36) && UUID_RE.test(serverId) && typeof enabled === 'boolean' && isServerStatus(serverStatus) && isCount(targetFreshSeconds, 3600));
   let b: ControlView['broker'] = null;
   if (broker !== null) {
     expect(isObject(broker) && (broker.state === 'ok' || broker.state === 'unavailable') && isDate(broker.reportedAt) && typeof broker.fresh === 'boolean');
     expect((broker.daemon === null || isString(broker.daemon, 16)) && (broker.allowlist === null || isString(broker.allowlist, 16)));
-    b = { state: broker.state, daemon: broker.daemon, allowlist: broker.allowlist, reportedAt: broker.reportedAt, fresh: broker.fresh };
+    const mode = broker.mode ?? null;
+    const protocol = broker.protocol ?? 1;
+    const total = broker.total ?? null;
+    expect((mode === null || mode === 'allowlist' || mode === 'auto') && (protocol === 1 || protocol === 2) && (total === null || isCount(total, 100_000)));
+    b = { state: broker.state, daemon: broker.daemon, allowlist: broker.allowlist, reportedAt: broker.reportedAt, fresh: broker.fresh, mode, protocol, total };
   }
   return { serverId, enabled, serverStatus, broker: b, targets: value.targets.map(parseTarget), targetFreshSeconds };
 }
@@ -342,8 +358,10 @@ export function parseCommandView(value: unknown): CommandView {
   expect(v.reason === null || (isString(v.reason, 40) && REASON_RE.test(v.reason)));
   expect(isDate(v.requestedAt) && isDate(v.deadlineAt) && isNullableDate(v.dispatchedAt) && isNullableDate(v.completedAt) && isCount(v.attempts, 3));
   expect(isState(v.before) && isState(v.after));
+  const serviceName = v.serviceName ?? null;
+  expect(serviceName === null || (isString(serviceName, 128) && serviceName.length > 0));
   return {
-    id: v.id, serverId: v.serverId, targetKey: v.targetKey, action: v.action, status: v.status, reason: v.reason, requestedBy: v.requestedBy,
+    id: v.id, serverId: v.serverId, targetKey: v.targetKey, serviceName, action: v.action, status: v.status, reason: v.reason, requestedBy: v.requestedBy,
     requestedAt: v.requestedAt, deadlineAt: v.deadlineAt, dispatchedAt: v.dispatchedAt, completedAt: v.completedAt, attempts: v.attempts,
     before: v.before, after: v.after,
   };
@@ -372,7 +390,7 @@ function parseLogStream(v: unknown): LogStream | null {
 }
 
 export function parseLogTargets(value: unknown): LogTargetsView {
-  expect(isObject(value) && Array.isArray(value.targets) && value.targets.length <= 50);
+  expect(isObject(value) && Array.isArray(value.targets) && value.targets.length <= 500);
   const { serverId, state, reportedAt } = value;
   expect(isString(serverId, 36) && UUID_RE.test(serverId) && oneOf(['supported', 'not_connected', 'unsupported', 'broker_unavailable'] as const, state) && isNullableDate(reportedAt));
   const targets = value.targets.map((t: unknown) => {
@@ -436,7 +454,7 @@ export interface DashboardServer {
   processes: { total: number; online: number; problem: number } | null;
 }
 export interface RecentAction {
-  id: string; serverId: string; serverName: string; targetKey: string; action: ControlAction; status: CommandView['status']; reason: string | null;
+  id: string; serverId: string; serverName: string; targetKey: string; serviceName: string | null; action: ControlAction; status: CommandView['status']; reason: string | null;
   requestedAt: string; completedAt: string | null; requestedByMe: boolean; overdue: boolean;
 }
 export interface DashboardView {
@@ -511,7 +529,9 @@ export function parseDashboard(value: unknown): DashboardView {
       items: r.items.map((x: unknown) => {
         expect(isObject(x) && isId(x.id) && isId(x.serverId) && isName(x.serverName) && isString(x.targetKey, 64) && oneOf(CONTROL_ACTIONS, x.action) && oneOf(COMMAND_STATUSES_ALL, x.status));
         expect(isNullableString(x.reason) && isDate(x.requestedAt) && isNullableDate(x.completedAt) && typeof x.requestedByMe === 'boolean' && typeof x.overdue === 'boolean');
-        return { id: x.id, serverId: x.serverId, serverName: x.serverName, targetKey: x.targetKey, action: x.action, status: x.status, reason: x.reason, requestedAt: x.requestedAt, completedAt: x.completedAt, requestedByMe: x.requestedByMe, overdue: x.overdue };
+        const serviceName = x.serviceName ?? null;
+        expect(serviceName === null || (isString(serviceName, 128) && serviceName.length > 0));
+        return { id: x.id, serverId: x.serverId, serverName: x.serverName, targetKey: x.targetKey, serviceName, action: x.action, status: x.status, reason: x.reason, requestedAt: x.requestedAt, completedAt: x.completedAt, requestedByMe: x.requestedByMe, overdue: x.overdue };
       }),
     };
   }
@@ -668,4 +688,67 @@ export function parseSlackTestResult(value: unknown): SlackTestResult {
   expect(isObject(value) && isString(value.operationId, 36) && isInt(value.generation) && isDate(value.at) && typeof value.stored === 'boolean');
   expect((value.outcome === 'success' || value.outcome === 'failed' || value.outcome === 'unknown') && (value.code === null || (isString(value.code, 40) && SAFE_CODE.test(value.code))));
   return { operationId: value.operationId, generation: value.generation, outcome: value.outcome, code: value.code, at: value.at, stored: value.stored };
+}
+
+// --- Resource grants (ADR-028) --------------------------------------------------------------------------------------
+
+export type AccessMode = 'all' | 'selected';
+export interface ServiceGrant { name: string; /** The service exists on the server now (else: granted earlier, gone). */ available: boolean }
+export interface ServerGrant { serverId: string; serverName: string; serverActive: boolean; mode: AccessMode; grantedAt: string; services: ServiceGrant[] }
+export interface UserAccess {
+  userId: string; email: string; role: Role; isActive: boolean;
+  /** admin: every server and service, including future ones; grants are not used. */
+  global: boolean;
+  revision: number;
+  servers: ServerGrant[];
+}
+export interface ServerOption { id: string; name: string; isActive: boolean }
+export interface ServerOptionPage { items: ServerOption[]; nextAfterName: string | null }
+export interface ServiceOption { name: string; processes: number }
+export interface ServiceOptionList { serverId: string; items: ServiceOption[]; truncated: boolean }
+
+const isServiceName = (v: unknown): v is string => isString(v, 128) && v.length > 0;
+
+export function parseUserAccess(value: unknown): UserAccess {
+  expect(isObject(value) && Array.isArray(value.servers) && value.servers.length <= 1000);
+  const { userId, email, role, isActive, global, revision, servers } = value;
+  expect(isString(userId, 36) && USER_ID_RE.test(userId) && isString(email, 254) && (KNOWN_ROLES as readonly unknown[]).includes(role));
+  expect(typeof isActive === 'boolean' && typeof global === 'boolean' && typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0);
+  return {
+    userId, email, role: role as Role, isActive, global, revision,
+    servers: servers.map((g: unknown): ServerGrant => {
+      expect(isObject(g) && Array.isArray(g.services) && g.services.length <= 500);
+      expect(isString(g.serverId, 36) && USER_ID_RE.test(g.serverId) && isString(g.serverName, 128) && typeof g.serverActive === 'boolean');
+      expect((g.mode === 'all' || g.mode === 'selected') && isDate(g.grantedAt));
+      const services = g.services.map((sv: unknown): ServiceGrant => {
+        expect(isObject(sv) && isServiceName(sv.name) && typeof sv.available === 'boolean');
+        return { name: sv.name, available: sv.available };
+      });
+      return { serverId: g.serverId, serverName: g.serverName, serverActive: g.serverActive, mode: g.mode, grantedAt: g.grantedAt, services };
+    }),
+  };
+}
+
+export function parseServerOptionPage(value: unknown): ServerOptionPage {
+  expect(isObject(value) && Array.isArray(value.items) && value.items.length <= 100);
+  expect(value.nextAfterName === null || isString(value.nextAfterName, 128));
+  return {
+    items: value.items.map((v: unknown): ServerOption => {
+      expect(isObject(v) && isString(v.id, 36) && USER_ID_RE.test(v.id) && isString(v.name, 128) && typeof v.isActive === 'boolean');
+      return { id: v.id, name: v.name, isActive: v.isActive };
+    }),
+    nextAfterName: value.nextAfterName,
+  };
+}
+
+export function parseServiceOptionList(value: unknown, serverId: string): ServiceOptionList {
+  expect(isObject(value) && value.serverId === serverId && Array.isArray(value.items) && value.items.length <= 500 && typeof value.truncated === 'boolean');
+  return {
+    serverId,
+    items: value.items.map((v: unknown): ServiceOption => {
+      expect(isObject(v) && isServiceName(v.name) && isCount(v.processes, 100_000));
+      return { name: v.name, processes: v.processes };
+    }),
+    truncated: value.truncated,
+  };
 }

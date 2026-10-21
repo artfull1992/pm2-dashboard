@@ -142,16 +142,16 @@ describe('heartbeat', () => {
     const ctx = await setup();
     const serverId = await createServer(ctx);
     const { token } = await issue(ctx, serverId);
-    expect((await ctx.store.get(serverId))?.status).toBe('never_connected');
+    expect((await ctx.store.get(serverId, null))?.status).toBe('never_connected');
     const first = await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ loadAverage: [1, 0, 0] }) });
     const second = await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot({ loadAverage: [2, 0, 0] }) });
     expect(first).toMatchObject({ serverId });
     expect(second).toMatchObject({ serverId });
-    const detail = await ctx.store.get(serverId);
+    const detail = await ctx.store.get(serverId, null);
     expect(detail).toMatchObject({ status: 'online', snapshot: { loadAverage: [2, 0, 0] } });
     expect((await ctx.sql('SELECT count(*)::int AS n FROM server_heartbeats')).rows[0]).toEqual({ n: 1 });
     await ctx.sql(`UPDATE server_heartbeats SET received_at = now() - interval '91 seconds'`);
-    expect((await ctx.store.get(serverId))?.status).toBe('offline');
+    expect((await ctx.store.get(serverId, null))?.status).toBe('offline');
   });
 
   it('revoked credential / inactive server → unauthorized, nothing changes', async () => {
@@ -175,10 +175,10 @@ describe('heartbeat', () => {
     const ctx = await setup();
     const serverId = await createServer(ctx);
     await ctx.sql('INSERT INTO server_heartbeats (server_id, received_at, snapshot) VALUES ($1, now(), $2::jsonb)', [serverId, JSON.stringify(legacySnapshot())]);
-    const detail = await ctx.store.get(serverId);
+    const detail = await ctx.store.get(serverId, null);
     expect(detail?.snapshot).toEqual({ agentVersion: '0.4.0', hostname: 'node-1.example', platform: 'linux', arch: 'x64', loadAverage: [0.5, 0.4, 0.3] });
     await ctx.sql(`UPDATE server_heartbeats SET snapshot = '{"unexpected": true}'::jsonb`);
-    expect((await ctx.store.get(serverId))?.snapshot).toBeNull(); // unreadable stored shape → "no data", not a crash
+    expect((await ctx.store.get(serverId, null))?.snapshot).toBeNull(); // unreadable stored shape → "no data", not a crash
   });
 
   it('concurrent heartbeats: one row, latest server timestamp wins', async () => {
@@ -213,15 +213,15 @@ describe('heartbeat', () => {
     const { token } = await issue(ctx, a);
     const result = await ctx.store.recordHeartbeat({ tokenHash: agentTokenDigest(token), snapshot: validSnapshot() });
     expect(result).toMatchObject({ serverId: a });
-    expect((await ctx.store.get(b))?.status).toBe('never_connected');
+    expect((await ctx.store.get(b, null))?.status).toBe('never_connected');
   });
 
   it('list paginates by (created_at, id)', async () => {
     const ctx = await setup();
     for (const name of ['a', 'b', 'c']) await createServer(ctx, name);
-    const first = await ctx.store.list({ limit: 2, afterId: null });
+    const first = await ctx.store.list({ limit: 2, afterId: null, scope: null });
     expect(first.items.map((s) => s.name)).toEqual(['a', 'b']);
-    const second = await ctx.store.list({ limit: 2, afterId: first.nextAfterId });
+    const second = await ctx.store.list({ limit: 2, afterId: first.nextAfterId, scope: null });
     expect(second).toMatchObject({ items: [{ name: 'c' }], nextAfterId: null });
   });
 });

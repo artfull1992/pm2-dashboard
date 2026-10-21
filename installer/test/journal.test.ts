@@ -52,7 +52,7 @@ function running(h: FakeHost): FakeHost {
   h.invocations.set(UNIT, 'run-1');
   return h;
 }
-const options: AgentOptions = { mode: 'apply', artifact: '/x', apiUrl: 'https://control.example.com', tokenFile: null, tokenStdin: false, pm2: null, enableControl: false, releaseTool: '/x' };
+const options: AgentOptions = { mode: 'apply', artifact: '/x', apiUrl: 'https://control.example.com', tokenFile: null, tokenStdin: false, pm2: null, enableControl: false, controlMode: null, releaseTool: '/x' };
 async function verify(h: FakeHost, o: AgentOptions = options) {
   const c = capture();
   const ctx: Context = { host: h, mode: 'apply', effects: new Set(), out: c.out, persist: () => undefined };

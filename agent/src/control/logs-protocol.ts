@@ -38,12 +38,21 @@ export interface LogStream {
 
 export interface LogTarget { targetKey: string; name: string; pmId: number | null; matchStatus: string }
 
-export type LogTargetsRequest = { v: 1; op: 'logTargets' };
-export type LogsRequest = { v: 1; op: 'logs'; requestId: string; targetKey: string; lines: number; deadlineAt: string };
+/** Version 2 (ADR-028): adds the broker mode and up to 500 targets; requests/results are otherwise the same. */
+export const MAX_LOG_TARGETS_V1 = 50;
+export const MAX_LOG_TARGETS_V2 = 500;
+export type BrokerMode = 'allowlist' | 'auto';
 
-export type LogTargetsResponse = { v: 1; op: 'logTargets'; daemon: 'ok' | 'unavailable'; allowlist: 'ok' | 'invalid'; targets: LogTarget[] };
+export type LogTargetsRequest = { v: 1 | 2; op: 'logTargets' };
+export type LogsRequest = { v: 1 | 2; op: 'logs'; requestId: string; targetKey: string; lines: number; deadlineAt: string };
+
+export type LogTargetsResponse = {
+  v: 1 | 2; op: 'logTargets'; daemon: 'ok' | 'unavailable'; allowlist: 'ok' | 'invalid'; targets: LogTarget[];
+  /** Version 2 only. */
+  mode?: BrokerMode; total?: number;
+};
 export interface LogsResponse {
-  v: 1;
+  v: 1 | 2;
   op: 'logs';
   requestId: string;
   outcome: 'ok' | 'rejected' | 'failed';
@@ -67,12 +76,14 @@ const isIso = (v: unknown): v is string => typeof v === 'string' && ISO_UTC_RE.t
 const isLines = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= LOG_LIMITS.maxLines;
 
 export function parseLogsRequest(value: Record<string, unknown>): LogTargetsRequest | LogsRequest | null {
-  if (value.op === 'logTargets') return exactKeys(value, ['v', 'op']) ? { v: 1, op: 'logTargets' } : null;
+  if (value.v !== 1 && value.v !== 2) return null;
+  const v = value.v;
+  if (value.op === 'logTargets') return exactKeys(value, ['v', 'op']) ? { v, op: 'logTargets' } : null;
   if (value.op !== 'logs' || !exactKeys(value, ['v', 'op', 'requestId', 'targetKey', 'lines', 'deadlineAt'])) return null;
   const { requestId, targetKey, lines, deadlineAt } = value;
   if (typeof requestId !== 'string' || !UUID_RE.test(requestId) || typeof targetKey !== 'string' || !TARGET_KEY_RE.test(targetKey)) return null;
   if (!isLines(lines) || !isIso(deadlineAt)) return null;
-  return { v: 1, op: 'logs', requestId, targetKey, lines, deadlineAt };
+  return { v, op: 'logs', requestId, targetKey, lines, deadlineAt };
 }
 
 export function parseLogStream(v: unknown): LogStream | null | undefined {
@@ -87,11 +98,12 @@ export function parseLogStream(v: unknown): LogStream | null | undefined {
 }
 
 export function parseLogsResponse(value: unknown, expected: LogTargetsRequest | LogsRequest): LogTargetsResponse | LogsResponse | null {
-  if (!isObject(value) || value.v !== 1 || value.op !== expected.op) return null;
+  if (!isObject(value) || value.v !== expected.v || value.op !== expected.op) return null;
   if (expected.op === 'logTargets') {
-    if (!exactKeys(value, ['v', 'op', 'daemon', 'allowlist', 'targets'])) return null;
-    const { daemon, allowlist, targets } = value;
-    if ((daemon !== 'ok' && daemon !== 'unavailable') || (allowlist !== 'ok' && allowlist !== 'invalid') || !Array.isArray(targets) || targets.length > 50) return null;
+    if (!exactKeys(value, ['v', 'op', 'daemon', 'allowlist', 'targets', ...(expected.v === 2 ? ['mode', 'total'] : [])])) return null;
+    const { daemon, allowlist, targets, mode, total } = value;
+    const max = expected.v === 2 ? MAX_LOG_TARGETS_V2 : MAX_LOG_TARGETS_V1;
+    if ((daemon !== 'ok' && daemon !== 'unavailable') || (allowlist !== 'ok' && allowlist !== 'invalid') || !Array.isArray(targets) || targets.length > max) return null;
     const parsed: LogTarget[] = [];
     for (const t of targets as unknown[]) {
       if (!isObject(t) || !exactKeys(t, ['targetKey', 'name', 'pmId', 'matchStatus'])) return null;
@@ -100,7 +112,10 @@ export function parseLogsResponse(value: unknown, expected: LogTargetsRequest | 
       if (!(pmId === null || (typeof pmId === 'number' && Number.isSafeInteger(pmId) && pmId >= 0)) || !oneOf(MATCH, matchStatus)) return null;
       parsed.push({ targetKey, name, pmId, matchStatus });
     }
-    return { v: 1, op: 'logTargets', daemon, allowlist, targets: parsed };
+    if (new Set(parsed.map((t) => t.targetKey)).size !== parsed.length) return null;
+    if (expected.v === 1) return { v: 1, op: 'logTargets', daemon, allowlist, targets: parsed };
+    if ((mode !== 'allowlist' && mode !== 'auto') || typeof total !== 'number' || !Number.isSafeInteger(total) || total < parsed.length || total > 100_000) return null;
+    return { v: 2, op: 'logTargets', daemon, allowlist, targets: parsed, mode, total };
   }
   if (!exactKeys(value, ['v', 'op', 'requestId', 'outcome', 'reason', 'readAt', 'stdout', 'stderr'])) return null;
   const { requestId, outcome, reason, readAt, stdout, stderr } = value;
@@ -109,5 +124,5 @@ export function parseLogsResponse(value: unknown, expected: LogTargetsRequest | 
   const out = parseLogStream(stdout);
   const err = parseLogStream(stderr);
   if (out === undefined || err === undefined || (outcome === 'ok') !== (out !== null && err !== null)) return null;
-  return { v: 1, op: 'logs', requestId, outcome, reason, readAt, stdout: out, stderr: err };
+  return { v: expected.v, op: 'logs', requestId, outcome, reason, readAt, stdout: out, stderr: err };
 }

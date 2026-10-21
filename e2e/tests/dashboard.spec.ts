@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { expect, type Page, test } from '@playwright/test';
-import { inRunSchema } from '../support/db.js';
+import { grantAccess, inRunSchema } from '../support/db.js';
 import { credentials, type E2eRole } from '../support/env.js';
 
 // Dashboard (Task 012) against the real backend and the isolated test DB. Synthetic servers/inventory/commands are
@@ -12,6 +12,7 @@ const OFFLINE = `dash-offline-${randomUUID().slice(0, 6)}`;
 // A row as written by a 0.4.x Agent (legacy host metrics in JSONB): must still read fine, without showing them (ADR-023).
 const snapshot = { agentVersion: '0.4.0', hostname: 'dash-host', platform: 'linux', arch: 'x64', uptimeSeconds: 7200, cpuCount: 2, loadAverage: [0.42, 0.3, 0.2], memory: { totalBytes: 4 * 1024 ** 3, freeBytes: 1024 ** 3 } };
 
+const servers: string[] = [];
 test.beforeAll(async () => {
   await inRunSchema(async (q) => {
     const online = (await q('INSERT INTO servers (name) VALUES ($1) RETURNING id', [ONLINE])).rows[0]?.id as string;
@@ -23,9 +24,12 @@ test.beforeAll(async () => {
              VALUES ($1, 'pm2', 'ok', now(), now(), now() + interval '1 hour', now() + interval '1 hour', 2)`, [online]);
     await q("INSERT INTO server_applications (server_id, source, pm_id, name, status, restarts, first_seen_at) VALUES ($1, 'pm2', 0, 'dash-api', 'online', 0, now()), ($1, 'pm2', 1, 'dash-worker', 'errored', 9, now())", [online]);
     const operator = (await q('SELECT id FROM users WHERE email = $1', [credentials('operator').email])).rows[0]?.id as string;
-    await q(`INSERT INTO control_commands (server_id, target_key, action, status, requested_by, idempotency_key, requested_at, deadline_at, completed_at)
-             VALUES ($1, 'dash-api', 'restart', 'succeeded', $2, $3, now(), now() + interval '2 minutes', now())`, [online, operator, randomUUID()]);
+    await q(`INSERT INTO control_commands (server_id, target_key, service_name, action, status, requested_by, idempotency_key, requested_at, deadline_at, completed_at)
+             VALUES ($1, 'dash-api', 'dash-api', 'restart', 'succeeded', $2, $3, now(), now() + interval '2 minutes', now())`, [online, operator, randomUUID()]);
+    servers.push(online, offline);
   });
+  // ADR-028: operator and viewer see only granted servers.
+  for (const role of ['operator', 'viewer'] as const) for (const id of servers) await grantAccess(credentials(role).email, id);
 });
 
 /** Opt-in review screenshots (synthetic data only; off unless NC_E2E_SCREENSHOT_DIR is set). */

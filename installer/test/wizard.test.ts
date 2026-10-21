@@ -320,12 +320,22 @@ describe('wizard: Agent and the PM2 owner', () => {
     expect(h.changes).toEqual([]);
   });
 
-  it('broker mode: empty allowlist, nothing allowed', async () => {
+  it('broker auto mode: access decided by the API, no allowlist', async () => {
     const h = host();
     withDaemon(h, 'deploy', 1000, '/srv/apps/deploy-pm2');
     const r = await run(h, prompter(['2', 'https://control.example.com', '3', '1', 'так', 'так'], [TOKEN]).p);
     expect(r.code).toBe(0);
-    expect(r.runs[1]?.argv).toContain('--enable-control');
+    expect(r.runs[1]?.argv).toEqual(expect.arrayContaining(['--enable-control', '--control-mode', 'auto']));
+    expect(h.text('/etc/node-control-pm2-broker/deploy.env')).toMatch(/^NC_BROKER_MODE=auto$/m);
+    expect(h.stat('/etc/node-control-pm2-broker/deploy.allowlist.json')).toBeNull();
+  });
+
+  it('broker allowlist mode: empty allowlist, nothing allowed', async () => {
+    const h = host();
+    withDaemon(h, 'deploy', 1000, '/srv/apps/deploy-pm2');
+    const r = await run(h, prompter(['2', 'https://control.example.com', '4', '1', 'так', 'так'], [TOKEN]).p);
+    expect(r.code).toBe(0);
+    expect(r.runs[1]?.argv).toEqual(expect.arrayContaining(['--enable-control', '--control-mode', 'allowlist']));
     expect(h.text('/etc/node-control-pm2-broker/deploy.allowlist.json')).toBe('{"version":1,"targets":[]}\n');
   });
 

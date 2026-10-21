@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { type AccessChecker, requestScope, type Scope } from '../auth/scope.js';
 import type { AuditContext, AuditEvent } from '../auth/store.js';
 import { describeError, PublicHttpError } from '../errors.js';
 import {
@@ -27,13 +28,14 @@ const resultViewSchema = {
 
 export interface LogRoutesOptions {
   hub: LogHub;
-  serverExists: (id: string) => Promise<boolean>;
+  /** Resource scope (ADR-028): every target list, request and result read is checked against it. */
+  access: AccessChecker;
   /** Best-effort audit (metadata only). */
   audit: (entry: AuditEvent, context: AuditContext) => Promise<void>;
 }
 
 export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOptions): void {
-  const { hub, serverExists } = options;
+  const { hub, access } = options;
   // preClose runs BEFORE Fastify waits for in-flight requests: held Agent long-polls and result waiters are answered
   // here, so the server can finish closing. In onClose (after that wait) a 25 s long-poll would stall the shutdown
   // past its timeout. onClose repeats it idempotently for paths that skip preClose.
@@ -47,16 +49,20 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
       log.error({ error: describeError(error), event: entry.event }, 'Audit write failed');
     }
   };
-  const ensureServer = async (id: string, log: { error(o: object, m: string): void }) => {
-    let exists: boolean;
+  const checked = async <T>(log: { error(o: object, m: string): void }, fn: () => Promise<T>): Promise<T> => {
     try {
-      exists = await serverExists(id);
+      return await fn();
     } catch (error) {
-      log.error({ error: describeError(error) }, 'Server lookup failed');
+      log.error({ error: describeError(error) }, 'Access lookup failed');
       throw new PublicHttpError(503, 'Service temporarily unavailable', { 'retry-after': '5' });
     }
-    if (!exists) throw new PublicHttpError(404, 'Server not found');
   };
+  // Missing and not granted look the same (ADR-028).
+  const ensureServer = async (id: string, scope: Scope, log: { error(o: object, m: string): void }) => {
+    if (!(await checked(log, () => access.serverVisible(scope, id)))) throw new PublicHttpError(404, 'Server not found');
+  };
+  const serviceVisible = async (scope: Scope, serverId: string, name: string, log: { error(o: object, m: string): void }) =>
+    (await checked(log, () => access.visibleServices(scope, serverId, [name]))).has(name);
 
   app.get('/api/servers/:id/log-targets', {
     config: { access: { permission: 'logs:read' } },
@@ -74,8 +80,12 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
     },
   }, async (request) => {
     const { id } = request.params as { id: string };
-    await ensureServer(id, request.log);
-    return { serverId: id, ...hub.status(id) };
+    const scope = requestScope(request.auth);
+    await ensureServer(id, scope, request.log);
+    const status = hub.status(id);
+    // Only the services the user may see: hidden names are neither listed nor counted.
+    const visible = await checked(request.log, () => access.visibleServices(scope, id, status.targets.map((t) => t.name)));
+    return { serverId: id, ...status, targets: status.targets.filter((t) => visible.has(t.name)) };
   });
 
   app.post('/api/servers/:id/log-requests', {
@@ -93,9 +103,16 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
     if (!auth) throw new PublicHttpError(401, 'Authentication required');
     const { id } = request.params as { id: string };
     const { targetKey, lines } = request.body as { targetKey: string; lines: number };
-    await ensureServer(id, request.log);
+    const scope = requestScope(auth);
+    await ensureServer(id, scope, request.log);
     const context = { actorUserId: auth.userId, requestId: request.id };
-    const result = hub.create({ serverId: id, targetKey, actorUserId: auth.userId, lines });
+    // The service of the target as currently reported; a hidden one is answered exactly like a missing one.
+    const status = hub.status(id);
+    const reported = status.targets.find((t) => t.targetKey === targetKey);
+    const serviceName = reported && (await serviceVisible(scope, id, reported.name, request.log)) ? reported.name : null;
+    const result = status.state !== 'supported' ? status.state
+      : serviceName === null ? 'target_not_allowed' as const
+        : hub.create({ serverId: id, targetKey, serviceName, actorUserId: auth.userId, lines });
     if (result === 'rate_limited') throw new PublicHttpError(429, 'Too many log requests', { 'retry-after': '10' });
     if (result === 'busy') throw new PublicHttpError(503, 'Service temporarily unavailable', { 'retry-after': '5' });
     if (typeof result === 'string') {
@@ -125,10 +142,16 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
     const auth = request.auth;
     if (!auth) throw new PublicHttpError(401, 'Authentication required');
     const { id } = request.params as { id: string };
+    const scope = requestScope(auth);
     // Only the requesting user sees the result; anything else (other user, expired+cleaned, API restart) → 404.
+    // The access is checked before waiting AND after it (ADR-028): a long-poll or a cached result after the grant was
+    // revoked gets 404 like an unknown request.
+    const own = hub.peek(id, auth.userId);
+    if (!own || !(await serviceVisible(scope, own.serverId, own.serviceName, request.log))) throw new PublicHttpError(404, 'Log request not found');
     // A client that goes away frees its waiter at once (RESPONSE 'close', see the agent long-poll below).
     const view = await hub.get(id, auth.userId, { onClose: (cb) => { if (reply.raw.destroyed) cb(); else reply.raw.once('close', cb); } });
     if (!view) throw new PublicHttpError(404, 'Log request not found');
+    if (typeof view === 'object' && !(await serviceVisible(scope, view.serverId, view.serviceName, request.log))) throw new PublicHttpError(404, 'Log request not found');
     if (view === 'limit_request' || view === 'limit_actor') throw new PublicHttpError(429, 'Too many waiting log reads', { 'retry-after': '1' });
     if (view === 'limit_global') throw new PublicHttpError(503, 'Service temporarily unavailable', { 'retry-after': '2' });
     return view;
@@ -143,6 +166,8 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
         200: {
           type: 'object', additionalProperties: false, required: ['requests'],
           properties: {
+            // Version 2 only (ADR-028): every log read is authorised per user and service.
+            accessModel: { type: 'string', enum: ['scoped'] },
             requests: {
               type: 'array', maxItems: LOG_LIMITS.maxPerPoll,
               items: {
@@ -163,7 +188,7 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
     // The RESPONSE 'close' fires only when the connection goes away (or after sending); the request's 'close' fires as
     // soon as its body is consumed and would end every long-poll immediately (busy loop).
     const requests = await hub.agentPoll(agent.serverId, report, (cb) => { reply.raw.once('close', cb); });
-    return { requests };
+    return { requests, ...(report.version === 2 ? { accessModel: 'scoped' as const } : {}) };
   });
 
   app.post('/api/agent/logs/result', {

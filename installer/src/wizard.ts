@@ -134,9 +134,9 @@ async function collectServer(c: Ctx, release: ReleaseInfo): Promise<Collected> {
   if (admin) { args.push('--admin-email', admin); summary.push(['Перший адміністратор', `${admin} (пароль — прихований ввід під час встановлення)`]); }
   c.out.line('\nAPI_TRUSTED_PROXIES=127.0.0.1 вмикайте лише коли Nginx уже проксіює за шаблоном nginx-config (він замінює клієнтський X-Forwarded-For).');
   if (await yesNo(c, 'Nginx уже налаштовано за цим шаблоном (--behind-nginx)?', false)) { args.push('--behind-nginx'); summary.push(['Довіра до proxy', 'так (API_TRUSTED_PROXIES=127.0.0.1)']); }
-  if (await yesNo(c, 'Увімкнути керування PM2 на рівні API (--enable-pm2-control)? На серверах потрібні ще broker і allowlist', false)) {
+  if (await yesNo(c, 'Записати PM2_CONTROL_ENABLED=true явно (--enable-pm2-control)? Типово керування й так увімкнене; вимкнути — PM2_CONTROL_ENABLED=false', false)) {
     args.push('--enable-pm2-control');
-    summary.push(['Керування PM2 (API)', 'так']);
+    summary.push(['Керування PM2 (API)', 'так, явно']);
   }
   return { component: 'server', args, summary, input: processInput };
 }
@@ -199,7 +199,8 @@ async function collectAgent(c: Ctx, release: ReleaseInfo): Promise<Collected> {
   const mode = await menu(c, '\nМожливості Agent:', [
     'лише heartbeat (сервер онлайн, load average)',
     'heartbeat + список PM2-процесів (inventory)',
-    'heartbeat + inventory + broker для керування й логів (allowlist порожня — нічого не дозволено, доки ви її не заповните)',
+    'heartbeat + inventory + керування й логи (broker auto: доступ за ролями й «Доступами» в UI, без ручного allowlist)',
+    'heartbeat + inventory + керування й логи лише за ручним allowlist (порожній — нічого не дозволено, доки ви його не заповните)',
   ]);
   if (mode >= 1) {
     const pm2 = await choosePm2(c);
@@ -207,7 +208,8 @@ async function collectAgent(c: Ctx, release: ReleaseInfo): Promise<Collected> {
     args.push('--pm2-owner', pm2.owner, '--pm2-home', pm2.home);
     summary.push(['Власник PM2', pm2.owner], ['PM2_HOME', pm2.home]);
   }
-  if (mode === 2) { args.push('--enable-control'); summary.push(['Broker', 'так, з порожньою allowlist']); }
+  if (mode === 2) { args.push('--enable-control', '--control-mode', 'auto'); summary.push(['Broker', 'так, режим auto (доступ визначає API)']); }
+  if (mode === 3) { args.push('--enable-control', '--control-mode', 'allowlist'); summary.push(['Broker', 'так, режим allowlist (порожній)']); }
   const secret = token;
   const input: SecretInput = {
     isTTY: true,

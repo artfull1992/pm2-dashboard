@@ -26,6 +26,7 @@ export type AuditEvent =
   | { event: 'integration.slack_test_requested'; outcome: 'success'; details: { operationId: string; generation: number } }
   | { event: 'integration.slack_test_result'; outcome: 'success' | 'failure'; details: { operationId: string; generation: number; code?: string; stale?: boolean } }
   | { event: 'auth.logout'; outcome: 'success'; details?: Record<string, never> }
+  | { event: 'access.updated'; outcome: 'success'; details: { targetUserId: string; revision: number; servers: number; services: number } }
   | { event: 'authz.denied'; outcome: 'denied'; details: { permission: string; route: string } }
   | { event: 'server.created'; outcome: 'success'; details: { serverId: string } }
   | { event: 'agent.credential_issued'; outcome: 'success'; details: { serverId: string; rotated: boolean } }

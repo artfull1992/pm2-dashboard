@@ -94,12 +94,12 @@ describe('reconciliation', () => {
     const ctx = await setup();
     const n = await node(ctx, 'n');
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0), proc(1), proc(2)], 0) });
-    const before = await ctx.inventory.serverApplications(n.serverId);
+    const before = await ctx.inventory.serverApplications(n.serverId, null);
     expect(before?.items.map((i) => i.pmId)).toEqual([0, 1, 2]);
     expect(before?.inventory).toMatchObject({ state: 'current', processCount: 3, source: 'pm2', capturedAt: at(0) });
     const firstSeen = before?.items[0]?.firstSeenAt;
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0, { status: 'stopped', cpuPercent: null, memoryBytes: null }), proc(2)], 30) });
-    const after = await ctx.inventory.serverApplications(n.serverId);
+    const after = await ctx.inventory.serverApplications(n.serverId, null);
     expect(after?.items.map((i) => [i.pmId, i.status, i.cpuPercent, i.memoryBytes])).toEqual([[0, 'stopped', null, null], [2, 'online', 2.5, 2 ** 40]]);
     expect(after?.items[0]?.firstSeenAt).toBe(firstSeen);
     expect(after?.inventory.processCount).toBe(2);
@@ -109,9 +109,9 @@ describe('reconciliation', () => {
     const ctx = await setup();
     const n = await node(ctx, 'n');
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0, { name: 'old' })], 0) });
-    const first = (await ctx.inventory.serverApplications(n.serverId))?.items[0]?.firstSeenAt;
+    const first = (await ctx.inventory.serverApplications(n.serverId, null))?.items[0]?.firstSeenAt;
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0, { name: 'new' })], 30) });
-    const item = (await ctx.inventory.serverApplications(n.serverId))?.items[0];
+    const item = (await ctx.inventory.serverApplications(n.serverId, null))?.items[0];
     expect(item?.name).toBe('new');
     expect(item && first && Date.parse(item.firstSeenAt) > Date.parse(first)).toBe(true);
   });
@@ -121,11 +121,11 @@ describe('reconciliation', () => {
     const n = await node(ctx, 'n');
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0), proc(1)], 0) });
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: unavailable('daemon_not_running', 30) });
-    const down = await ctx.inventory.serverApplications(n.serverId);
+    const down = await ctx.inventory.serverApplications(n.serverId, null);
     expect(down?.inventory).toMatchObject({ state: 'unavailable', reason: 'daemon_not_running', processCount: 2, capturedAt: at(0) });
     expect(down?.items.map((i) => [i.pmId, i.inventoryState])).toEqual([[0, 'unavailable'], [1, 'unavailable']]);
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([], 60) });
-    const empty = await ctx.inventory.serverApplications(n.serverId);
+    const empty = await ctx.inventory.serverApplications(n.serverId, null);
     expect(empty?.inventory).toMatchObject({ state: 'current', processCount: 0 });
     expect(empty?.items).toEqual([]);
   });
@@ -135,9 +135,9 @@ describe('reconciliation', () => {
     const n = await node(ctx, 'n');
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0)], 0) });
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: stale(0) });
-    expect((await ctx.inventory.serverApplications(n.serverId))?.inventory).toMatchObject({ state: 'stale', processCount: 1 });
+    expect((await ctx.inventory.serverApplications(n.serverId, null))?.inventory).toMatchObject({ state: 'stale', processCount: 1 });
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: unavailable('snapshot_missing', null) });
-    const r = await ctx.inventory.serverApplications(n.serverId);
+    const r = await ctx.inventory.serverApplications(n.serverId, null);
     expect(r?.inventory).toMatchObject({ state: 'unavailable', reason: 'snapshot_missing', source: 'pm2' });
     expect(r?.items).toHaveLength(1);
   });
@@ -159,13 +159,13 @@ describe('ordering and freshness', () => {
     expect(await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0, { name: 'newer' })], 60) })).toMatchObject({ status: 'accepted' });
     expect(await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0, { name: 'older' })], 0) })).toMatchObject({ status: 'ignored' });
     expect(await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: unavailable('daemon_not_running', 30) })).toMatchObject({ status: 'ignored' });
-    const first = await ctx.inventory.serverApplications(n.serverId);
+    const first = await ctx.inventory.serverApplications(n.serverId, null);
     expect(first?.items[0]?.name).toBe('newer');
     expect(first?.inventory.state).toBe('current');
     const collected = first?.inventory.collectedAt;
     await new Promise((r) => setTimeout(r, 20));
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0, { name: 'newer' })], 60) });
-    const again = await ctx.inventory.serverApplications(n.serverId);
+    const again = await ctx.inventory.serverApplications(n.serverId, null);
     expect(again?.inventory.collectedAt).toBe(collected);
     expect(Date.parse(again?.inventory.reportedAt ?? '')).toBeGreaterThan(Date.parse(collected ?? ''));
   });
@@ -175,9 +175,9 @@ describe('ordering and freshness', () => {
     const n = await node(ctx, 'n');
     await ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report: ok([proc(0)], 0) });
     await ctx.sql(`UPDATE server_inventories SET inventory_collected_at = now() - interval '181 seconds' WHERE server_id = $1`, [n.serverId]);
-    expect((await ctx.inventory.serverApplications(n.serverId))?.inventory.state).toBe('stale');
+    expect((await ctx.inventory.serverApplications(n.serverId, null))?.inventory.state).toBe('stale');
     await ctx.sql(`UPDATE server_heartbeats SET received_at = now() - interval '10 minutes' WHERE server_id = $1`, [n.serverId]);
-    const list = await ctx.inventory.listApplications({ limit: 10, cursor: null, serverId: n.serverId, status: null });
+    const list = await ctx.inventory.listApplications({ limit: 10, cursor: null, serverId: n.serverId, status: null, scope: null });
     expect(list.items[0]).toMatchObject({ inventoryState: 'stale', serverStatus: 'offline' });
   });
 
@@ -186,7 +186,7 @@ describe('ordering and freshness', () => {
     const n = await node(ctx, 'n');
     const reports = Array.from({ length: 12 }, (_, i) => ok([proc(0, { restarts: i })], i * 10));
     await Promise.all(reports.reverse().map((report) => ctx.inventory.recordInventory({ tokenHash: n.tokenHash, report })));
-    const r = await ctx.inventory.serverApplications(n.serverId);
+    const r = await ctx.inventory.serverApplications(n.serverId, null);
     expect(r?.items[0]?.restarts).toBe(11);
     expect(r?.inventory.capturedAt).toBe(at(110));
   });
@@ -216,7 +216,7 @@ describe('browser queries', () => {
     let cursor: string | null = null;
     let pages = 0;
     do {
-      const page: Awaited<ReturnType<InventoryStore['listApplications']>> = await ctx.inventory.listApplications({ limit: 2, cursor: cursor ? decodeCursor(cursor) : null, serverId: null, status: null });
+      const page: Awaited<ReturnType<InventoryStore['listApplications']>> = await ctx.inventory.listApplications({ limit: 2, cursor: cursor ? decodeCursor(cursor) : null, serverId: null, status: null, scope: null });
       seen.push(...page.items.map((i) => `${i.name}@${i.serverName}`));
       cursor = page.nextCursor;
       pages += 1;
@@ -225,11 +225,11 @@ describe('browser queries', () => {
     expect(seen).toHaveLength(5);
     expect(new Set(seen).size).toBe(5);
     expect(pages).toBe(3);
-    expect((await ctx.inventory.listApplications({ limit: 50, cursor: null, serverId: b.serverId, status: null })).items.map((i) => i.name)).toEqual(['api', 'zeta']);
-    expect((await ctx.inventory.listApplications({ limit: 50, cursor: null, serverId: null, status: 'errored' })).items.map((i) => i.name)).toEqual(['worker']);
-    expect((await ctx.inventory.serverApplications(c.serverId))?.inventory).toEqual({
+    expect((await ctx.inventory.listApplications({ limit: 50, cursor: null, serverId: b.serverId, status: null, scope: null })).items.map((i) => i.name)).toEqual(['api', 'zeta']);
+    expect((await ctx.inventory.listApplications({ limit: 50, cursor: null, serverId: null, status: 'errored', scope: null })).items.map((i) => i.name)).toEqual(['worker']);
+    expect((await ctx.inventory.serverApplications(c.serverId, null))?.inventory).toEqual({
       state: 'not_reported', reason: null, source: null, capturedAt: null, collectedAt: null, reportedAt: null, processCount: null,
     });
-    expect(await ctx.inventory.serverApplications('11111111-1111-4111-8111-111111111111')).toBeNull();
+    expect(await ctx.inventory.serverApplications('11111111-1111-4111-8111-111111111111', null)).toBeNull();
   });
 });

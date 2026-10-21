@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, apiRequest, authApi, fetchAuditPage, parseRetryAfter } from '../src/api/client';
-import { parseAuditPage, parseSessionInfo } from '../src/api/types';
+import { ContractError, parseAuditPage, parseControlView, parseServiceOptionList, parseSessionInfo, parseUserAccess } from '../src/api/types';
 import { CSRF, installFetch, json, noContent, session } from './support';
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -142,5 +142,31 @@ describe('cancellation on the success path', () => {
     await new Promise((r) => setTimeout(r, 30));
     release();
     expect((await pending).kind).toBe('timeout');
+  });
+});
+
+describe('ADR-028 contracts', () => {
+  const SID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const target = (i: number) => ({ targetKey: `n-${String(i).padStart(24, '0')}`, name: `svc-${String(i)}`, pmId: i, actions: ['restart'], matchStatus: 'ok' });
+  const view = (over: Record<string, unknown> = {}) => ({
+    serverId: SID, enabled: true, serverStatus: 'online', targetFreshSeconds: 60, targets: Array.from({ length: 500 }, (_, i) => target(i)),
+    broker: { state: 'ok', daemon: 'ok', allowlist: 'ok', reportedAt: '2026-10-21T10:00:00.000Z', fresh: true, mode: 'auto', protocol: 2, total: 640 }, ...over,
+  });
+
+  it('control view: up to 500 targets of an auto broker, mode/protocol/total parsed; an old API without them still parses', () => {
+    expect(parseControlView(view()).broker).toMatchObject({ mode: 'auto', protocol: 2, total: 640 });
+    expect(() => parseControlView(view({ targets: Array.from({ length: 501 }, (_, i) => target(i)) }))).toThrow(ContractError);
+    expect(() => parseControlView(view({ broker: { ...view().broker, mode: 'open' } }))).toThrow(ContractError);
+    const old = view({ broker: { state: 'ok', daemon: 'ok', allowlist: 'ok', reportedAt: '2026-10-21T10:00:00.000Z', fresh: true } });
+    expect(parseControlView(old).broker).toMatchObject({ mode: null, protocol: 1, total: null });
+  });
+
+  it('user access: strict shape; unknown mode or wrong user id is a contract violation', () => {
+    const ok = { userId: SID, email: 'x@example.test', role: 'viewer', isActive: true, global: false, revision: 2,
+      servers: [{ serverId: SID, serverName: 'alpha', serverActive: true, mode: 'selected', grantedAt: '2026-10-21T10:00:00.000Z', services: [{ name: 'api', available: false }] }] };
+    expect(parseUserAccess(ok).servers[0]?.services).toEqual([{ name: 'api', available: false }]);
+    expect(() => parseUserAccess({ ...ok, servers: [{ ...ok.servers[0], mode: 'some' }] })).toThrow(ContractError);
+    expect(() => parseUserAccess({ ...ok, revision: -1 })).toThrow(ContractError);
+    expect(() => parseServiceOptionList({ serverId: 'other', items: [], truncated: false }, SID)).toThrow(ContractError);
   });
 });

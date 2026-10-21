@@ -52,14 +52,16 @@ function Partial({ shown, total, what }: { shown: number; total: number; what: s
   return total > shown ? <p className="hint">{`Показано ${String(shown)} з ${String(total)} ${what}.`}</p> : null;
 }
 
-function Overview({ d, outdated }: { d: DashboardView; outdated: boolean }) {
+function Overview({ d, outdated, scoped }: { d: DashboardView; outdated: boolean; scoped: boolean }) {
   const s = d.servers;
   const p = d.processes;
   const staleServers = d.inventory.stale + d.inventory.unavailable + d.inventory.notReported;
   return (
     <>
       <Section title="Потребують уваги" titleId="attention-title">
-        {s.active === 0 ? <EmptyState title="Ще немає активних серверів">Додайте сервер і підключіть агента на сторінці «Сервери».</EmptyState> : (
+        {s.active === 0 ? (scoped
+          ? <EmptyState title="Немає наданих серверів">Огляд показує лише сервери й сервіси, до яких адміністратор надав вам доступ («Користувачі» → «Доступи»).</EmptyState>
+          : <EmptyState title="Ще немає активних серверів">Додайте сервер і підключіть агента на сторінці «Сервери».</EmptyState>) : (
           <div className="split">
             <div>
               <h3 className="split__title">{`Сервери (${n(d.attentionServers.total)})`}</h3>
@@ -149,7 +151,7 @@ function Overview({ d, outdated }: { d: DashboardView; outdated: boolean }) {
             <ul className="list">
               {d.recentActions.items.map((a) => (
                 <li key={a.id}>
-                  <span>{ACTION_LABELS[a.action]}</span> <span className="mono">{a.targetKey}</span> на <Link to={`/servers/${a.serverId}`}>{a.serverName}</Link>
+                  <span>{ACTION_LABELS[a.action]}</span> <span className="mono">{a.serviceName ?? a.targetKey}</span> на <Link to={`/servers/${a.serverId}`}>{a.serverName}</Link>
                   <span className="list__meta">
                     {a.overdue ? 'Дедлайн минув, остаточний статус ще не зафіксовано' : COMMAND_TEXT[a.status]} · {formatDate(a.requestedAt)}{a.requestedByMe ? ' · ви' : ''}
                   </span>
@@ -196,7 +198,7 @@ export function DashboardPage() {
       {outdated && state.status !== 'error' ? (
         <p className="notice notice--warning" role="status">{`Дані не оновлювались ${ago(age).replace(' тому', '')}: статуси нижче можуть бути неактуальними.`}</p>
       ) : null}
-      {data ? <Overview d={data} outdated={outdated} /> : null}
+      {data ? <Overview d={data} outdated={outdated} scoped={auth.status === 'authenticated' && auth.session.user.role !== 'admin'} /> : null}
       {state.status === 'not_found' ? <EmptyState title="Огляд недоступний">Спробуйте оновити сторінку пізніше.</EmptyState> : null}
       <details className="disclosure">
         <summary>Як читати ці дані</summary>

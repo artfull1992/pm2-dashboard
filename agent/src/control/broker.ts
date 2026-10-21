@@ -7,15 +7,19 @@ import { listLogTargets, readLogs } from './logs.js';
 import { LOG_LIMITS, type LogsRequest, type LogsResponse, type LogTargetsRequest, type LogTargetsResponse, parseLogsRequest } from './logs-protocol.js';
 import { executeCommand, type ExecutorDeps, listTargets, type Pm2ActionMethod } from './executor.js';
 import { Journal } from './journal.js';
-import { type BrokerRequest, type BrokerResponse, type ExecuteResult, MAX_FRAME_BYTES, parseBrokerRequest } from './protocol.js';
+import { type BrokerMode, type BrokerRequest, type BrokerResponse, type ExecuteResult, MAX_FRAME_BYTES, parseBrokerRequest } from './protocol.js';
 
 // Local PM2 control broker (ADR-017): runs as the PM2 owner, listens ONLY on a unix socket (0660, group
-// nc-pm2-control → the Agent), executes typed actions for allowlisted targets one at a time. No network, no shell.
+// nc-pm2-control → the Agent), executes typed actions one at a time. No network, no shell.
+// Mode (ADR-028): 'allowlist' — only targets of the root-owned allowlist; 'auto' — every process of this PM2 owner,
+// protocol version 2 only (the API authorises each command per user and service; see executor.ts).
 
 export interface BrokerConfig {
   pm2Home: string;
   socketPath: string;
+  /** Unused in auto mode (it may stay configured; it is not read). */
   allowlistPath: string;
+  mode: BrokerMode;
   journalDir: string;
   pm2TimeoutMs: number;
   allowSelfOwnedAllowlist: boolean;
@@ -43,7 +47,10 @@ export function loadBrokerConfig(env: Record<string, string | undefined>, uid: n
   if (uid === 0) issues.push('the broker must not run as root: run it as the PM2 owner');
   const pm2Home = absolute(env.NC_PM2_HOME, 'NC_PM2_HOME', issues);
   const socketPath = absolute(env.NC_BROKER_SOCKET, 'NC_BROKER_SOCKET', issues, '/run/node-control-pm2-broker/broker.sock');
-  const allowlistPath = absolute(env.NC_BROKER_ALLOWLIST, 'NC_BROKER_ALLOWLIST', issues);
+  const rawMode = env.NC_BROKER_MODE ?? 'allowlist';
+  if (rawMode !== 'allowlist' && rawMode !== 'auto') issues.push('NC_BROKER_MODE must be allowlist or auto');
+  const mode: BrokerMode = rawMode === 'auto' ? 'auto' : 'allowlist';
+  const allowlistPath = mode === 'auto' && (env.NC_BROKER_ALLOWLIST ?? '') === '' ? '' : absolute(env.NC_BROKER_ALLOWLIST, 'NC_BROKER_ALLOWLIST', issues);
   const journalDir = absolute(env.NC_BROKER_JOURNAL_DIR, 'NC_BROKER_JOURNAL_DIR', issues, '/var/lib/node-control-pm2-broker');
   if (pm2Home && socketPath && !relative(pm2Home, socketPath).startsWith('..')) issues.push('NC_BROKER_SOCKET must not be inside NC_PM2_HOME');
   const rawTimeout = env.NC_PM2_TIMEOUT_SECONDS ?? '20';
@@ -55,7 +62,7 @@ export function loadBrokerConfig(env: Record<string, string | undefined>, uid: n
   if (logDirs.length > 8) issues.push('NC_BROKER_LOG_DIRS allows at most 8 directories');
   if (issues.length > 0) throw new BrokerConfigError(issues);
   return {
-    pm2Home, socketPath, allowlistPath, journalDir, pm2TimeoutMs: Number(rawTimeout) * 1000,
+    pm2Home, socketPath, allowlistPath, mode, journalDir, pm2TimeoutMs: Number(rawTimeout) * 1000,
     allowSelfOwnedAllowlist: env.NC_BROKER_ALLOW_SELF_OWNED_ALLOWLIST === 'true', logDirs,
   };
 }
@@ -73,6 +80,7 @@ export function realDeps(config: BrokerConfig, uid: number = process.getuid?.() 
     }
   };
   return {
+    mode: config.mode,
     loadAllowlist: () => readAllowlist(config.allowlistPath, { ownerUid: 0, selfUid: uid, allowSelfOwned: config.allowSelfOwnedAllowlist }),
     list: async () => {
       await ensureDaemonSocket();
@@ -129,10 +137,10 @@ export function createBroker(deps: ExecutorDeps, logger: BrokerLogger, options: 
   let logReads = 0;
   let overdue = 0;
   const handleLogs = async (req: LogTargetsRequest | LogsRequest): Promise<LogTargetsResponse | LogsResponse> => {
-    const logDeps = { loadAllowlist: deps.loadAllowlist, list: deps.list, logDirs: deps.logDirs ?? [] };
-    if (req.op === 'logTargets') return listLogTargets(logDeps);
+    const logDeps = { loadAllowlist: deps.loadAllowlist, list: deps.list, logDirs: deps.logDirs ?? [], mode: deps.mode ?? 'allowlist' };
+    if (req.op === 'logTargets') return listLogTargets(logDeps, req.v);
     const busy = (reason: 'broker_busy' | 'timeout'): LogsResponse =>
-      ({ v: 1, op: 'logs', requestId: req.requestId, outcome: 'failed', reason, readAt: new Date().toISOString(), stdout: null, stderr: null });
+      ({ v: req.v, op: 'logs', requestId: req.requestId, outcome: 'failed', reason, readAt: new Date().toISOString(), stdout: null, stderr: null });
     if (logReads >= LOG_LIMITS.maxConcurrentReads) return busy('broker_busy');
     logReads += 1;
     const started = Date.now();
@@ -163,9 +171,12 @@ export function createBroker(deps: ExecutorDeps, logger: BrokerLogger, options: 
   };
 
   const handle = async (req: BrokerRequest): Promise<BrokerResponse> => {
-    if (req.op === 'list') return { v: 1, op: 'list', ...(await listTargets(deps)) };
+    if (req.op === 'list') {
+      const { mode, daemon, allowlist, targets, total } = await listTargets(deps, req.v);
+      return req.v === 2 ? { v: 2, op: 'list', mode, daemon, allowlist, targets, total } : { v: 1, op: 'list', daemon, allowlist, targets };
+    }
     if (pending >= MAX_PENDING_EXECUTIONS) {
-      return { v: 1, op: 'execute', commandId: req.commandId, outcome: 'rejected', reason: 'broker_busy', before: null, after: null };
+      return { v: req.v, op: 'execute', commandId: req.commandId, outcome: 'rejected', reason: 'broker_busy', before: null, after: null };
     }
     pending += 1;
     const run = chain.then(async () => {
@@ -196,7 +207,7 @@ export function createBroker(deps: ExecutorDeps, logger: BrokerLogger, options: 
       try {
         const parsed: unknown = JSON.parse(buffer.slice(0, newline));
         req = parseBrokerRequest(parsed);
-        if (!req && typeof parsed === 'object' && parsed !== null && (parsed as { v?: unknown }).v === 1) logReq = parseLogsRequest(parsed as Record<string, unknown>);
+        if (!req && typeof parsed === 'object' && parsed !== null) logReq = parseLogsRequest(parsed as Record<string, unknown>);
       } catch {
         req = null;
       }

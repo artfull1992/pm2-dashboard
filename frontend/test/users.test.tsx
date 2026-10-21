@@ -163,7 +163,7 @@ describe('user administration', () => {
     expect(within(own).getByText(/Власний обліковий запис/)).toBeTruthy();
     expect(within(own).queryByRole('button', { name: /^Дії/ })).toBeNull();
     expect(within(table).getByRole('button', { name: 'Дії: other@example.test' })).toBeTruthy();
-    expect(within(table).getAllByRole('columnheader').map((c) => c.textContent)).toEqual(['Email', 'Роль', 'Активність', 'Створено', 'Дії']);
+    expect(within(table).getAllByRole('columnheader').map((c) => c.textContent)).toEqual(['Email', 'Роль', 'Доступ', 'Активність', 'Створено', 'Дії']);
   });
 
   it('create: validation, CSRF + exact body, password cleared, list reloaded; duplicate → conflict message', async () => {

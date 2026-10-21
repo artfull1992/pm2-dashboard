@@ -227,7 +227,8 @@ function ApplicationsView() {
         <EmptyState title={filtered ? 'Нічого не знайдено' : 'Ще немає даних про процеси'}>
           {q ? `Немає застосунків, у назві яких є «${q}»${serverId || status ? ' (з урахуванням фільтрів)' : ''}.`
             : filtered ? 'За цим фільтром процесів немає.'
-              : 'Процеси з’являться, коли на сервері буде налаштовано PM2 exporter і агент передасть inventory.'}
+              : can('servers:manage') ? 'Процеси з’являться, коли на сервері буде налаштовано PM2 exporter і агент передасть inventory.'
+                : 'Ви бачите лише сервіси, до яких адміністратор надав доступ. Наданих сервісів немає або їхній inventory ще не надійшов.'}
         </EmptyState>
       ) : null}
       {data && data.items.length > 0 && notCurrent === 0 && collected ? (

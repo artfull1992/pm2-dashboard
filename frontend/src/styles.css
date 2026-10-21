@@ -282,6 +282,20 @@ h1, h2, h3, p { margin: 0; }
   .dialog__actions .button { flex: 1 1 auto; }
 }
 
+/* ------------------------------------------------------------------ access editor (ADR-028) */
+.access-servers { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+.access-server { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); display: grid; gap: var(--space-2); background: var(--surface); }
+.access-server__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.access-server__head .button { margin-left: auto; }
+.access-server__mode { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
+.check { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--font-sm); min-width: 0; overflow-wrap: anywhere; }
+.access-picker { display: grid; gap: var(--space-2); }
+.access-picker__list, .access-add__list { list-style: none; margin: 0; padding: var(--space-1) var(--space-2); max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); display: grid; gap: 2px; }
+.access-picker__list:empty { display: none; }
+.access-add { display: grid; gap: var(--space-2); }
+.access-add__list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 2px 0; }
+.tag--warning { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); background: var(--warning-soft); }
+
 /* ------------------------------------------------------------------ row action menu (normal flow: never clipped) */
 .service-actions { display: grid; gap: 4px; min-width: 96px; max-width: 220px; }
 .action-menu__trigger { gap: var(--space-3); min-height: var(--control-sm); padding: 0 10px; font-size: var(--font-sm); }

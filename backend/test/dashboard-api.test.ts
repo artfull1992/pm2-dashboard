@@ -35,7 +35,7 @@ function sample(withActions: boolean): Dashboard & Record<string, unknown> {
       total: 2, limit: 50,
     },
     recentActions: withActions ? {
-      items: [{ id: '22222222-2222-4222-8222-222222222222', serverId: SERVER, serverName: 'a', targetKey: 'api', action: 'restart', status: 'queued', reason: null, requestedAt: '2026-10-14T11:00:00.000Z', completedAt: null, requestedByMe: true, overdue: true, requestedBy: 'leak' } as never],
+      items: [{ id: '22222222-2222-4222-8222-222222222222', serverId: SERVER, serverName: 'a', targetKey: 'api', serviceName: 'api', action: 'restart', status: 'queued', reason: null, requestedAt: '2026-10-14T11:00:00.000Z', completedAt: null, requestedByMe: true, overdue: true, requestedBy: 'leak' } as never],
       limit: 10,
     } : null,
     passwordHash: 'scrypt$SHOULD_NOT_LEAK',
@@ -44,9 +44,11 @@ function sample(withActions: boolean): Dashboard & Record<string, unknown> {
 
 class FakeDashboard implements DashboardStore {
   calls: (string | null)[] = [];
+  scopes: (string | null | undefined)[] = [];
   fail = false;
-  dashboard(input: { actionsFor: string | null }): Promise<Dashboard> {
+  dashboard(input: { actionsFor: string | null; scope?: string | null }): Promise<Dashboard> {
     this.calls.push(input.actionsFor);
+    this.scopes.push(input.scope);
     if (this.fail) return Promise.reject(Object.assign(new Error('relation "servers" secret SQL text'), { code: '57P01' }));
     return Promise.resolve(sample(input.actionsFor !== null));
   }
@@ -80,6 +82,14 @@ async function session(role: Role) {
 const get = (cookie?: string) => app.inject({ method: 'GET', url: '/api/dashboard', headers: cookie ? { cookie } : {} });
 
 describe('GET /api/dashboard', () => {
+  it('scope (ADR-028): operator/viewer aggregates are limited to their own grants; admin is global', async () => {
+    for (const role of ['viewer', 'operator', 'admin'] as const) {
+      const s = await session(role);
+      expect((await get(s.cookie)).statusCode).toBe(200);
+      expect(dash.scopes.at(-1), role).toBe(role === 'admin' ? null : s.id);
+    }
+  });
+
   it('anonymous → 401; the store is never asked', async () => {
     expect((await get()).statusCode).toBe(401);
     expect(dash.calls).toEqual([]);
@@ -99,7 +109,7 @@ describe('GET /api/dashboard', () => {
     const res = await get(s.cookie);
     expect(res.statusCode).toBe(200);
     expect(res.json<Dashboard>().recentActions?.items[0]).toEqual({
-      id: '22222222-2222-4222-8222-222222222222', serverId: SERVER, serverName: 'a', targetKey: 'api', action: 'restart', status: 'queued',
+      id: '22222222-2222-4222-8222-222222222222', serverId: SERVER, serverName: 'a', targetKey: 'api', serviceName: 'api', action: 'restart', status: 'queued',
       reason: null, requestedAt: '2026-10-14T11:00:00.000Z', completedAt: null, requestedByMe: true, overdue: true,
     });
     expect(dash.calls).toEqual([s.id]);

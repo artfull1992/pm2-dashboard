@@ -3,6 +3,7 @@ import { ApiError, USERS_PAGE_SIZE, usersApi } from '../api/client';
 import { KNOWN_ROLES, type Role, type UserView } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
+import { AccessDialog } from '../components/AccessDialog';
 import { ActionMenu } from '../components/ActionMenu';
 import { Dialog, FormDialog } from '../components/Dialog';
 import { ROLE_LABELS } from '../components/Layout';
@@ -131,6 +132,8 @@ export function UsersPage() {
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [creating, setCreating] = useState(false);
+  const [accessFor, setAccessFor] = useState<UserView | null>(null);
+  const closeAccess = useCallback(() => { setAccessFor(null); }, []);
   const closeCreate = useCallback(() => { setCreating(false); }, []);
   const inflight = useRef<AbortController | null>(null);
   const roleId = useId();
@@ -235,17 +238,19 @@ export function UsersPage() {
         <div className="table-wrap">
           <table className="table">
             <caption className="visually-hidden">Користувачі системи</caption>
-            <thead><tr><th scope="col">Email</th><th scope="col">Роль</th><th scope="col">Активність</th><th scope="col">Створено</th><th scope="col">Дії</th></tr></thead>
+            <thead><tr><th scope="col">Email</th><th scope="col">Роль</th><th scope="col">Доступ</th><th scope="col">Активність</th><th scope="col">Створено</th><th scope="col">Дії</th></tr></thead>
             <tbody>
               {data.items.map((u) => (
                 <tr key={u.id}>
                   <th scope="row">{u.email}{u.id === me ? <span className="tag">Ви</span> : null}</th>
                   <td>{ROLE_LABELS[u.role]}</td>
+                  <td className="secondary">{u.role === 'admin' ? 'Повний доступ' : 'За наданими доступами'}</td>
                   <td><StatusIndicator tone={u.isActive ? 'ok' : 'muted'}>{u.isActive ? 'Активний' : 'Деактивований'}</StatusIndicator></td>
                   <td className="date secondary">{formatDate(u.createdAt)}</td>
                   <td>
                     {u.id === me ? <span className="hint">Власний обліковий запис: роль і активність змінює інший адміністратор.</span> : (
                       <ActionMenu name={u.email} items={[
+                        { key: 'access', label: 'Доступи', disabled: busy, onSelect: () => { setStatus(null); setAccessFor(u); } },
                         { key: 'role', label: 'Змінити роль', disabled: busy, onSelect: () => { setStatus(null); setDialogError(null); setDialog({ kind: 'role', user: u, role: u.role }); } },
                         u.isActive
                           ? { key: 'active', label: 'Деактивувати', danger: true, disabled: busy, onSelect: () => { setStatus(null); setDialogError(null); setDialog({ kind: 'active', user: u, isActive: false }); } }
@@ -266,6 +271,14 @@ export function UsersPage() {
           onClick={() => { if (data?.nextAfter) go([...cursors, data.nextAfter]); }}>Далі</button>
       </nav>
       {creating ? <CreateUserForm onCreated={onCreated} onClose={closeCreate} /> : null}
+      {accessFor ? (
+        <AccessDialog key={accessFor.id} user={accessFor} onClose={closeAccess} onSaved={(a) => {
+          setAccessFor(null);
+          setStatus({ text: a.servers.length === 0
+            ? `Доступи ${a.email} прибрано: користувач не бачить жодного сервера.`
+            : `Доступи ${a.email} збережено: серверів — ${String(a.servers.length)}. Зміни діють з наступного запиту користувача.` });
+        }} />
+      ) : null}
       {dialog ? (
         <Dialog title={dialogTitle} onClose={close} dismissible={!pending} actions={(
           <>

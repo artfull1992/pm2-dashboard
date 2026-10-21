@@ -192,7 +192,7 @@ describe('every Node.js command of the installers uses the runtime path', () => 
     h.file('/transfer/agent.key', `ncag_${'a'.repeat(43)}\n`, 0o600);
     h.agentLogs = () => '{"msg":"heartbeat","outcome":"accepted"}';
     const out = capture();
-    const code = await agentMain(['apply', '--artifact', `/transfer/node-control-agent-${'a'.repeat(40)}.tar.gz`, '--api-url', 'https://control.example.com', '--token-file', '/transfer/agent.key', '--pm2-owner', 'deploy', '--pm2-home', '/home/deploy/.pm2', '--enable-control'], { host: h, out: out.out, releaseTool: '/transfer/server-release.js' });
+    const code = await agentMain(['apply', '--artifact', `/transfer/node-control-agent-${'a'.repeat(40)}.tar.gz`, '--api-url', 'https://control.example.com', '--token-file', '/transfer/agent.key', '--pm2-owner', 'deploy', '--pm2-home', '/home/deploy/.pm2', '--enable-control', '--control-mode', 'allowlist'], { host: h, out: out.out, releaseTool: '/transfer/server-release.js' });
     expect(code, out.all).toBe(0);
     expect(out.all).toContain(`${RUNTIME.node} /opt/node-control-agent/current/agent/dist/pm2-broker.js fingerprint`);
     expect(out.all).not.toMatch(/\/usr\/bin\/node \/opt/);
