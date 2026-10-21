@@ -16,7 +16,7 @@ test('exporter service: runs as the instance user, no manager-level ConditionUse
   assert.equal(lines.some((l) => l.startsWith('Condition')), false);
   assert.ok(lines.includes('User=%i'));
   assert.ok(lines.includes('Type=oneshot'));
-  assert.ok(lines.includes('ExecStart=/usr/bin/node /opt/node-control-agent/current/agent/dist/pm2-exporter.js'));
+  assert.ok(lines.includes('ExecStart=/opt/node-control-runtime/bin/node /opt/node-control-agent/current/agent/dist/pm2-exporter.js'));
 });
 
 test('exporter service keeps its hardening: no network, no privileges, writes only the snapshot directory', () => {
@@ -42,7 +42,21 @@ test('broker service: instance user, dedicated group, socket/state dirs, no cond
     'StateDirectory=node-control-pm2-broker', 'StateDirectoryMode=0700', 'RestartPreventExitStatus=2',
     'RestrictAddressFamilies=AF_UNIX', 'IPAddressDeny=any', 'NoNewPrivileges=yes', 'CapabilityBoundingSet=',
     'ProtectSystem=strict', 'ProtectHome=read-only', 'MemoryMax=128M', 'TasksMax=32',
-    'ExecStart=/usr/bin/node /opt/node-control-agent/current/agent/dist/pm2-broker.js serve',
+    'ExecStart=/opt/node-control-runtime/bin/node /opt/node-control-agent/current/agent/dist/pm2-broker.js serve',
   ]) assert.ok(lines.includes(required), required);
   assert.equal(lines.some((l) => /^(ReadWritePaths|AmbientCapabilities=\S|SupplementaryGroups)/.test(l)), false);
+});
+
+test('every Node.js unit runs the Node Control runtime by its absolute path, never /usr/bin/node or PATH (ADR-027)', () => {
+  for (const name of ['node-control-api.service', 'node-control-agent.service', 'node-control-pm2-exporter@.service', 'node-control-pm2-broker@.service']) {
+    const exec = directives(unit(name)).filter((l) => l.startsWith('ExecStart='));
+    assert.equal(exec.length, 1, name);
+    assert.match(exec[0], /^ExecStart=\/opt\/node-control-runtime\/bin\/node (--use-system-ca )?\/opt\/node-control(-agent)?\/current\//, name);
+  }
+});
+
+test('API and Agent (outbound TLS) trust the system CA store with any runtime build (official Node.js uses its bundled CAs otherwise)', () => {
+  for (const name of ['node-control-api.service', 'node-control-agent.service']) {
+    assert.ok(directives(unit(name)).some((l) => l.startsWith('ExecStart=/opt/node-control-runtime/bin/node --use-system-ca ')), name);
+  }
 });

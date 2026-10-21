@@ -15,7 +15,7 @@ Type=oneshot
 # itself (loadExporterConfig checks the real UID before touching PM2_HOME), so @root fails with exit code 2.
 User=%i
 EnvironmentFile=/etc/node-control-pm2-exporter/%i.env
-ExecStart=/usr/bin/node /opt/node-control-agent/current/agent/dist/pm2-exporter.js
+ExecStart=/opt/node-control-runtime/bin/node /opt/node-control-agent/current/agent/dist/pm2-exporter.js
 TimeoutStartSec=30
 StandardOutput=journal
 StandardError=journal

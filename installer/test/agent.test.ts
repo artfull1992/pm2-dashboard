@@ -54,6 +54,9 @@ describe('agent installer: heartbeat only (default)', () => {
     expect(r.code).toBe(0);
     expect(h.changes).toEqual([
       'useradd nodecontrol-agent',
+      'mkdir /opt/node-control-runtime',
+      'mkdir /opt/node-control-runtime/bin',
+      'symlink /opt/node-control-runtime/bin/node -> /usr/bin/node',
       'mkdir /opt/node-control-agent',
       `prepare /opt/node-control-agent/releases/${REV}`,
       `activate ${REV}`,

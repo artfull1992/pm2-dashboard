@@ -3,12 +3,15 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AGENT, AGENT_USAGE } from '../src/agent.js';
 import { API, SERVER_USAGE } from '../src/server.js';
+import { RUNTIME } from '../src/runtime.js';
 import { STATE_DIR } from '../src/state.js';
+import { BUILDER, PATHS } from '../bootstrap/prepare.js';
 
 // Code ↔ Docs: every option of the installers is documented in docs/INSTALLATION.md, and every installer command
 // line in that document uses only options the code accepts; documented paths are the ones the code uses.
 
-const DOC = readFileSync(join(import.meta.dirname, '..', '..', 'docs', 'INSTALLATION.md'), 'utf8');
+const ROOT = join(import.meta.dirname, '..', '..');
+const DOC = readFileSync(join(ROOT, 'docs', 'INSTALLATION.md'), 'utf8');
 const flags = (text: string) => new Set([...text.matchAll(/--[a-z][a-z0-9-]+/g)].map((m) => m[0]));
 
 /** Installer invocations in the document, with backslash continuations joined. */
@@ -33,18 +36,31 @@ describe('docs/INSTALLATION.md matches the installers', () => {
     }
   });
 
-  it('the guided route matches install.sh and the wizard (launcher, --release, default release directory, BUNDLE.json)', () => {
-    const launcher = readFileSync(join(import.meta.dirname, '..', '..', 'install.sh'), 'utf8');
-    const dirName = /releases_dir="\$\(dirname -- "\$checkout"\)\/([a-z-]+)"/.exec(launcher)?.[1];
-    expect(dirName).toBe('node-control-releases');
-    for (const value of ['sudo ./install.sh', './install.sh --help', '--release', `../${dirName ?? ''}/`, 'BUNDLE.json', 'server-bundle/install/wizard.js', 'build-release.js --out']) {
-      expect(DOC, value).toContain(value);
-    }
+  it('the main route matches install.sh, the bootstrap and the runtime (paths, options, versions)', () => {
+    const launcher = readFileSync(join(ROOT, 'install.sh'), 'utf8');
+    expect(/^RUNTIME_DIR=(\S+)$/m.exec(launcher)?.[1]).toBe(RUNTIME.dir);
+    const spec = readFileSync(join(ROOT, 'installer', 'bootstrap', 'node-runtime.env'), 'utf8');
+    const value = (key: string) => new RegExp(`^${key}=(\\S+)$`, 'm').exec(spec)?.[1] ?? '';
+    for (const v of [
+      'git clone <URL репозиторію> node-control\ncd node-control\n./install.sh', 'sudo ./install.sh', './install.sh --help', '--release', '--component', '--node-archive',
+      'BUNDLE.json', 'server-bundle/install/wizard.js', 'installer/bootstrap/node-runtime.env', RUNTIME.node, `${RUNTIME.dir}/versions/`,
+      PATHS.store, PATHS.logs, PATHS.builderHome, BUILDER, value('NODE_MIN'), value('NODE_VERSION'), '--ignore-scripts', '--engine-strict',
+    ]) expect(DOC, v).toContain(v);
+    // every option of install.sh --help is documented
+    for (const flag of flags(/usage\(\) \{[\s\S]*?\nEOF/.exec(launcher)?.[0] ?? '')) expect(DOC, flag).toContain(flag);
+  });
+
+  it('README: the main example is clone → cd → ./install.sh, with no manual npm/build step before it', () => {
+    const readme = readFileSync(join(ROOT, 'README.md'), 'utf8');
+    const install = readme.slice(readme.indexOf('## Встановлення'), readme.indexOf('## Постійний контекст розробки'));
+    expect(install).toContain('```bash\ngit clone <URL репозиторію> node-control\ncd node-control\n./install.sh\n```');
+    expect(install).not.toMatch(/^\s*npm ci|build-release\.js --out/m);
   });
 
   it('no private addresses in examples: only example domains', () => {
     const urls = [...DOC.matchAll(/https:\/\/([a-z0-9.-]+)/g)].map((m) => m[1] ?? '');
-    for (const host of urls) expect(host, host).toMatch(/(^|\.)example\.(com|org)$/);
+    // Example domains only — plus the two official public sources the installer downloads from.
+    for (const host of urls) expect(host, host).toMatch(/(^|\.)example\.(com|org)$|^nodejs\.org$|^registry\.npmjs\.org$/);
     expect(DOC).not.toMatch(/\b(?:\d{1,3}\.){3}\d{1,3}\b(?<!127\.0\.0\.1)(?<!0\.0\.0\.0)/);
   });
 });

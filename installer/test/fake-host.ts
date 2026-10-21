@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, normalize } from 'node:path';
 import { parseEnv } from 'node:util';
 import type { FileInfo, GroupInfo, Host, Owner, ProcessInfo, RunOptions, RunResult, ScanOptions, ScanResult, UserInfo } from '../src/host.js';
+import { RUNTIME } from '../src/runtime.js';
 
 // In-memory Linux host for the installer tests: a file tree with owners/modes, users and groups, systemd units, and
 // simulations of exactly the external tools the installers call (server-release.js, migrate.js, bootstrap-admin.js,
@@ -44,6 +45,8 @@ export class FakeHost implements Host {
   /** Writes that fail (path predicate); once = only the first matching write. */
   writeFailures: { match: (path: string) => boolean; once: boolean }[] = [];
   euidValue = 0;
+  /** `node --version` by the real path of the binary (default v22.23.4). */
+  nodeVersions = new Map<string, string>();
   clock = new Date('2026-10-20T10:00:00.000Z');
   private nextUid = 990;
 
@@ -102,6 +105,10 @@ export class FakeHost implements Host {
   realpath(path: string): string | null {
     let p = normalize(path).replace(/\/$/, '') || '/';
     for (const [alias, real] of this.aliases) if (p === alias || p.startsWith(`${alias}/`)) p = real + p.slice(alias.length);
+    for (let hops = 0; this.files.get(p)?.kind === 'symlink' && hops < 8; hops++) {
+      const target = this.files.get(p)?.target ?? '';
+      p = target.startsWith('/') ? target : normalize(`${dirname(p)}/${target}`);
+    }
     return this.files.has(p) ? p : null;
   }
   sha256File(path: string): string { return createHash('sha256').update(this.readFile(path)).digest('hex'); }
@@ -129,6 +136,13 @@ export class FakeHost implements Host {
     this.files.set(path, { kind: 'dir', ...owner });
     if (path === '/var/lib/node-control-install') this.stateOps.push({ op: `mkdir ${path}`, at: this.changes.length, content: '' });
     else this.changes.push(`mkdir ${path}`);
+  }
+  symlink(target: string, path: string): void {
+    const existing = this.files.get(path);
+    if (existing && existing.kind !== 'symlink') throw new Error(`${path} exists and is not a symlink`);
+    if (this.files.get(dirname(path))?.kind !== 'dir') throw new Error(`ENOENT: ${dirname(path)}`);
+    this.files.set(path, { kind: 'symlink', mode: 0o777, uid: 0, gid: 0, target });
+    this.changes.push(`symlink ${path} -> ${target}`);
   }
   /** Running processes (title + real UID), as /proc would show them. */
   procs: ProcessInfo[] = [];
@@ -223,7 +237,12 @@ export class FakeHost implements Host {
         }
         return ok();
       }
-      case '/usr/bin/node': return this.node(args);
+      case '/usr/bin/node':
+      case RUNTIME.node: {
+        const real = this.realpath(command);
+        if (!real || this.files.get(real)?.kind !== 'file') return { code: 127, stdout: '', stderr: `${command}: not found` };
+        return this.node(args, this.nodeVersions.get(real) ?? 'v22.23.4');
+      }
       case 'runuser': return this.runuser(args, options);
       default: return { code: 127, stdout: '', stderr: `${command}: not simulated` };
     }
@@ -259,8 +278,8 @@ export class FakeHost implements Host {
     return Promise.resolve({ status: 'exit', code: 0 });
   }
 
-  private node(args: string[]): RunResult {
-    if (args[0] === '--version') return { code: 0, stdout: 'v22.20.0\n', stderr: '' };
+  private node(args: string[], version: string): RunResult {
+    if (args[0] === '--version') return { code: 0, stdout: `${version}\n`, stderr: '' };
     const [, sub, ...rest] = args;
     const opt = (name: string) => rest[rest.indexOf(`--${name}`) + 1] ?? '';
     const base = opt('base');

@@ -10,18 +10,29 @@ Task 001 підтверджений файлами та локальними uni
 
 Node Control — self-hosted панель для серверів із PM2-застосунками: центральний сервер (Central API + веб-інтерфейс, host PostgreSQL і Nginx) і легкий Agent на кожному сервері (лише вихідний HTTPS; список PM2-процесів, керування й логи — тільки явно увімкнені).
 
-Передумови: Ubuntu із systemd, root, Node.js 22 у `/usr/bin/node`; на центральному сервері — PostgreSQL і Nginx, домен і TLS-сертифікат.
+Передумови:
+- Ubuntu із systemd (x86_64 або arm64), користувач із sudo або root;
+- на центральному сервері — PostgreSQL і Nginx, домен і TLS-сертифікат;
+- мережа до `registry.npmjs.org` (і до `nodejs.org`, якщо сумісного Node.js 22 немає).
 
 ```bash
-git clone <URL репозиторію> node-control && cd node-control
-npm ci                                              # звичайним користувачем, не root
-node scripts/deploy/build-release.js --out "$(dirname "$PWD")/node-control-releases/$(git rev-parse --short HEAD)"
-sudo ./install.sh                                   # або ./install.sh, якщо ви вже root
+git clone <URL репозиторію> node-control
+cd node-control
+./install.sh
 ```
 
-Майстер питає, що встановлювати (Central Server або Agent), збирає параметри, показує план і після «так» встановлює з підготовленого релізу. Для центрального сервера заздалегідь потрібні БД (PostgreSQL) і, для доступу ззовні, Nginx із TLS; для Agent — ключ із UI («Додати сервер» → «Видати ключ»). Неінтерактивний маршрут (`server-bundle/install/server.js`/`agent.js plan|apply`) лишається для автоматизації.
+Окремі `npm ci`, збирання чи пошук артефактів не потрібні. `install.sh`:
+1. питає, що встановлювати (Central Server або Agent);
+2. перевіряє середовище;
+3. за потреби, після підтвердження, встановлює окремий Node.js 22 у `/opt/node-control-runtime` (системний Node.js не змінюється);
+4. збирає реліз закоміченої ревізії не від root;
+5. збирає параметри, показує план і лише після «так» встановлює.
 
-Повна інструкція (команди, що змінюється, діагностика, відновлення, секрети) — [docs/INSTALLATION.md](docs/INSTALLATION.md). Оновлення й rollback наявних інсталяцій — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Межі: інші ОС і Docker не підтримуються; PM2 і його автозапуск Node Control не налаштовує. Неінтерактивні інсталятори перевірено наскрізно на Ubuntu 26.04.1 LTS arm64 (2026-10-20); майстер — див. PROJECT_STATUS.
+Для центрального сервера заздалегідь потрібні БД (PostgreSQL) і, для доступу ззовні, Nginx із TLS. Для Agent — ключ із UI («Додати сервер» → «Видати ключ»).
+
+Advanced/offline (готовий реліз, `sudo ./install.sh --release <каталог>`) і неінтерактивний маршрут (`server-bundle/install/server.js`/`agent.js plan|apply`) лишаються для серверів без мережі й для автоматизації.
+
+Повна інструкція (команди, що змінюється, діагностика, відновлення, секрети) — [docs/INSTALLATION.md](docs/INSTALLATION.md). Оновлення й rollback наявних інсталяцій — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Межі: інші ОС і Docker не підтримуються; PM2 і його автозапуск Node Control не налаштовує. Фактично перевірені платформи й сценарії (зокрема те, що x86_64 ще не перевірено на справжній VM) — у PROJECT_STATUS.
 
 ## Постійний контекст розробки
 

@@ -33,7 +33,7 @@ Central API та Agents — Node.js 22, systemd. PM2 керує лише зас�
 | Параметр | Значення |
 |---|---|
 | Сервер | `control-server` (`203.0.113.10`), Ubuntu 26.04.1 LTS; деплоїти лише після перевірки `hostname` |
-| Runtime | `/usr/bin/node` — Node.js 22 (пакет `nodejs` nodesource); глобальний Node не оновлюється в межах деплою |
+| Runtime | з 2026-10-21 — `/opt/node-control-runtime/bin/node` (Node.js 22 ≥ 22.22.0; root, без запису для інших): посилання на окремий офіційний Node.js у `/opt/node-control-runtime/versions/` або на сумісний `/usr/bin/node`. Цей шлях використовують усі units, `server-release.js`, міграції й bootstrap. Глобальний Node не оновлюється в межах деплою (розділ «Runtime Node.js» нижче). Раніше встановлені units — `/usr/bin/node` |
 | Сервісний користувач | `nodecontrol` — системний, `/usr/sbin/nologin`, без home, без sudo, власна група |
 | systemd unit | `node-control-api.service` ← `deploy/systemd/node-control-api.service` |
 | Релізи | `/opt/node-control/releases/<git-sha>` — `root:root`, без запису для group/other; з 2026-10-20 `prepare` задає права явно (каталоги 755, файли 644/755) незалежно від umask і від root передає все дерево (зокрема `node_modules`) `root:root`; відсутні батьківські каталоги `--base` створюються з 755, наявні не змінюються |
@@ -44,16 +44,45 @@ Central API та Agents — Node.js 22, systemd. PM2 керує лише зас�
 
 Історичний `/etc/pm2-dashboard` (Task 001/002) не використовується сервісом і не змінюється; з нього лише один раз копіюються `DB_*` у новий конфіг.
 
+### Runtime Node.js (з 2026-10-21, ADR-027)
+
+Units ревізій від 2026-10-21 (`node-control-api`, `node-control-agent`, `node-control-pm2-exporter@`, `node-control-pm2-broker@`) запускають `/opt/node-control-runtime/bin/node`. Інструменти релізу, міграції й bootstrap — так само.
+
+**Первинне встановлення:** runtime створює `./install.sh` (окремий офіційний Node.js або посилання на сумісний `/usr/bin/node`; [INSTALLATION](INSTALLATION.md), «Runtime Node.js»).
+
+**Наявні інсталяції автоматично не мігруються.** Перед першим оновленням на ревізію з новими units (крок 3 процедури) створіть runtime, нічого не змінюючи в системному Node.js:
+
+```bash
+/usr/bin/node -v                                   # 22.x не старший за 22.22.0?
+install -d -m 755 -o root -g root /opt/node-control-runtime /opt/node-control-runtime/bin
+ln -s /usr/bin/node /opt/node-control-runtime/bin/node             # лише якщо сумісний; інакше — окремий runtime:
+#   ./install.sh з checkout (запитає «Встановити runtime?»; далі можна скасувати) або вручну: офіційний
+#   node-v<NODE_VERSION>-linux-<x64|arm64>.tar.gz, sha256sum за installer/bootstrap/node-runtime.env,
+#   tar -xzf у /opt/node-control-runtime/versions/ (root, go-w), ln -s ../versions/<каталог>/bin/node /opt/node-control-runtime/bin/node
+/opt/node-control-runtime/bin/node -v
+```
+
+**Rollback:** `server-release.js rollback` units не змінює. Unit з `/opt/node-control-runtime/bin/node` запускає й попередній реліз (runtime не видаляється). Якщо повертаєте старий unit-файл — він знову використовує `/usr/bin/node`, який має бути сумісним.
+
+**Оновлення runtime** — окрема свідома дія:
+1. Нова версія в `versions/` (та сама перевірка SHA-256).
+2. Атомарна заміна посилання (`ln -s … bin/.node.new && mv -T bin/.node.new bin/node`).
+3. Restart служб Node Control.
+
+Попередню версію не видаляти, доки є можливість rollback. Інсталятор runtime не перемикає й не видаляє.
+
+У чинних командах нижче `node` означає `/opt/node-control-runtime/bin/node`; для інсталяцій, де runtime ще не створено, — сумісний `/usr/bin/node`. Історичні процедури наводяться без змін.
+
 ### Артефакт
 
-`node scripts/deploy/build-release.js [--revision HEAD] [--out <dir>] [--remote-branch origin/main]` (на Node.js 22) приймає лише чистий робочий каталог і commit, що вже є у вказаній віддаленій гілці (типово `origin/main`); збирає з `git archive` цього commit у тимчасовому каталозі (`npm ci`, збірки backend, frontend, Agent). Вміст API-артефакту: `backend/dist/**`, `backend/migrations/*.sql`, `frontend/dist/**`, `package.json`, `package-lock.json`, `deploy/systemd/node-control-api.service`, `scripts/deploy/**`, `RELEASE.json` (revision + SHA-256 кожного файлу). Окремо збирається `node-control-agent-<sha>.tar.gz` (Agent, exporter, broker; розділ «Agent»). Не потрапляють `.env*`, `.git`, `node_modules`, сирці, тести, source maps. Окремо — `.tar.gz.sha256` і `server-bundle/` (серверний скрипт для першого кроку; з 2026-10-20 також `install/` — інсталятори, ADR-027). Обидва артефакти містять `installer/dist` і `installer/package.json`. З 2026-10-21 `server-bundle/BUNDLE.json` фіксує ревізію й SHA-256 кожного файлу бандла; майстер `install.sh` / `install/wizard.js` (INSTALLATION, «Швидкий маршрут») працює лише з бандлом, що йому відповідає.
+`node scripts/deploy/build-release.js [--revision HEAD] [--out <dir>] [--remote-branch origin/main] [--component agent]` (на Node.js 22 ≥ 22.22.0 з його npm першим у `PATH` — перевіряється до будь-якого `npm`; `npm ci --ignore-scripts --engine-strict`) приймає лише чистий робочий каталог і commit, що вже є у вказаній віддаленій гілці (типово `origin/main`); збирає з `git archive` цього commit у тимчасовому каталозі (`npm ci`, збірки backend, frontend, Agent). Вміст API-артефакту: `backend/dist/**`, `backend/migrations/*.sql`, `frontend/dist/**`, `package.json`, `package-lock.json`, `deploy/systemd/node-control-api.service`, `scripts/deploy/**`, `RELEASE.json` (revision + SHA-256 кожного файлу). Окремо збирається `node-control-agent-<sha>.tar.gz` (Agent, exporter, broker; розділ «Agent»). Не потрапляють `.env*`, `.git`, `node_modules`, сирці, тести, source maps. Окремо — `.tar.gz.sha256` і `server-bundle/` (серверний скрипт для першого кроку; з 2026-10-20 також `install/` — інсталятори, ADR-027). Обидва артефакти містять `installer/dist` і `installer/package.json`. З 2026-10-21 `server-bundle/BUNDLE.json` фіксує ревізію й SHA-256 кожного файлу бандла; майстер `install.sh` / `install/wizard.js` (INSTALLATION, «Швидкий маршрут») працює лише з бандлом, що йому відповідає.
 
 ### Процедура
 
 ```bash
-# 0. Локально, Node.js 22, чистий і запушений commit
+# 0. Локально, Node.js 22 ≥ 22.22.0 (і його npm першим у PATH), чистий і запушений commit
 npm ci && npm test && npm run typecheck && npm run lint && npm run test:backend && npm run test:backend:smoke && npm run check:secrets
-npx -y node@22 scripts/deploy/build-release.js           # друкує revision, artifact, sha256
+node scripts/deploy/build-release.js                     # друкує revision, artifact, sha256; несумісний Node.js — відмова до npm
 SHA=<revision>; OUT=<out-dir з виводу>
 
 # 1. Передача в новий каталог (без --delete, без .env)
@@ -61,16 +90,16 @@ ssh root@203.0.113.10 "test \"\$(hostname)\" = control-server && install -d -m 7
 scp $OUT/node-control-api-$SHA.tar.gz $OUT/node-control-api-$SHA.tar.gz.sha256 root@203.0.113.10:/root/node-control-deploy/$SHA/
 scp -r $OUT/server-bundle root@203.0.113.10:/root/node-control-deploy/$SHA/
 
-# 2. На сервері (root). Перший раз: користувач.
+# 2. На сервері (root). Перший раз: користувач. Runtime — розділ «Runtime Node.js» (має існувати до кроку 3).
 id nodecontrol || useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin nodecontrol
-D=/root/node-control-deploy/$SHA
-node $D/server-bundle/server-release.js prepare --artifact $D/node-control-api-$SHA.tar.gz \
+D=/root/node-control-deploy/$SHA; NODE=/opt/node-control-runtime/bin/node
+$NODE $D/server-bundle/server-release.js prepare --artifact $D/node-control-api-$SHA.tar.gz \
   --sha256 "$(cut -d' ' -f1 $D/node-control-api-$SHA.tar.gz.sha256)" --revision $SHA   # checksum → manifest → npm ci --omit=dev
-node $D/server-bundle/server-release.js config          # створює api.env лише якщо його немає; інакше тільки валідує
+$NODE $D/server-bundle/server-release.js config         # створює api.env лише якщо його немає; інакше тільки валідує
 
 # 2a. Міграції (якщо реліз їх містить) — ДО активації, з підготовленого релізу, як nodecontrol (не superuser)
 R=/opt/node-control/releases/$SHA
-run_migrate() { (cd / && runuser -u nodecontrol -- env ENV_FILE=/etc/node-control/api.env /usr/bin/node $R/backend/dist/migrate.js "$1"); }
+run_migrate() { (cd / && runuser -u nodecontrol -- env ENV_FILE=/etc/node-control/api.env $NODE $R/backend/dist/migrate.js "$1"); }
 run_migrate status                                         # read-only: що pending
 install -d -m 700 /root/node-control-backups
 (umask 077 && runuser -u postgres -- pg_dump -Fc node_control_db > /root/node-control-backups/node_control_db-$(date -u +%Y%m%dT%H%M%SZ)-pre-$SHA.dump)
@@ -84,7 +113,7 @@ systemd-analyze verify /etc/systemd/system/node-control-api.service
 systemctl daemon-reload
 
 # 4. Активація та запуск лише Node Control API
-node $D/server-bundle/server-release.js activate --revision $SHA
+$NODE $D/server-bundle/server-release.js activate --revision $SHA
 systemctl enable node-control-api.service
 systemctl restart node-control-api.service
 ```
@@ -122,7 +151,7 @@ AUTH_ALLOWED_ORIGINS=            # порожньо → login вимкнено, 
 
 ```bash
 cd / && runuser -u nodecontrol -- env ENV_FILE=/etc/node-control/api.env \
-  /usr/bin/node /opt/node-control/current/backend/dist/bootstrap-admin.js --email <admin-email>
+  /opt/node-control-runtime/bin/node /opt/node-control/current/backend/dist/bootstrap-admin.js --email <admin-email>
 # exit 0 — створено (друкується id); 3 — адміністратор уже існує або email зайнятий (нічого не змінено);
 # 2 — ввід/параметри; 1 — помилка БД (нічого не закомічено).
 ```
@@ -222,7 +251,7 @@ Rollback Agent: `server-release.js rollback --base /opt/node-control-agent` + re
 PM2_OWNER=<user>                 # власник PM2 (не root: instance @root завершиться з exit 2)
 PM2_HOME=/home/<user>/.pm2       # абсолютний шлях
 # 0. Лише перевірки (нічого не змінюють; pm2-команди НЕ запускати):
-id "$PM2_OWNER"; stat -c '%U %a %F %n' "$PM2_HOME" "$PM2_HOME/rpc.sock"; /usr/bin/node --version
+id "$PM2_OWNER"; stat -c '%U %a %F %n' "$PM2_HOME" "$PM2_HOME/rpc.sock"; /opt/node-control-runtime/bin/node --version
 id -nG nodecontrol-agent         # Agent НЕ має бути в основній групі власника PM2 (rpc.sock = 775)
 # 1. Вузька група читання snapshot: лише Agent (exporter пише через setgid-каталог, у групі не потрібен)
 getent group nc-pm2-inventory || groupadd --system nc-pm2-inventory
@@ -274,7 +303,7 @@ install -m 644 /opt/node-control-agent/current/deploy/systemd/node-control-pm2-b
 systemd-analyze verify "/etc/systemd/system/node-control-pm2-broker@$PM2_OWNER.service" && systemctl daemon-reload
 # Fingerprint потрібних процесів (виводить pm_id, name, exec_mode, fingerprint — без шляхів/env; лише існуючий daemon):
 runuser -u "$PM2_OWNER" -- env NC_PM2_HOME="$PM2_HOME" NC_BROKER_ALLOWLIST=/etc/node-control-pm2-broker/$PM2_OWNER.allowlist.json \
-  /usr/bin/node /opt/node-control-agent/current/agent/dist/pm2-broker.js fingerprint
+  /opt/node-control-runtime/bin/node /opt/node-control-agent/current/agent/dist/pm2-broker.js fingerprint
 # Заповнити allowlist (root), наприклад:
 # {"version":1,"targets":[{"id":"api-prod","name":"api","actions":["restart"],"fingerprint":"sha256:…"}]}
 systemctl enable --now "node-control-pm2-broker@$PM2_OWNER.service"

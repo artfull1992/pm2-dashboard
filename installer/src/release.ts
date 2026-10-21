@@ -3,6 +3,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mustRun, type Preflight, type Step } from './engine.js';
 import type { Host } from './host.js';
+import { RUNTIME } from './runtime.js';
 import { type ArtifactRef, parseChecksumFile } from './validate.js';
 
 // Releases are handled ONLY by the existing scripts/deploy/server-release.js (prepare: checksum → manifest →
@@ -87,7 +88,7 @@ export function prepareStep(tool: string, base: string, ref: ArtifactRef, sha256
       return { state: 'pending', detail: `server-release.js prepare (контрольна сума → manifest${noInstall ? '' : ' → npm ci --omit=dev'})` };
     },
     apply({ host }) {
-      mustRun(host, '/usr/bin/node', [tool, 'prepare', '--base', base, '--artifact', ref.path, '--sha256', sha256(), '--revision', ref.revision, ...(noInstall ? ['--no-install'] : [])], 'server-release.js prepare');
+      mustRun(host, RUNTIME.node, [tool, 'prepare', '--base', base, '--artifact', ref.path, '--sha256', sha256(), '--revision', ref.revision, ...(noInstall ? ['--no-install'] : [])], 'server-release.js prepare');
     },
     recovery: 'prepare не залишає частково розпакованого релізу; причину видно вище (контрольна сума, manifest, npm). Повторіть після виправлення',
   };
@@ -108,7 +109,7 @@ export function activateStep(tool: string, base: string, ref: ArtifactRef, effec
       };
     },
     apply({ host }) {
-      mustRun(host, '/usr/bin/node', [tool, 'activate', '--base', base, '--revision', ref.revision], 'server-release.js activate');
+      mustRun(host, RUNTIME.node, [tool, 'activate', '--base', base, '--revision', ref.revision], 'server-release.js activate');
     },
     effects,
     recovery: `node ${tool} status --base ${base}; activate перевіряє manifest — пошкоджений реліз видаліть (rm -r ${base}/releases/${ref.revision}) і повторіть`,

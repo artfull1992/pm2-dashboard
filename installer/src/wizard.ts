@@ -21,9 +21,10 @@ export const WIZARD_EXIT = Object.freeze({ ok: 0, failed: 1, usage: 2, cancelled
 
 export const WIZARD_USAGE = `Node Control — майстер первинного встановлення (Central Server або Agent).
 
-Запуск (root, у терміналі):
-  sudo ./install.sh [--release <каталог підготовленого релізу>]     з checkout репозиторію
-  sudo node <реліз>/server-bundle/install/wizard.js --release <реліз>    без checkout (лише підготовлений реліз)
+Запуск (у терміналі):
+  ./install.sh                                                     з checkout: підготовка runtime і релізу, далі цей майстер
+  sudo ./install.sh --release <каталог підготовленого релізу>       з уже підготовленого релізу (advanced/offline)
+  sudo node <реліз>/server-bundle/install/wizard.js --release <реліз> [--component server|agent]   без checkout
 Майстер питає параметри, показує їх (без секретів), виконує план (нічого не змінює) і лише після «так» — встановлення.
 Без термінала (автоматизація) — неінтерактивні інсталятори: <реліз>/server-bundle/install/server.js | agent.js plan|apply.
 Докладно: docs/INSTALLATION.md.`;
@@ -234,11 +235,18 @@ export async function wizardMain(argv: readonly string[], deps: WizardDeps = {})
   const p = deps.prompter ?? terminalPrompter;
   const c: Ctx = { host, out, p, env: deps.env ?? process.env };
   let releaseArg: string | undefined;
+  let chosen: number | undefined; // --component: already chosen by ./install.sh before the release was prepared
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] ?? '';
     if (a === '-h' || a === '--help') { out.line(WIZARD_USAGE); return WIZARD_EXIT.ok; }
     if (a === '--release' && i + 1 < argv.length) { releaseArg = argv[++i]; continue; }
     if (a.startsWith('--release=')) { releaseArg = a.slice('--release='.length); continue; }
+    const component = a === '--component' && i + 1 < argv.length ? argv[++i] : a.startsWith('--component=') ? a.slice('--component='.length) : undefined;
+    if (component !== undefined) {
+      if (component !== 'server' && component !== 'agent') { out.error(`✗ --component: server або agent\n\n${WIZARD_USAGE}`); return WIZARD_EXIT.usage; }
+      chosen = component === 'server' ? 0 : 1;
+      continue;
+    }
     out.error(`✗ невідомий параметр: ${a}\n\n${WIZARD_USAGE}`);
     return WIZARD_EXIT.usage;
   }
@@ -263,10 +271,11 @@ export async function wizardMain(argv: readonly string[], deps: WizardDeps = {})
 
   let applying = false;
   try {
-    const component = await menu(c, 'Що встановлюємо на цьому сервері?', [
+    const component = chosen ?? await menu(c, 'Що встановлюємо на цьому сервері?', [
       `Central Server — API + веб-інтерфейс${release.api ? '' : ' (немає артефакту API в цьому релізі)'}`,
       `Agent — сервер із PM2-застосунками${release.agent ? '' : ' (немає артефакту Agent в цьому релізі)'}`,
     ]);
+    if (chosen !== undefined) out.line(`Компонент: ${chosen === 0 ? 'Central Server — API + веб-інтерфейс' : 'Agent — сервер із PM2-застосунками'}`);
     if ((component === 0 && !release.api) || (component === 1 && !release.agent)) {
       out.error('✗ у цьому релізі немає потрібного артефакту — підготуйте повний реліз (docs/INSTALLATION.md)');
       return WIZARD_EXIT.failed;

@@ -2,6 +2,7 @@
 # Installed as /etc/systemd/system/node-control-agent.service. Not PM2-managed; no inbound listener.
 # Config: ENV_FILE (600, owned by nodecontrol-agent) with NC_AGENT_API_URL and NC_AGENT_TOKEN.
 # Exit code 2 = invalid/missing configuration (e.g. no token yet): not restarted in a loop.
+# --use-system-ca: TLS to the API trusts the system store (/etc/ssl/certs) whichever Node.js build the runtime is.
 
 [Unit]
 Description=Node Control Agent (heartbeat)
@@ -17,7 +18,7 @@ User=nodecontrol-agent
 Group=nodecontrol-agent
 WorkingDirectory=/opt/node-control-agent/current
 Environment=ENV_FILE=/etc/node-control-agent/agent.env
-ExecStart=/usr/bin/node /opt/node-control-agent/current/agent/dist/main.js
+ExecStart=/opt/node-control-runtime/bin/node --use-system-ca /opt/node-control-agent/current/agent/dist/main.js
 Restart=on-failure
 RestartSec=30
 RestartPreventExitStatus=2

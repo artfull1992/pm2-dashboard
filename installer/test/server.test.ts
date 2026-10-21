@@ -42,6 +42,9 @@ describe('server installer: first installation', () => {
     expect(r.code).toBe(0);
     expect(h.changes).toEqual([
       'useradd nodecontrol',
+      'mkdir /opt/node-control-runtime',
+      'mkdir /opt/node-control-runtime/bin',
+      'symlink /opt/node-control-runtime/bin/node -> /usr/bin/node',
       `prepare /opt/node-control/releases/${REV}`,
       'config /etc/node-control/api.env',
       'write /etc/node-control/api.env.bak-20261020T100000Z',

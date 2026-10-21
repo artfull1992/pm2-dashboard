@@ -39,8 +39,23 @@ function run(command, args, options) {
   if (result.status !== 0) throw new Error(`${command} ${args[0]} failed (exit ${result.status ?? result.signal})`);
 }
 
+/**
+ * npm of THIS Node.js (the runtime that runs the release tool): its directory comes first in PATH, and `npm version`
+ * must report the same Node.js — otherwise an npm of another Node.js (e.g. an old system one) would choose packages for
+ * the wrong engine. Returns the environment for npm.
+ */
+export function runtimeNpmEnv({ env = process.env, execPath = process.execPath, version = process.versions.node, probe = spawnSync } = {}) {
+  const npmEnv = { ...env, PATH: `${dirname(execPath)}${env.PATH ? `:${env.PATH}` : ''}`, npm_config_update_notifier: 'false' };
+  const r = probe('npm', ['version', '--json'], { encoding: 'utf8', env: npmEnv, cwd: '/' });
+  let node;
+  try { node = r.status === 0 ? JSON.parse(r.stdout).node : undefined; } catch { node = undefined; }
+  if (node === undefined) throw new Error(`npm next to ${execPath} not found or not working`);
+  if (node !== version) throw new Error(`npm runs on Node.js ${node}, not on ${version} (${execPath})`);
+  return npmEnv;
+}
+
 export function npmInstallProduction(dir) {
-  run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: dir, stdio: 'inherit' });
+  run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: dir, stdio: 'inherit', env: runtimeNpmEnv() });
 }
 
 /** Validated, installed release ready for activation. Throws with the reason otherwise. */

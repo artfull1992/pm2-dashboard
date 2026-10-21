@@ -2,6 +2,7 @@
 # Installed as /etc/systemd/system/node-control-api.service (see docs/DEPLOYMENT.md).
 # Single config source: the app reads ENV_FILE itself (Node util.parseEnv format); no EnvironmentFile=.
 # The journal is operational logging only, not an application Audit Log.
+# --use-system-ca: outbound TLS (Slack) trusts the system store (/etc/ssl/certs) whichever Node.js build the runtime is.
 
 [Unit]
 Description=Node Control Central API
@@ -18,7 +19,7 @@ User=nodecontrol
 Group=nodecontrol
 WorkingDirectory=/opt/node-control/current
 Environment=ENV_FILE=/etc/node-control/api.env
-ExecStart=/usr/bin/node /opt/node-control/current/backend/dist/main.js
+ExecStart=/opt/node-control-runtime/bin/node --use-system-ca /opt/node-control/current/backend/dist/main.js
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM

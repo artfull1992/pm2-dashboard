@@ -84,7 +84,7 @@ UI → `POST /api/servers/:id/log-requests` (`logs:read`, CSRF) → запит �
 
 ## Життєвий цикл і майбутня фаза
 
-API та Agent: Node.js 22 через systemd, без root за замовчуванням. PM2 використовується лише для керованих Node.js-проєктів; API/Agent не запускати через PM2. Agent залишається незалежним від PM2, обмежується дозволеними процесами, Linux-користувачем та PM2_HOME.
+API та Agent: Node.js 22 через systemd, без root за замовчуванням; усі units і інструменти Node Control запускають один runtime `/opt/node-control-runtime/bin/node` (окремий офіційний Node.js або посилання на сумісний системний, ADR-027). PM2 використовується лише для керованих Node.js-проєктів; API/Agent не запускати через PM2. Agent залишається незалежним від PM2, обмежується дозволеними процесами, Linux-користувачем та PM2_HOME.
 
 Frontend збирається у статичні файли (`current/frontend/dist`) й обслуговується host Nginx; окремий production Node.js-процес не потрібен. API — `127.0.0.1:3100`; публічно UI і `/api/` віддає host Nginx на `https://control.example.com` (конфіг і TLS — власник сервера, DEPLOYMENT).
 
@@ -94,7 +94,7 @@ Central API забезпечує RBAC; метрики застосунків (PM
 
 Після MVP, успішних тестів і стабілізації production окремо розглянути Docker для API/Agents за новим завданням. Зараз не створювати Dockerfile/Compose, контейнерні залежності чи контейнери. PostgreSQL і Nginx залишаються на хості; їх перенесення не погоджено.
 
-Деплой і невизначені параметри — [DEPLOYMENT](DEPLOYMENT.md); первинне встановлення інсталяторами (`installer/`, ADR-027) — [INSTALLATION](INSTALLATION.md).
+Деплой і невизначені параметри — [DEPLOYMENT](DEPLOYMENT.md); первинне встановлення з checkout одним `./install.sh` (підготовка runtime і релізу — `installer/bootstrap`, інсталятори — `installer/`, ADR-027) — [INSTALLATION](INSTALLATION.md).
 
 ## PM2 inventory (Task 008, ADR-016)
 

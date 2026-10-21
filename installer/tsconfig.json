@@ -13,7 +13,9 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "rootDir": ".",
-    "noEmit": true
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "bootstrap/**/*.js", "test/**/*.ts", "vitest.config.ts"]
 }

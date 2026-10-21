@@ -18,7 +18,7 @@ User=%i
 # Primary group: the socket and runtime directory get it; only nodecontrol-agent is a member.
 Group=nc-pm2-control
 EnvironmentFile=/etc/node-control-pm2-broker/%i.env
-ExecStart=/usr/bin/node /opt/node-control-agent/current/agent/dist/pm2-broker.js serve
+ExecStart=/opt/node-control-runtime/bin/node /opt/node-control-agent/current/agent/dist/pm2-broker.js serve
 RuntimeDirectory=node-control-pm2-broker
 RuntimeDirectoryMode=0750
 StateDirectory=node-control-pm2-broker

@@ -1,5 +1,65 @@
 # Поточний стан проєкту
 
+## Встановлення з clone одним `./install.sh` (2026-10-21) — готово до незалежного review Codex
+
+Статус: **готово до незалежного review Codex** (APPROVED не виставлявся). База: `d0cb5fe`. Production і сервер користувача не підключались і не змінювались; PM2-застосунки не змінювались.
+
+**Маршрут:** `git clone <URL> node-control && cd node-control && ./install.sh`. Порядок:
+1. вибір компонента;
+2. перевірка середовища;
+3. runtime (за потреби — після «так»);
+4. перевірка checkout і передумов;
+5. план підготовки → «так» → збирання не від root → перевірений реліз у `/var/lib/node-control-releases`;
+6. майстер цього релізу (`plan` → «так» → `apply` → перевірка).
+
+Окремих npm/build-команд і повторного запуску немає.
+
+| Частина | Що зроблено |
+|---|---|
+| `install.sh` | мінімальний bash: опції, термінал, автоматичний перезапуск через `sudo`, Ubuntu/systemd/архітектура (x86_64, arm64), вибір компонента, runtime, перевірки довіри, передача в bootstrap або в майстер `--release`. Функції тестуються через `source` |
+| Runtime | один шлях `/opt/node-control-runtime/bin/node` для всіх units, `server-release.js`, міграцій, bootstrap адміністратора; мінімум Node.js 22 ≥ 22.22.0 (з `engines` lockfile, тест на точність). Несумісний або відсутній Node.js → після «так» офіційний 22.23.4 з `nodejs.org` (HTTPS, SHA-256 з `installer/bootstrap/node-runtime.env`, тимчасовий каталог → атомарне перейменування); сумісний `/usr/bin/node` → лише посилання (крок інсталятора). Системний Node.js/npm/PATH/PM2 не змінюються; наявний runtime не перемикається. `--node-archive` для offline |
+| `installer/bootstrap` | JavaScript з `// @ts-check` (tsc strict, ESLint strictTypeChecked) |
+| Хто збирає | під `sudo` — користувач, що його викликав; root без sudo — системний `nodecontrol-build` (створюється після «так»); `runuser … env -i`; npm/скрипти ніколи від root |
+| Реліз | `build-release.js --check` (чистий checkout, commit в `origin/main`) → `git archive` потоком збирачу → `build-release.js --from-tree`. Agent — `--component agent`: лише `typescript`/`@types/node` із замиканням з чинного lockfile, без frontend/backend. Root приймає tar-потік у сховище 700, перевіряє `BUNDLE.json`/SHA-256 і лише тоді перейменовує; повтор того самого commit — без збирання |
+| `build-release.js` / `server-release.js` | до будь-якого npm: версія Node.js і `npm version` → npm працює на тому самому Node.js (каталог runtime першим у PATH); `npm ci --ignore-scripts --engine-strict`; діагностичний рядок `runtime node=… uid=…` |
+| TLS | units API/Agent, майстер і bootstrap — `--use-system-ca` |
+| Майстер | `--component` (компонент уже обрано в `install.sh`) |
+
+**Чому `installer/bootstrap` — JavaScript, а не TypeScript.** Node.js 22 з пакета Ubuntu (`22.22.1+dfsg`) зібрано без TypeScript: `process.features.typescript = false`, `.ts` → `ERR_NO_TYPESCRIPT`. Перша спроба на `.ts` зупинилась на VM саме тут.
+
+**Навіщо `--use-system-ca`.** Інакше офіційна збірка Node.js довіряє лише вбудованим CA. На тестовій VM Agent з офіційним runtime не довіряв внутрішньому CA, який працював з Ubuntu-збіркою (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`).
+
+**Rolldown / Node 21.**
+- **Причина відтворена:** для optional-пакета `@npmcli/arborist` (reify.js) викликає `checkEngine(…, force=false)`. Невідповідність `engines` (`^20.19.0 || >=22.12.0`) — «failed optional dependency»: пакет мовчки пропускається, а `npm ci` завершується з exit 0 (EBADENGINE — лише попередження).
+- Node 21.7.3/npm 10.5.0, тестовий commit цієї роботи, plain `npm ci`:
+  - darwin-arm64 — binding пропущено, `frontend:build` exit 1;
+  - **Linux arm64 (VM)** — `npm ci` exit 0, 33 EBADENGINE, `@rolldown/binding-linux-arm64-gnu` у «failed optional dependency», `frontend:build` exit 1 (`Cannot find module '@rolldown/binding-wasm32-wasi'`).
+- Node 22.23.4 / npm 10.9.9 — binding встановлено, збирання exit 0.
+- **На x86_64 не відтворювалось** (немає середовища). Це той самий кодовий шлях arborist; окремого «npm bug» не заявляється.
+- Тепер це неможливо непомітно: несумісний Node.js відхиляється до npm, а `--engine-strict` робить EBADENGINE помилкою.
+
+| Перевірка | Результат |
+|---|---|
+| `npm run check:local` | exit 0: node:test 147/147, backend 500/500, smoke 10/10, agent 165 (+3 opt-in), frontend 247/247, installer 239/239, typecheck, lint, збірки, secrets |
+| Нові/змінені тести | `bootstrap.test.ts` (31: хто збирає, env -i, брудний checkout, не в origin/main, оновлення, передумови, скасування, повтор, невдала збірка/symlink/невідповідність BUNDLE/відсутній артефакт/інша ревізія, Ctrl+C, сховище не root), `runtime.test.ts` (26: мінімум з lockfile, preflight, крок посилання, усі виклики через runtime), `launcher.test.ts` (33: справжній bash і pty; **regression** — чистий clone без node_modules/dist/артефактів: звичайний користувач → перезапуск через sudo, без вимоги npm/build; на `d0cb5fe` той самий сценарій → exit 1 з «Підготовленого релізу не знайдено» і командами `npm ci`/`build-release.js`), `deploy-build`/`deploy-release` (+8), `systemd-units` (+2), `docs.test.ts` (Code↔Docs) |
+| Пакування | бандл поточного дерева (macOS, pty): `--help`, без TTY, вимога root, змінений/зайвий файл, запуск не з бандла, `BUNDLE.json = null` — контрольовані відмови. Реальні server-bundle/артефакти зібрано й перевірено на VM |
+| Linux arm64, Central Server (новий клон `nc-boot-api` бази `nc-api-db`) | `--help`; без TTY → 2; брудний checkout → відмова; скасування → стан без змін; повний маршрут від `user` (umask 002, шлях із пробілом, системний Node 22.22.1/npm 9.2): збирання 14 с від uid 501 (root — лише обгортки `runuser`), `apply`, health 200/200, admin створено, unit `--use-system-ca`, runtime → `/usr/bin/node`, checkout чистий, секрет не в журналі; повтор — реліз зі сховища, без restart |
+| Linux arm64, Agent (новий клон `nc-boot-agent` бази `nc-agent-base`) | root без `SUDO_USER`, системний Node 21.7.3: підмінений архів → SHA-256 відмова; недоступний nodejs.org → відмова; скасування; runtime 22.23.4 завантажено (root, без запису для інших); збій npm (мертвий проксі) → етап + хвіст журналу, пароль проксі не показано, реліз не створено; Ctrl+C → 130, без залишків; повний маршрут: `nodecontrol-build` (UID 999, nologin, без sudo, home 700), цільове збирання 4 с (stages: npm-ci-agent, agent-build, installer-build, package; uid 999) → майстер → heartbeat підтверджено; `/usr/bin/node` лишився 21.7.3; PM2-процеси без змін; pm2-команд 0; ключ у журналах 0; повтор — без збирання й restart |
+| `git diff --check`, `check:secrets` | OK |
+
+**Межі й відкриті питання:**
+- **x86_64 — блокер середовища.** Ubuntu x86_64 (платформа фактичного збою) не перевірено. На машині перевірки (arm64) немає qemu. Rosetta для Linux на ядрі Ubuntu 26.04 не запускає x86_64-двійкові (`Failed to find vdso DT_HASH`). Потрібна одноразова x86_64-VM або дозвіл встановити qemu.
+- VM перевіряли тестовий commit робочого дерева (`git clone` з git bundle); код (`install.sh`, `installer/`, `scripts/`, `deploy/`) ідентичний commit цієї роботи, різниця — лише в документації цього запису.
+- `server-release.js prepare` для API, як і раніше, виконує `npm ci --omit=dev --ignore-scripts` від root (production-залежності в `/opt/node-control/releases`, без lifecycle-скриптів). Це чинний контракт розгортання, а не збирання.
+- Інші сценарії:
+  - **не перевірялись на VM:** sudo-маршрут з root-owned checkout; offline `--node-archive` зі справжнім архівом;
+  - **перевірено лише тестами:** обірване посеред передачі завантаження (тимчасовий каталог + атомарне перейменування) і повтор після невдалої збірки (у тестах; на VM повтор після C4b/C5 — успішний C6).
+- GPG-підпис `SHASUMS256.txt` Node.js не перевіряється; довіра — HTTPS + SHA-256, зафіксований у commit.
+
+**Документація:** INSTALLATION (основний маршрут, runtime, підготовка релізу, sudo/root, мережа, повтор/діагностика, безпека, advanced/offline, перевірка), README, DEPLOYMENT (runtime-контракт, наявні інсталяції, rollback, команди), ARCHITECTURE, ADR-027.
+
+**Rollback коду:** `git revert`. Встановлені runtime, сховище релізів, журнали й `nodecontrol-build` не видаляються автоматично (INSTALLATION, розділ 5).
+
 ## Уточнення UX встановлення і збій збирання на сервері користувача (2026-10-21)
 
 **Нова обов'язкова вимога користувача:** після клонування `install.sh` сам веде через необхідну підготовку; окремі ручні `npm ci`, збирання релізу й повторний запуск не є прийнятним основним маршрутом. Чинний launcher лише знаходить готовий реліз, тому ця вимога ще не реалізована. Попередній APPROVED стосувався перевіреної реалізації та виправлень, а не нового bootstrap-сценарію. Функціональний код Codex не змінював.

@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
-// TypeScript only (backend, frontend, e2e, agent, installer); the existing JS setup/deploy scripts are covered by node:test.
+// TypeScript (backend, frontend, e2e, agent, installer) + the type-checked JS of installer/bootstrap; the existing JS setup/deploy scripts are covered by node:test.
 const strict = {
   extends: [js.configs.recommended, ...tseslint.configs.strictTypeChecked],
   rules: {
@@ -37,7 +37,9 @@ export default tseslint.config(
   },
   {
     ...strict,
-    files: ['installer/**/*.ts'],
+    // installer/bootstrap is JavaScript checked by tsc (checkJs): it runs from a clean checkout on any Node.js 22,
+    // including distribution builds without TypeScript support (ADR-027, 2026-10-21).
+    files: ['installer/**/*.ts', 'installer/bootstrap/**/*.js'],
     languageOptions: { parserOptions: { project: './installer/tsconfig.json', tsconfigRootDir: import.meta.dirname } },
   },
   {

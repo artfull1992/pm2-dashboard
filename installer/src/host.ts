@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, chownSync, closeSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, type Stats, writeSync } from 'node:fs';
+import { chmodSync, chownSync, closeSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, type Stats, symlinkSync, writeSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 
@@ -49,6 +49,8 @@ export interface Host {
   writeFileAtomic(path: string, content: string, owner: Owner): void;
   /** One directory level; the parent must exist; fails if the path exists. */
   mkdir(path: string, owner: Owner): void;
+  /** New symlink path → target (temporary link + rename, owned by the caller); refuses an existing non-symlink path. */
+  symlink(target: string, path: string): void;
   run(command: string, args: readonly string[], options?: RunOptions): RunResult;
   /** Streams stdout line by line within ScanOptions limits (stderr is discarded — never captured or printed). */
   scan(command: string, args: readonly string[], options: ScanOptions): Promise<ScanResult>;
@@ -120,6 +122,18 @@ export const realHost: Host = {
     mkdirSync(path, { mode: owner.mode });
     chownSync(path, owner.uid, owner.gid);
     chmodSync(path, owner.mode); // mkdir applies the umask; exact bits (incl. setgid) are set explicitly
+  },
+  symlink(target, path) {
+    const existing = realHost.stat(path);
+    if (existing && existing.kind !== 'symlink') throw new Error(`${path} exists and is not a symlink`);
+    const tmp = join(dirname(path), `.${basename(path)}.tmp-${String(process.pid)}-${randomBytes(4).toString('hex')}`);
+    symlinkSync(target, tmp);
+    try {
+      renameSync(tmp, path);
+    } catch (error) {
+      rmSync(tmp, { force: true });
+      throw error;
+    }
   },
   run(command, args, options = {}) {
     if (options.interactive) {

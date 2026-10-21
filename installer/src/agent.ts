@@ -8,6 +8,7 @@ import { appendMissing, missingKeys, parseEnvText, renderEnv } from './envfile.j
 import { type Host, realHost } from './host.js';
 import { activateStep, checkArtifact, checkBase, checkNotOtherRelease, checkUnits, defaultReleaseTool, prepareStep } from './release.js';
 import { DAEMON_RELOAD, directory, exactFile, membership, service, serviceAccountPreflight, systemGroup, systemUser, unitFile } from './resources.js';
+import { RUNTIME, runtimeStep } from './runtime.js';
 import { loadPending } from './state.js';
 import { processInput, type SecretInput, secretFileProblems, singleLine } from './secrets.js';
 import { artifactRef, filePath, httpsOrigin, InputError, linuxName, safeAbsolutePath } from './validate.js';
@@ -34,7 +35,7 @@ export const AGENT = Object.freeze({
 export const TOKEN_RE = /^ncag_[A-Za-z0-9_-]{43}$/;
 const RESTART = 'restart-agent';
 
-export const AGENT_USAGE = `Node Control — встановлення Agent на сервер із PM2-застосунками (Ubuntu + systemd, Node.js 22).
+export const AGENT_USAGE = `Node Control — встановлення Agent на сервер із PM2-застосунками (Ubuntu + systemd, Node.js 22 — ${RUNTIME.node}).
 PM2 і застосунки не змінюються й не перезапускаються; жодна команда pm2 не виконується.
 
 Використання (root, з каталогу переданого server-bundle):
@@ -346,6 +347,7 @@ export async function buildAgentPlan(host: Host, o: AgentOptions, input: SecretI
   const rel = (unit: string) => () => `${AGENT.base}/releases/${ref.revision}/deploy/systemd/${unit}`;
   const steps: Step[] = [
     systemUser(AGENT.user),
+    runtimeStep(),
     directory(AGENT.base, { mode: 0o755, user: 'root', group: 'root' }),
     prepareStep(o.releaseTool, AGENT.base, ref, () => sha, true),
     activateStep(o.releaseTool, AGENT.base, ref, [RESTART]),
@@ -387,7 +389,7 @@ export async function buildAgentPlan(host: Host, o: AgentOptions, input: SecretI
   if (o.pm2 && o.enableControl) {
     next.push(
       'Керування й логи ще ВИМКНЕНІ: allowlist порожній. Щоб дозволити конкретні процеси (docs/INSTALLATION.md, «Керування й логи»):',
-      `  1. Fingerprint: runuser -u ${o.pm2.owner} -- env NC_PM2_HOME=${o.pm2.home} NC_BROKER_ALLOWLIST=${AGENT.brokerConfigDir}/${o.pm2.owner}.allowlist.json /usr/bin/node ${AGENT.base}/current/agent/dist/pm2-broker.js fingerprint`,
+      `  1. Fingerprint: runuser -u ${o.pm2.owner} -- env NC_PM2_HOME=${o.pm2.home} NC_BROKER_ALLOWLIST=${AGENT.brokerConfigDir}/${o.pm2.owner}.allowlist.json ${RUNTIME.node} ${AGENT.base}/current/agent/dist/pm2-broker.js fingerprint`,
       `  2. Додати лише потрібні цілі в ${AGENT.brokerConfigDir}/${o.pm2.owner}.allowlist.json (root, 644); "logs": true — окремо й лише за погодженням.`,
       '  3. На центральному сервері: PM2_CONTROL_ENABLED=true (install/server.js apply … --enable-pm2-control).',
     );

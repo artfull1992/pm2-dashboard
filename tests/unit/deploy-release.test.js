@@ -337,3 +337,19 @@ test('a release with a lockfile but no installed dependencies is refused', () =>
   rmSync(join(base, 'releases', REV1, 'node_modules'), { recursive: true });
   assert.throws(() => activateRelease({ base, revision: REV1 }), /no installed dependencies|failed verification/);
 });
+
+// --- npm of the runtime that runs the release tool (ADR-027, 2026-10-21) --------------------------------------------
+const releaseDir = await import('../../scripts/deploy/lib/release-dir.js');
+
+test('runtimeNpmEnv: npm next to this Node.js first in PATH; another Node.js under npm or no npm is refused', () => {
+  const probe = (node, status = 0) => (cmd, args, options) => {
+    assert.equal(cmd, 'npm');
+    assert.deepEqual(args, ['version', '--json']);
+    assert.match(options.env.PATH, /^\/opt\/node-control-runtime\/versions\/v\/bin:\/usr\/bin$/);
+    return { status, stdout: JSON.stringify({ node }) };
+  };
+  const base = { env: { PATH: '/usr/bin' }, execPath: '/opt/node-control-runtime/versions/v/bin/node', version: '22.23.4' };
+  assert.equal(releaseDir.runtimeNpmEnv({ ...base, probe: probe('22.23.4') }).PATH, '/opt/node-control-runtime/versions/v/bin:/usr/bin');
+  assert.throws(() => releaseDir.runtimeNpmEnv({ ...base, probe: probe('21.7.3') }), /npm runs on Node\.js 21\.7\.3, not on 22\.23\.4/);
+  assert.throws(() => releaseDir.runtimeNpmEnv({ ...base, probe: probe(undefined, 1) }), /not found or not working/);
+});

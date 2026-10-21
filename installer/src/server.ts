@@ -10,6 +10,7 @@ import { type Host, realHost } from './host.js';
 import { renderNginxSite } from './nginx.js';
 import { activateStep, checkArtifact, checkBase, checkNotOtherRelease, checkUnits, defaultReleaseTool, prepareStep } from './release.js';
 import { DAEMON_RELOAD, service, serviceAccountPreflight, systemUser, unitFile } from './resources.js';
+import { RUNTIME, runtimeStep } from './runtime.js';
 import { loadPending } from './state.js';
 import { processInput, type SecretInput, secretFileProblems } from './secrets.js';
 import { artifactRef, email, filePath, httpsOrigin, InputError } from './validate.js';
@@ -31,7 +32,7 @@ const PLAIN_VALUE = /^[A-Za-z0-9_.:-]+$/; // what server-release.js config accep
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
 const RESTART = 'restart-api';
 
-export const SERVER_USAGE = `Node Control — встановлення Central API (Ubuntu + systemd, Node.js 22, host PostgreSQL).
+export const SERVER_USAGE = `Node Control — встановлення Central API (Ubuntu + systemd, Node.js 22 — ${RUNTIME.node}, host PostgreSQL).
 
 Використання (root, з каталогу переданого server-bundle):
   node install/server.js plan  --artifact <node-control-api-<sha>.tar.gz> [параметри]   перевірки й план, без змін
@@ -134,7 +135,7 @@ function configStep(o: ServerOptions): Step {
     },
     apply({ host }) {
       if (!o.dbEnv) throw new Error('потрібен --db-env');
-      mustRun(host, '/usr/bin/node', [o.releaseTool, 'config', '--config', API.config, '--legacy-env', o.dbEnv, '--owner', API.user], 'server-release.js config');
+      mustRun(host, RUNTIME.node, [o.releaseTool, 'config', '--config', API.config, '--legacy-env', o.dbEnv, '--owner', API.user], 'server-release.js config');
     },
     effects: [RESTART],
     recovery: `server-release.js config створює файл атомарно; якщо ${API.config} з'явився з помилкою — збережіть копію, виправте вручну й повторіть`,
@@ -166,7 +167,7 @@ function configKeysStep(o: ServerOptions): Step {
 }
 
 const migrateArgs = (revision: string, command: 'status' | 'up') => [
-  '-u', API.user, '--', '/usr/bin/env', `ENV_FILE=${API.config}`, '/usr/bin/node', `${API.base}/releases/${revision}/backend/dist/migrate.js`, command,
+  '-u', API.user, '--', '/usr/bin/env', `ENV_FILE=${API.config}`, RUNTIME.node, `${API.base}/releases/${revision}/backend/dist/migrate.js`, command,
 ];
 
 function migrationsStep(revision: string): Step {
@@ -200,7 +201,7 @@ function adminStep(o: ServerOptions, revision: string): Step {
     check: (ctx: Context) => (ctx.effects.has('admin-done') ? { state: 'done' } : { state: 'pending', detail: o.adminPasswordFile ? 'bootstrap-admin.js --password-stdin (з файлу)' : 'bootstrap-admin.js — пароль буде запитано двічі, приховано' }),
     apply(ctx) {
       const { host } = ctx;
-      const args = ['-u', API.user, '--', '/usr/bin/env', `ENV_FILE=${API.config}`, '/usr/bin/node', `${API.base}/releases/${revision}/backend/dist/bootstrap-admin.js`, '--email', o.adminEmail ?? ''];
+      const args = ['-u', API.user, '--', '/usr/bin/env', `ENV_FILE=${API.config}`, RUNTIME.node, `${API.base}/releases/${revision}/backend/dist/bootstrap-admin.js`, '--email', o.adminEmail ?? ''];
       const r = o.adminPasswordFile
         ? host.run('runuser', [...args, '--password-stdin'], { input: host.readFile(o.adminPasswordFile) })
         : host.run('runuser', args, { interactive: true });
@@ -259,7 +260,7 @@ function nextSteps(o: ServerOptions): string[] {
 
 export async function buildServerPlan(host: Host, o: ServerOptions, input: SecretInput): Promise<Plan> {
   const p: Preflight = { errors: [], warnings: [], notes: [] };
-  platformPreflight(host, p, ['useradd', 'runuser', 'systemctl', 'systemd-analyze', 'tar', 'npm', 'ss']);
+  platformPreflight(host, p, ['useradd', 'runuser', 'systemctl', 'systemd-analyze', 'tar', 'ss'], { npm: true });
   const ref = artifactRef(o.artifact, 'api');
   const sha = checkArtifact(host, ref, p) ?? '';
   if (host.stat(o.releaseTool)?.kind !== 'file') p.errors.push(`не знайдено server-release.js (${o.releaseTool}): запускайте інсталятор із переданого server-bundle`);
@@ -314,6 +315,7 @@ export async function buildServerPlan(host: Host, o: ServerOptions, input: Secre
 
   const steps: Step[] = [
     systemUser(API.user),
+    runtimeStep(),
     prepareStep(o.releaseTool, API.base, ref, () => sha, false),
     configStep(o),
     configKeysStep(o),
