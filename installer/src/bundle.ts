@@ -30,6 +30,30 @@ function bundleFiles(host: Host, root: string, rel = ''): { files: string[]; pro
   return { files, problems };
 }
 
+const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const SAFE_REL_PATH = /^(?!\/)(?!.*(^|\/)\.\.?(\/|$))[A-Za-z0-9._@/+-]+$/;
+
+/** BUNDLE.json is external input: parsed as unknown and validated field by field (never a type assertion). */
+export function parseBundleManifest(text: string): { ok: true; revision: string; files: Record<string, string> } | { ok: false; error: string } {
+  let data: unknown;
+  try {
+    data = JSON.parse(text) as unknown;
+  } catch {
+    return { ok: false, error: 'не є коректним JSON' };
+  }
+  if (!isPlainObject(data)) return { ok: false, error: 'очікується JSON-об\'єкт' };
+  const { revision, files } = data;
+  if (typeof revision !== 'string' || !REVISION_RE.test(revision)) return { ok: false, error: 'revision має бути повним 40-символьним git SHA' };
+  if (!isPlainObject(files)) return { ok: false, error: 'files має бути об\'єктом «шлях → SHA-256»' };
+  const out: Record<string, string> = {};
+  for (const [path, hash] of Object.entries(files)) {
+    if (!SAFE_REL_PATH.test(path)) return { ok: false, error: `недопустимий шлях у files: ${path.slice(0, 80)}` };
+    if (typeof hash !== 'string' || !SHA_RE.test(hash)) return { ok: false, error: `некоректний SHA-256 для ${path}` };
+    out[path] = hash;
+  }
+  return { ok: true, revision, files: out };
+}
+
 /** Checks the release directory and the bundle the wizard runs from. Returns the release or the list of problems. */
 export function verifyRelease(host: Host, releaseDir: string, bundleDir: string): { ok: true; release: ReleaseInfo } | { ok: false; errors: string[] } {
   // Canonical paths: the wizard is loaded by its real path, --release may name the same place through a symlink.
@@ -45,21 +69,14 @@ export function verifyRelease(host: Host, releaseDir: string, bundleDir: string)
   if (host.stat(manifestPath)?.kind !== 'file') {
     return { ok: false, errors: [`немає ${BUNDLE_MANIFEST} у server-bundle — реліз зібрано не build-release.js цієї версії; підготуйте його заново (docs/INSTALLATION.md)`] };
   }
-  let manifest: { revision?: unknown; files?: unknown };
-  try {
-    manifest = JSON.parse(host.readFile(manifestPath)) as { revision?: unknown; files?: unknown };
-  } catch {
-    return { ok: false, errors: [`${BUNDLE_MANIFEST} пошкоджений`] };
-  }
-  const revision = typeof manifest.revision === 'string' && REVISION_RE.test(manifest.revision) ? manifest.revision : null;
-  const listed = typeof manifest.files === 'object' && manifest.files !== null ? manifest.files as Record<string, unknown> : null;
-  if (!revision || !listed) return { ok: false, errors: [`${BUNDLE_MANIFEST}: немає ревізії або переліку файлів`] };
+  const parsed = parseBundleManifest(host.readFile(manifestPath));
+  if (!parsed.ok) return { ok: false, errors: [`${BUNDLE_MANIFEST}: ${parsed.error} — реліз не використовується; підготуйте його заново (docs/INSTALLATION.md)`] };
+  const { revision, files: listed } = parsed;
 
   const found = bundleFiles(host, bundle);
   errors.push(...found.problems);
   const present = new Set(found.files.filter((f) => f !== BUNDLE_MANIFEST));
   for (const [file, hash] of Object.entries(listed)) {
-    if (typeof hash !== 'string' || !SHA_RE.test(hash)) { errors.push(`${BUNDLE_MANIFEST}: некоректний запис для ${file}`); continue; }
     if (!present.has(file)) errors.push(`server-bundle/${file}: файл відсутній`);
     else if (host.sha256File(join(bundle, file)) !== hash) errors.push(`server-bundle/${file}: вміст змінено (не відповідає ${BUNDLE_MANIFEST})`);
     present.delete(file);

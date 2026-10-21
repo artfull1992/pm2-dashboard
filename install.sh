@@ -68,19 +68,30 @@ if ! release=$(readlink -f -- "$release") || [ ! -f "$release/server-bundle/inst
   exit 1
 fi
 
-# The wizard runs as root from this directory: nobody else may be able to change it.
-owner_ok=0
-[ -n "${SUDO_UID:-}" ] && owner_ok=$SUDO_UID
-problem=$(find "$release" \( -type l -o -perm -020 -o -perm -002 -o \( ! -user 0 ! -user "$(id -u)" ! -user "$owner_ok" \) \) -print -quit)
+# The wizard runs as root from this directory, so nobody outside the trusted set may be able to change the release
+# or swap any directory on its path (renaming a child needs write access to its parent — or owning that parent).
+# Trusted owners: root, the user running this launcher and, under sudo, the user who invoked sudo (who prepared the
+# release and could equally run anything as root). Checked BEFORE any code of the release is executed.
+trusted=(0 "$(id -u)")
+[ -n "${SUDO_UID:-}" ] && trusted+=("$SUDO_UID")
+foreign=()
+for uid in "${trusted[@]}"; do foreign+=(! -user "$uid"); done
+
+problem=$(find "$release" \( -type l -o -perm -020 -o -perm -002 -o \( "${foreign[@]}" \) \) -print -quit)
 if [ -n "$problem" ]; then
   printf '✗ Реліз не захищений від змін іншими користувачами: %s\n' "$problem" >&2
-  echo "  Без symlink, без запису для групи/інших, власник — root або користувач, що зібрав реліз (chown -R / chmod -R go-w)." >&2
+  echo "  Без symlink, без запису для групи/інших, власник — root або користувач, що запустив sudo (chown -R / chmod -R go-w)." >&2
   exit 1
 fi
 dir=$release
 while [ "$dir" != "/" ]; do
   dir=$(dirname -- "$dir")
-  if [ -n "$(find "$dir" -maxdepth 0 \( -perm -020 -o -perm -002 \) ! -perm -1000 -print)" ]; then
+  if [ -n "$(find "$dir" -maxdepth 0 \( "${foreign[@]}" \) -print)" ]; then
+    printf '✗ Каталог %s належить іншому користувачу — він міг би підмінити реліз; перенесіть реліз у каталог root або свій.\n' "$dir" >&2
+    exit 1
+  fi
+  # Writable by group/other: only a root-owned sticky directory (like /tmp) — others cannot rename what is not theirs.
+  if [ -n "$(find "$dir" -maxdepth 0 \( -perm -020 -o -perm -002 \) \( ! -perm -1000 -o ! -user 0 \) -print)" ]; then
     printf '✗ Каталог %s доступний на запис іншим користувачам — перенесіть реліз у захищений каталог.\n' "$dir" >&2
     exit 1
   fi

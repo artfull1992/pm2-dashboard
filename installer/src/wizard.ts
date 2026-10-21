@@ -261,6 +261,7 @@ export async function wizardMain(argv: readonly string[], deps: WizardDeps = {})
   out.line(`Node Control — майстер встановлення. Реліз ${release.revision.slice(0, 12)} (${release.dir}).`);
   out.line('До вашого підтвердження система не змінюється. Ctrl+C або «0» — скасувати.\n');
 
+  let applying = false;
   try {
     const component = await menu(c, 'Що встановлюємо на цьому сервері?', [
       `Central Server — API + веб-інтерфейс${release.api ? '' : ' (немає артефакту API в цьому релізі)'}`,
@@ -288,13 +289,18 @@ export async function wizardMain(argv: readonly string[], deps: WizardDeps = {})
       return WIZARD_EXIT.cancelled;
     }
     out.line('\n— Встановлення —');
+    applying = true; // from here on, changes may already have been made: never report "nothing changed"
     const applied = await run(['apply', ...collected.args], common);
     if (applied !== 0) {
       out.error('\nВстановлення не завершене. Усуньте причину (див. вище) і запустіть майстер ще раз з тими самими відповідями — виконані кроки буде пропущено, незавершені reload/restart доведено.');
     }
     return applied;
   } catch (error) {
-    if (error instanceof Cancelled) { out.line('\nСкасовано. Нічого не змінено.'); return WIZARD_EXIT.cancelled; }
+    if (!applying && error instanceof Cancelled) { out.line('\nСкасовано. Нічого не змінено.'); return WIZARD_EXIT.cancelled; }
+    if (applying) {
+      out.error('\nВстановлення перервано під час виконання: частину змін могло бути вже застосовано. Запустіть майстер ще раз з тими самими відповідями — виконані кроки буде пропущено (docs/INSTALLATION.md, розділ 4).');
+      return WIZARD_EXIT.failed;
+    }
     throw error;
   }
 }

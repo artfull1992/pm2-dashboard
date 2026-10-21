@@ -50,33 +50,45 @@ export const processInput: SecretInput = {
       process.stdin.on('error', () => { reject(new InputError('stdin: помилка читання')); });
     });
   },
+  /**
+   * Raw mode: Ctrl+C (0x03) and Ctrl+D (0x04 — in raw mode it is a byte, not an "end" event) cancel, as does a real
+   * EOF or a stream error; other control bytes are ignored (never part of a secret). Exactly one completion; the
+   * previous terminal mode is restored and every listener added here is removed.
+   */
   hidden(prompt) {
     return new Promise((resolve, reject) => {
       const stdin = process.stdin;
+      const wasRaw = stdin.isRaw;
       let value = '';
+      let finished = false;
       process.stderr.write(prompt);
       const done = (error: Error | null) => {
-        stdin.setRawMode(false);
-        stdin.pause();
+        if (finished) return;
+        finished = true;
         stdin.removeListener('data', onData);
         stdin.removeListener('end', onEnd);
+        stdin.removeListener('error', onEnd);
+        stdin.setRawMode(wasRaw);
+        stdin.pause();
         process.stderr.write('\n');
         if (error) reject(error); else resolve(value);
       };
       const onData = (chunk: Buffer) => {
         for (const ch of chunk.toString('utf8')) {
           if (ch === '\r' || ch === '\n') { done(null); return; }
-          if (ch === '\u0003') { done(new InputError('скасовано')); return; }
+          if (ch === '\u0003' || ch === '\u0004') { done(new InputError('скасовано')); return; }
           if (ch === '\u007f' || ch === '\b') { value = value.slice(0, -1); continue; }
+          if (CONTROL.test(ch)) continue;
           value += ch;
           if (value.length > 4096) { done(new InputError('ввід задовгий')); return; }
         }
       };
-      const onEnd = () => { done(new InputError('ввід завершено (EOF)')); };
-      stdin.setRawMode(true);
-      stdin.resume();
+      const onEnd = () => { done(new InputError('скасовано')); };
       stdin.on('data', onData);
       stdin.once('end', onEnd);
+      stdin.once('error', onEnd);
+      stdin.setRawMode(true);
+      stdin.resume();
     });
   },
 };

@@ -127,6 +127,32 @@ describe('wizard: basics', () => {
     expect(r.code).toBe(0);
   });
 
+  // Review 2026-10-21 (P2): BUNDLE.json is external input — validated at runtime, a controlled refusal, no TypeError.
+  it.each([
+    ['not JSON', '{bad'],
+    ['null', 'null'],
+    ['an array', '[]'],
+    ['a string', '"x"'],
+    ['a number', '42'],
+    ['no revision', JSON.stringify({ files: {} })],
+    ['a short revision', JSON.stringify({ revision: 'abc', files: {} })],
+    ['files is null', JSON.stringify({ revision: REV, files: null })],
+    ['files is an array', JSON.stringify({ revision: REV, files: [] })],
+    ['a hash that is not a string', JSON.stringify({ revision: REV, files: { 'server-release.js': 1 } })],
+    ['a malformed hash', JSON.stringify({ revision: REV, files: { 'server-release.js': 'zz' } })],
+    ['a path outside the bundle', JSON.stringify({ revision: REV, files: { '../evil.js': sha('x') } })],
+  ])('BUNDLE.json %s → controlled refusal before any question or change', async (_n, content) => {
+    const h = host();
+    h.file(`${BUNDLE}/BUNDLE.json`, content);
+    const s = prompter(['1']);
+    const r = await run(h, s.p);
+    expect(r.code).toBe(1);
+    expect(r.all).toMatch(/BUNDLE\.json/);
+    expect(r.all).not.toMatch(/TypeError|Cannot read properties/);
+    expect(s.asked).toEqual([]);
+    expect(h.changes).toEqual([]);
+  });
+
   it('wizard started from another place than the release bundle (e.g. a checkout installer/dist) → refused', async () => {
     const h = host();
     const c = capture();
@@ -208,6 +234,18 @@ describe('wizard: Central Server', () => {
     expect(second.code).toBe(0);
     expect(h.changes[0]).toBe('migrate up');
     expect(h.changes).not.toContain('useradd nodecontrol');
+  });
+
+  it('an error after apply started is reported as a possibly partial change (never "nothing changed"), no stack trace', async () => {
+    const h = host();
+    const c = capture();
+    let calls = 0;
+    const failing: typeof serverMain = async (a, deps) => { calls += 1; if (a[0] === 'apply') throw new Error('interrupted'); return serverMain(a, deps); };
+    const code = await wizardMain(['--release', RELEASE], { host: h, out: c.out, prompter: prompter([...SERVER_ANSWERS]).p, bundleDir: BUNDLE, server: failing });
+    expect(code).toBe(1);
+    expect(calls).toBe(2);
+    expect(c.all).toMatch(/частину змін могло бути вже застосовано/);
+    expect(c.all).not.toMatch(/Скасовано\. Нічого не змінено/);
   });
 
   it('existing api.env: no db file asked, URL optional, credentials kept', async () => {

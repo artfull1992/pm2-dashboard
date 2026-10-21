@@ -25,10 +25,11 @@ function fixture() {
   const addRelease = (name: string, base = releases) => {
     const dir = join(base, name);
     mkdirSync(join(dir, 'server-bundle', 'install'), { recursive: true, mode: 0o755 });
-    writeFileSync(join(dir, 'server-bundle', 'install', 'wizard.js'), 'console.log(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));\n', { mode: 0o644 });
+    // The fake wizard leaves a marker: a refusal must happen before ANY code of the release runs.
+    writeFileSync(join(dir, 'server-bundle', 'install', 'wizard.js'), `require('fs').writeFileSync(${JSON.stringify(join(root, 'EXECUTED'))}, '1'); console.log(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));\n`, { mode: 0o644 });
     return dir;
   };
-  return { root, checkout, releases, addRelease, launcher: join(checkout, 'install.sh') };
+  return { root, checkout, releases, addRelease, launcher: join(checkout, 'install.sh'), executed: () => existsSync(join(root, 'EXECUTED')) };
 }
 const run = (cmd: string, args: string[] = [], cwd = '/') => spawnSync('bash', [cmd, ...args], { cwd, encoding: 'utf8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
 
@@ -79,20 +80,32 @@ describe('install.sh launcher', () => {
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/не захищений від змін/);
     expect(r.stdout).not.toMatch(/"argv"/);
+    expect(f.executed()).toBe(false);
   });
 
-  it('an ancestor writable by others without the sticky bit → refused; with the sticky bit (like /tmp) → accepted', () => {
+  it('an ancestor writable by others is refused unless it is a ROOT-owned sticky directory; nothing of the release runs', () => {
     const f = fixture();
     const open = join(f.root, 'shared');
     mkdirSync(open);
     const dir = f.addRelease('r1', open);
-    chmodSync(open, 0o777);
-    const refused = run(f.launcher, ['--release', dir]);
-    expect(refused.status).toBe(1);
-    expect(refused.stderr).toMatch(/доступний на запис іншим/);
-    chmodSync(open, 0o1777);
-    const accepted = run(f.launcher, ['--release', dir]);
-    expect(accepted.stderr).not.toMatch(/доступний на запис іншим/);
+    for (const mode of [0o777, 0o1777]) { // 1777 but owned by this user, not root: not treated as safe (review 2026-10-21)
+      chmodSync(open, mode);
+      const r = run(f.launcher, ['--release', dir]);
+      expect(r.status, mode.toString(8)).toBe(1);
+      expect(r.stderr).toMatch(/доступний на запис іншим/);
+    }
+    expect(f.executed()).toBe(false);
+  });
+
+  it('a release under the root-owned sticky /tmp (own subdirectory) passes the path checks', () => {
+    const f = fixture();
+    const base = realpathSync(mkdtempSync(join(realpathSync('/tmp'), 'nc-launch-tmp-')));
+    dirs.push(base);
+    chmodSync(base, 0o755);
+    const dir = f.addRelease('r1', base);
+    const r = run(f.launcher, ['--release', dir]);
+    expect(r.stderr).not.toMatch(/доступний на запис іншим|належить іншому користувачу|не захищений/);
+    expect(r.status).toBe(node22 ? 0 : 1);
   });
 
   it('invoked through a symlink: the real checkout decides the default release directory', () => {
