@@ -31,7 +31,7 @@ export const AGENT = Object.freeze({
   brokerConfigDir: '/etc/node-control-pm2-broker',
   brokerSocket: '/run/node-control-pm2-broker/broker.sock',
 });
-const TOKEN_RE = /^ncag_[A-Za-z0-9_-]{43}$/;
+export const TOKEN_RE = /^ncag_[A-Za-z0-9_-]{43}$/;
 const RESTART = 'restart-agent';
 
 export const AGENT_USAGE = `Node Control — встановлення Agent на сервер із PM2-застосунками (Ubuntu + systemd, Node.js 22).

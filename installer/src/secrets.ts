@@ -59,6 +59,7 @@ export const processInput: SecretInput = {
         stdin.setRawMode(false);
         stdin.pause();
         stdin.removeListener('data', onData);
+        stdin.removeListener('end', onEnd);
         process.stderr.write('\n');
         if (error) reject(error); else resolve(value);
       };
@@ -71,9 +72,11 @@ export const processInput: SecretInput = {
           if (value.length > 4096) { done(new InputError('ввід задовгий')); return; }
         }
       };
+      const onEnd = () => { done(new InputError('ввід завершено (EOF)')); };
       stdin.setRawMode(true);
       stdin.resume();
       stdin.on('data', onData);
+      stdin.once('end', onEnd);
     });
   },
 };

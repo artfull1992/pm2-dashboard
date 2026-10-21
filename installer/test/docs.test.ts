@@ -33,6 +33,15 @@ describe('docs/INSTALLATION.md matches the installers', () => {
     }
   });
 
+  it('the guided route matches install.sh and the wizard (launcher, --release, default release directory, BUNDLE.json)', () => {
+    const launcher = readFileSync(join(import.meta.dirname, '..', '..', 'install.sh'), 'utf8');
+    const dirName = /releases_dir="\$\(dirname -- "\$checkout"\)\/([a-z-]+)"/.exec(launcher)?.[1];
+    expect(dirName).toBe('node-control-releases');
+    for (const value of ['sudo ./install.sh', './install.sh --help', '--release', `../${dirName ?? ''}/`, 'BUNDLE.json', 'server-bundle/install/wizard.js', 'build-release.js --out']) {
+      expect(DOC, value).toContain(value);
+    }
+  });
+
   it('no private addresses in examples: only example domains', () => {
     const urls = [...DOC.matchAll(/https:\/\/([a-z0-9.-]+)/g)].map((m) => m[1] ?? '');
     for (const host of urls) expect(host, host).toMatch(/(^|\.)example\.(com|org)$/);

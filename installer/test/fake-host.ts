@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, normalize } from 'node:path';
 import { parseEnv } from 'node:util';
-import type { FileInfo, GroupInfo, Host, Owner, RunOptions, RunResult, ScanOptions, ScanResult, UserInfo } from '../src/host.js';
+import type { FileInfo, GroupInfo, Host, Owner, ProcessInfo, RunOptions, RunResult, ScanOptions, ScanResult, UserInfo } from '../src/host.js';
 
 // In-memory Linux host for the installer tests: a file tree with owners/modes, users and groups, systemd units, and
 // simulations of exactly the external tools the installers call (server-release.js, migrate.js, bootstrap-admin.js,
@@ -97,6 +97,13 @@ export class FakeHost implements Host {
     return [...this.files.keys()].filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes('/') && p !== path).map((p) => p.slice(prefix.length));
   }
   readlink(path: string): string | null { const n = this.files.get(path); return n?.kind === 'symlink' ? n.target ?? null : null; }
+  /** Paths are canonical in the fake unless a test maps an alias (a symlinked prefix) to its real prefix. */
+  aliases = new Map<string, string>();
+  realpath(path: string): string | null {
+    let p = normalize(path).replace(/\/$/, '') || '/';
+    for (const [alias, real] of this.aliases) if (p === alias || p.startsWith(`${alias}/`)) p = real + p.slice(alias.length);
+    return this.files.has(p) ? p : null;
+  }
   sha256File(path: string): string { return createHash('sha256').update(this.readFile(path)).digest('hex'); }
   failWrite(match: string | RegExp, once = true): void {
     this.writeFailures.push({ match: (p) => (typeof match === 'string' ? p === match : match.test(p)), once });
@@ -123,7 +130,11 @@ export class FakeHost implements Host {
     if (path === '/var/lib/node-control-install') this.stateOps.push({ op: `mkdir ${path}`, at: this.changes.length, content: '' });
     else this.changes.push(`mkdir ${path}`);
   }
+  /** Running processes (title + real UID), as /proc would show them. */
+  procs: ProcessInfo[] = [];
   user(name: string): UserInfo | null { return this.users.get(name) ?? null; }
+  userById(uid: number): UserInfo | null { return [...this.users.values()].find((u) => u.uid === uid) ?? null; }
+  processes(): ProcessInfo[] { return this.procs.map((p) => ({ ...p })); }
   group(name: string): GroupInfo | null { return this.groups.get(name) ?? null; }
   groupsOf(name: string): string[] {
     const u = this.users.get(name);

@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, chownSync, closeSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, type Stats, writeSync } from 'node:fs';
+import { chmodSync, chownSync, closeSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, type Stats, writeSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 
@@ -31,6 +31,8 @@ export type ScanResult = { status: 'exit'; code: number } | { status: 'timeout' 
 
 export interface UserInfo { name: string; uid: number; gid: number; home: string; shell: string }
 export interface GroupInfo { name: string; gid: number; members: string[] }
+/** A running process as seen in /proc: real UID and its title (cmdline). Never its environment. */
+export interface ProcessInfo { pid: number; uid: number; title: string }
 
 export interface Host {
   /** lstat: a symlink is reported as such, never followed. null = missing. */
@@ -40,6 +42,8 @@ export interface Host {
   list(path: string): string[];
   /** Symlink target as stored, null if not a symlink. */
   readlink(path: string): string | null;
+  /** Canonical absolute path (symlinks resolved), null if it does not exist. */
+  realpath(path: string): string | null;
   sha256File(path: string): string;
   /** Temporary file in the same directory (exclusive, final mode from the start) → owner → rename. Refuses symlinks/dirs. */
   writeFileAtomic(path: string, content: string, owner: Owner): void;
@@ -49,7 +53,10 @@ export interface Host {
   /** Streams stdout line by line within ScanOptions limits (stderr is discarded — never captured or printed). */
   scan(command: string, args: readonly string[], options: ScanOptions): Promise<ScanResult>;
   user(name: string): UserInfo | null;
+  userById(uid: number): UserInfo | null;
   group(name: string): GroupInfo | null;
+  /** Read-only list of processes (title + real UID) from /proc; [] where /proc is absent. */
+  processes(): ProcessInfo[];
   /** Supplementary + primary group names of a user ([] if the user is missing). */
   groupsOf(name: string): string[];
   euid(): number;
@@ -87,6 +94,9 @@ export const realHost: Host = {
   },
   readlink(path) {
     try { return lstatSync(path).isSymbolicLink() ? readlinkSync(path) : null; } catch { return null; }
+  },
+  realpath(path) {
+    try { return realpathSync(path); } catch { return null; }
   },
   sha256File: (path) => createHash('sha256').update(readFileSync(path)).digest('hex'),
   writeFileAtomic(path, content, owner) {
@@ -173,6 +183,25 @@ export const realHost: Host = {
   user(name) {
     const f = getent('passwd', name);
     return f ? { name: f[0] ?? name, uid: Number(f[2]), gid: Number(f[3]), home: f[5] ?? '', shell: f[6] ?? '' } : null;
+  },
+  userById(uid) {
+    return Number.isInteger(uid) && uid >= 0 ? realHost.user(String(uid)) : null;
+  },
+  processes() {
+    let pids: string[];
+    try { pids = readdirSync('/proc').filter((e) => /^\d+$/.test(e)); } catch { return []; }
+    const out: ProcessInfo[] = [];
+    for (const pid of pids) {
+      try {
+        // Only the title (bounded) and the real UID; /proc/<pid>/environ is never read.
+        const title = readFileSync(`/proc/${pid}/cmdline`).subarray(0, 4096).toString('utf8').split('\0').filter((p) => p !== '').join(' ');
+        const uid = /^Uid:\s+(\d+)/m.exec(readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1];
+        if (uid !== undefined && title !== '') out.push({ pid: Number(pid), uid: Number(uid), title });
+      } catch {
+        // the process ended meanwhile or is not readable: skipped
+      }
+    }
+    return out;
   },
   group(name) {
     const f = getent('group', name);

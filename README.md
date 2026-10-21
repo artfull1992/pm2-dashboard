@@ -12,11 +12,16 @@ Node Control — self-hosted панель для серверів із PM2-за�
 
 Передумови: Ubuntu із systemd, root, Node.js 22 у `/usr/bin/node`; на центральному сервері — PostgreSQL і Nginx, домен і TLS-сертифікат.
 
-1. Зібрати артефакти з запушеного commit: `npx -y node@22 scripts/deploy/build-release.js` → передати `node-control-api-<sha>.tar.gz`, `node-control-agent-<sha>.tar.gz` (з `.sha256`) і `server-bundle/`.
-2. Центральний сервер: підготувати БД → `node server-bundle/install/server.js plan …` → `apply …` → Nginx (`server.js nginx-config`) → перший адміністратор.
-3. Кожен сервер: UI «Додати сервер» → «Видати ключ» → `node server-bundle/install/agent.js plan …` → `apply …` (за потреби `--pm2-owner/--pm2-home`, `--enable-control`).
+```bash
+git clone <URL репозиторію> node-control && cd node-control
+npm ci                                              # звичайним користувачем, не root
+node scripts/deploy/build-release.js --out "$(dirname "$PWD")/node-control-releases/$(git rev-parse --short HEAD)"
+sudo ./install.sh                                   # або ./install.sh, якщо ви вже root
+```
 
-Повна інструкція (команди, що змінюється, діагностика, відновлення, секрети) — [docs/INSTALLATION.md](docs/INSTALLATION.md). Оновлення й rollback наявних інсталяцій — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Межі: інші ОС і Docker не підтримуються; PM2 і його автозапуск Node Control не налаштовує; наскрізна перевірка інсталяторів на чистій Ubuntu VM ще попереду.
+Майстер питає, що встановлювати (Central Server або Agent), збирає параметри, показує план і після «так» встановлює з підготовленого релізу. Для центрального сервера заздалегідь потрібні БД (PostgreSQL) і, для доступу ззовні, Nginx із TLS; для Agent — ключ із UI («Додати сервер» → «Видати ключ»). Неінтерактивний маршрут (`server-bundle/install/server.js`/`agent.js plan|apply`) лишається для автоматизації.
+
+Повна інструкція (команди, що змінюється, діагностика, відновлення, секрети) — [docs/INSTALLATION.md](docs/INSTALLATION.md). Оновлення й rollback наявних інсталяцій — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Межі: інші ОС і Docker не підтримуються; PM2 і його автозапуск Node Control не налаштовує. Неінтерактивні інсталятори перевірено наскрізно на Ubuntu 26.04.1 LTS arm64 (2026-10-20); майстер — див. PROJECT_STATUS.
 
 ## Постійний контекст розробки
 

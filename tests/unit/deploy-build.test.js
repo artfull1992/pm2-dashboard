@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { AGENT_ARTIFACT_PATHS, ARTIFACT_PATHS, assertBundleClean, resolveDeployableRevision, stageArtifact, stageServerBundle } from '../../scripts/deploy/build-release.js';
-import { listFiles } from '../../scripts/deploy/lib/manifest.js';
+import { AGENT_ARTIFACT_PATHS, ARTIFACT_PATHS, assertBundleClean, BUNDLE_MANIFEST, resolveDeployableRevision, stageArtifact, stageServerBundle, writeBundleManifest } from '../../scripts/deploy/build-release.js';
+import { listFiles, sha256File } from '../../scripts/deploy/lib/manifest.js';
 
 const SHA = 'c'.repeat(40);
 const dirs = [];
@@ -157,4 +157,22 @@ test('server-bundle: release tooling at the top, installers in install/ with the
   }
   stageServerBundle(stage, join(out, 'server-bundle'));
   assert.deepEqual(listFiles(join(out, 'server-bundle')), ['install/agent.js', 'install/package.json', 'install/server.js', 'lib/manifest.js', 'server-release.js']);
+});
+
+test('server-bundle/BUNDLE.json: the revision and the SHA-256 of every bundle file (the wizard refuses anything else)', () => {
+  const stage = mkdtempSync(join(tmpdir(), 'nc-stage-'));
+  const out = mkdtempSync(join(tmpdir(), 'nc-bundle-'));
+  dirs.push(stage, out);
+  for (const file of ['scripts/deploy/server-release.js', 'scripts/deploy/lib/manifest.js', 'installer/dist/wizard.js', 'installer/dist/server.js', 'installer/package.json']) {
+    mkdirSync(join(stage, file, '..'), { recursive: true });
+    writeFileSync(join(stage, file), file);
+  }
+  const bundle = join(out, 'server-bundle');
+  stageServerBundle(stage, bundle);
+  writeBundleManifest(bundle, SHA);
+  const manifest = JSON.parse(readFileSync(join(bundle, BUNDLE_MANIFEST), 'utf8'));
+  assert.equal(manifest.revision, SHA);
+  assert.deepEqual(Object.keys(manifest.files).sort(), listFiles(bundle).filter((f) => f !== BUNDLE_MANIFEST));
+  for (const [file, hash] of Object.entries(manifest.files)) assert.equal(hash, sha256File(join(bundle, file)));
+  assert.throws(() => writeBundleManifest(bundle, 'HEAD'), TypeError);
 });

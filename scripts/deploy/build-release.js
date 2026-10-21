@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { assertRevision, buildManifest, MANIFEST_FILE, sha256File } from './lib/manifest.js';
+import { assertRevision, buildManifest, listFiles, MANIFEST_FILE, sha256File } from './lib/manifest.js';
 
 /** What goes into the artifact. No .env*, .git, node_modules, sources, tests or caches. */
 export const ARTIFACT_PATHS = Object.freeze([
@@ -100,6 +100,19 @@ export function stageArtifact(sourceRoot, stageDir, paths = ARTIFACT_PATHS) {
   }
 }
 
+/**
+ * server-bundle/BUNDLE.json: the revision and the SHA-256 of every bundle file. The guided installer (install/wizard.js)
+ * refuses to run from a bundle that does not match it, so the wizard, the installers and the artifacts of one release
+ * always come from the same build (never a stale installer/dist). Integrity against this record — not authenticity.
+ */
+export const BUNDLE_MANIFEST = 'BUNDLE.json';
+export function writeBundleManifest(bundleDir, revision) {
+  assertRevision(revision);
+  const files = {};
+  for (const file of listFiles(bundleDir)) if (file !== BUNDLE_MANIFEST) files[file] = sha256File(join(bundleDir, file));
+  writeFileSync(join(bundleDir, BUNDLE_MANIFEST), `${JSON.stringify({ revision, files }, null, 2)}\n`);
+}
+
 /** server-bundle/ = scripts/deploy (release tooling) + install/ (host installers, ESM: their package.json comes along). */
 export function stageServerBundle(stage, bundleDir) {
   cpSync(join(stage, 'scripts', 'deploy'), bundleDir, { recursive: true });
@@ -141,6 +154,7 @@ export function buildRelease({ revision, out, remoteBranch, cwd = process.cwd() 
     const digest = sha256File(artifact);
     writeFileSync(`${artifact}.sha256`, `${digest}  node-control-api-${sha}.tar.gz\n`);
     stageServerBundle(stage, join(outDir, 'server-bundle'));
+    writeBundleManifest(join(outDir, 'server-bundle'), sha);
 
     const agentStage = join(outDir, 'agent-stage');
     stageArtifact(work, agentStage, AGENT_ARTIFACT_PATHS);
