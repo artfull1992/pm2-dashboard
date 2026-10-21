@@ -156,39 +156,50 @@ install_runtime() {
   runtime_installed=1
 }
 
-# Trust of an executable BEFORE it is ever run as root — the same rule as installer/src/runtime.ts (executableTrust):
-# every symlink hop owned by root; every directory of every hop (canonical, up to /) owned by root and not writable by
-# group/other (only a root-owned sticky directory like /tmp may be); the final target a root-owned regular executable
-# file without group/other write. Only stat/readlink — nothing is executed. Sets `trusted_path` or `why`.
-root_dir_chain() {
-  local d=$1
-  while :; do
-    [ -n "$(find "$d" -maxdepth 0 -type d -user 0 \( \( ! -perm -020 ! -perm -002 \) -o -perm -1000 \) -print 2>/dev/null)" ] \
-      || { why="каталог $d не належить root або доступний на запис групі/іншим"; return 1; }
-    [ "$d" = / ] && return 0
-    d=$(dirname -- "$d")
-  done
+# Trust of an executable BEFORE it is ever run as root — the same rule as installer/src/runtime.ts (executableTrust).
+# The path is resolved component by component like the kernel does, and EVERY component met is checked — directories
+# of the original path, each intermediate/final symlink, every component of each symlink target (never only the
+# canonical path, which would hide what lies before a link): a directory owned by root and not writable by group/other
+# (only a root-owned sticky directory like /tmp may be); a symlink owned by root; the final target a root-owned regular
+# executable file without group/other write. At most 40 symlinks (a loop is refused). Only stat/readlink — nothing is
+# executed. Sets `trusted_path` or `why`.
+dir_trusted() { # $1 = directory
+  [ -n "$(find "$1" -maxdepth 0 -type d -user 0 \( \( ! -perm -020 ! -perm -002 \) -o -perm -1000 \) -print 2>/dev/null)" ] \
+    || { why="каталог $1 не належить root або доступний на запис групі/іншим"; return 1; }
 }
 executable_trusted() {
-  local p=$1 dir t hop
+  local rest=$1 cur=/ comp next target links=0
   trusted_path="" why=""
-  for hop in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
-    dir=$(cd -P -- "$(dirname -- "$p")" 2>/dev/null && pwd -P) || { why="каталог $(dirname -- "$p") не існує"; return 1; }
-    root_dir_chain "$dir" || return 1
-    p="${dir%/}/$(basename -- "$p")"
-    if [ -L "$p" ]; then
-      [ -n "$(find "$p" -maxdepth 0 -user 0 -print)" ] || { why="посилання $p не належить root"; return 1; }
-      t=$(readlink -- "$p")
-      case $t in /*) p=$t ;; *) p="${dir%/}/$t" ;; esac
+  case $rest in /*) ;; *) why="$1: потрібен абсолютний шлях"; return 1 ;; esac
+  dir_trusted / || return 1
+  while :; do
+    while [ "${rest#/}" != "$rest" ]; do rest=${rest#/}; done
+    [ -n "$rest" ] || break
+    comp=${rest%%/*}
+    if [ "$comp" = "$rest" ]; then rest=""; else rest=${rest#*/}; fi
+    case $comp in
+      .) continue ;;
+      ..) cur=$(dirname -- "$cur"); continue ;;   # its parents were checked on the way here
+    esac
+    next="${cur%/}/$comp"
+    if [ -L "$next" ]; then
+      [ -n "$(find "$next" -maxdepth 0 -user 0 -print)" ] || { why="посилання $next не належить root"; return 1; }
+      links=$((links + 1))
+      [ "$links" -le 40 ] || { why="$1: забагато посилань (цикл?)"; return 1; }
+      target=$(readlink -- "$next")
+      case $target in /*) cur=/ ;; esac
+      rest="$target${rest:+/$rest}"
       continue
     fi
-    [ -e "$p" ] || { why="$p не існує (посилання нікуди не веде)"; return 1; }
-    [ -n "$(find "$p" -maxdepth 0 -type f -user 0 ! -perm -020 ! -perm -002 -perm -100 -print)" ] \
-      || { why="$p — не виконуваний файл root або доступний на запис групі/іншим"; return 1; }
-    trusted_path=$p
+    [ -e "$next" ] || { why="$next не існує (посилання нікуди не веде)"; return 1; }
+    if [ -d "$next" ]; then dir_trusted "$next" || return 1; cur=$next; continue; fi
+    [ -z "$rest" ] || { why="$next не є каталогом"; return 1; }
+    [ -n "$(find "$next" -maxdepth 0 -type f -user 0 ! -perm -020 ! -perm -002 -perm -100 -print)" ] \
+      || { why="$next — не виконуваний файл root або доступний на запис групі/іншим"; return 1; }
+    trusted_path=$next
     return 0
   done
-  why="$1: забагато посилань"; return 1
+  why="$1 веде до каталогу, а не до файлу"; return 1
 }
 
 # npm next to a trusted Node.js ($1 = canonical node, $2 = its version): trusted itself (before it runs) and running on
@@ -210,14 +221,15 @@ npm_usable() {
 select_runtime() {
   local need_npm=${1:-1} v bad real
   node="" why=""
-  if [ -e "$RUNTIME_NODE" ] || [ -L "$RUNTIME_NODE" ]; then
+  # A runtime path that exists — or is a (possibly broken) symlink at any level — is checked, never bypassed.
+  if [ -e "$RUNTIME_NODE" ] || [ -L "$RUNTIME_NODE" ] || [ -L "$RUNTIME_DIR/bin" ] || [ -L "$RUNTIME_DIR" ]; then
     executable_trusted "$RUNTIME_NODE" || die "$RUNTIME_NODE не виконується: $why. Runtime має належати root і бути доступним на запис лише root (разом із каталогами); інсталятор його не запускає й не змінює."
     real=$trusted_path
-    case $real in
-      "$RUNTIME_DIR"/*)
-        bad=$(find "$RUNTIME_DIR" \( ! -user 0 -o \( ! -type l \( -perm -020 -o -perm -002 \) \) \) -print -quit)
-        [ -z "$bad" ] || die "$RUNTIME_DIR має належати root без запису для інших (виявлено: $bad) — runtime не використовується" ;;
-    esac
+    # The whole runtime directory, whatever the link points to: the services keep using its lexical path.
+    if [ -d "$RUNTIME_DIR" ]; then
+      bad=$(find "$RUNTIME_DIR" \( ! -user 0 -o \( ! -type l \( -perm -020 -o -perm -002 \) \) \) -print -quit)
+      [ -z "$bad" ] || die "$RUNTIME_DIR має належати root без запису для інших (виявлено: $bad) — runtime не використовується"
+    fi
     v=$(node_version "$RUNTIME_NODE")
     version_ok "$v" || die "$RUNTIME_NODE — Node.js ${v:-не запускається}, потрібен 22 не старший за $NODE_MIN. Наявний runtime не замінюється автоматично (docs/INSTALLATION.md, «Runtime Node.js»)."
     if [ "$need_npm" = 1 ] && ! npm_usable "$real" "$v"; then

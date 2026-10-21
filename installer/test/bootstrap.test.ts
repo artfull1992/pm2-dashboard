@@ -480,3 +480,64 @@ function tempDirFor(): string {
   dirs.push(d);
   return d;
 }
+
+// Review Codex 36413d3 (P2): short credentials (1–2 characters, percent-encoded too) are masked everywhere as well —
+// also printed on their own, outside a URL. Values are synthetic; assertions are booleans.
+describe('short proxy credentials (P2, 36413d3)', () => {
+  const cases = [
+    ['one character', '~', '~'],
+    ['two characters', '!~', '!~'],
+    ['percent-encoded short', '%3B', ';'],
+  ] as const;
+  it.each(cases.flatMap(([name, raw, plain]) => [[`${name}, successful build`, raw, plain, false], [`${name}, failed build`, raw, plain, true]] as const))('%s: not in the log, console, error tail or argv', async (_n, raw, plain, fail) => {
+    const s = setup({
+      env: { SUDO_USER: 'alice', SUDO_UID: '1000', HTTPS_PROXY: `http://proxyuser:${raw}@proxy.example.com:3128` },
+      users: [ALICE], checkoutOwner: 1000,
+      build: (out) => { if (fail) { mkdirSync(out, { recursive: true }); return 1; } writeRelease(out, 'server'); return 0; },
+    });
+    // the fake build prints the full URL (setup) — add the password on its own, as an npm/proxy error would
+    const stream = s.sys.stream.bind(s.sys);
+    s.sys.stream = (cmd, cwd, log, onLine) => { log(`proxy authentication failed; password=${plain} user=proxyuser\n`); return stream(cmd, cwd, log, onLine); };
+    await prepare(s.opts(), s.sys, s.paths);
+    const log = readdirSync(s.paths.logs).map((f) => readFileSync(join(s.paths.logs, f), 'utf8')).join('\n');
+    expect({
+      inLog: log.includes(plain) || log.includes(raw),
+      inConsole: s.text().includes(plain) || s.text().includes(`:${raw}@`),
+      inArgv: s.commands.some((c) => c.join(' ').includes(plain)),
+    }).toEqual({ inLog: false, inConsole: false, inArgv: false });
+    expect(log).toContain('password=***');
+    if (fail) expect(s.text()).toMatch(/Останні рядки журналу[\s\S]*password=\*\*\*/);
+  });
+
+  it('a two-character password split across output chunks of a real child never reaches the log', async () => {
+    const { realSys } = await import('../bootstrap/main.js');
+    const s = setup({ env: { HTTPS_PROXY: 'http://proxyuser:!~@proxy.example.com:3128' }, checkoutOwner: 0 });
+    const child = `
+      const fs = require('fs'), path = require('path'), args = process.argv.slice(2), out = args[args.indexOf('--out') + 1];
+      const pw = decodeURIComponent(new URL(process.env.HTTPS_PROXY).password);
+      process.stdout.write('npm error proxy password=' + pw[0]);
+      setTimeout(() => { process.stdout.write(pw.slice(1) + ' rejected\\n'); process.exit(1); }, 150);`;
+    s.sys.nodePath = process.execPath;
+    const fakePipe = s.sys.pipe.bind(s.sys);
+    s.sys.pipe = async (a, b, cwd) => {
+      const r = await fakePipe(a, b, cwd);
+      if (a.argv.includes('archive')) {
+        mkdirSync(join(s.workspace() ?? '', 'src', 'scripts', 'deploy'), { recursive: true });
+        writeFileSync(join(s.workspace() ?? '', 'src', 'scripts', 'deploy', 'build-release.js'), child);
+      }
+      return r;
+    };
+    s.sys.stream = (cmd, cwd, log, onLine) => realSys.stream({ argv: cmd.argv[0] === RUNUSER ? cmd.argv.slice(4) : cmd.argv, env: cmd.env }, cwd, log, onLine);
+    expect(await prepare(s.opts(), s.sys, s.paths)).toBe(EXIT.failed);
+    const log = readdirSync(s.paths.logs).map((f) => readFileSync(join(s.paths.logs, f), 'utf8')).join('');
+    expect([log.includes('!~'), log.includes('password=*** rejected'), s.text().includes('!~')]).toEqual([false, true, false]);
+  });
+
+  it('main: an unexpected exception is reported as one cleaned line (no raw message with the credential)', async () => {
+    const s = setup({ env: { HTTPS_PROXY: 'http://proxyuser:~@proxy.example.com:3128' }, checkoutOwner: 0 });
+    s.sys.tcp = () => Promise.reject(new Error('socket failure for proxy password ~ at line 1\n    at stack'));
+    expect(await main(['--checkout', s.checkout, '--component', 'server', '--launcher', join(s.checkout, 'install.sh')], s.sys)).toBe(EXIT.failed);
+    expect(s.text()).toMatch(/внутрішня помилка підготовки: socket failure for proxy password \*\*\* at line 1$/m);
+    expect(s.text()).not.toMatch(/~|at stack/);
+  });
+});

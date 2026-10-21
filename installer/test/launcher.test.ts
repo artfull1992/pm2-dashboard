@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -205,6 +205,45 @@ describe('install.sh functions (sourced): versions and the pinned runtime', () =
       expect(r.stdout, path).toMatch(/^NO /);
     }
     expect(fake.ran()).toBe(false);
+  });
+});
+
+// Review Codex 36413d3 (P1): real file system, no root — a user-owned directory BEFORE an intermediate symlink to a
+// root-owned system directory must not be hidden by canonicalization. The same paths through the TypeScript helper.
+describe('intermediate symlinks on a real file system (shell and TypeScript helper agree)', () => {
+  async function both(path: string): Promise<{ sh: string; ts: string }> {
+    const sh = sourced(`executable_trusted ${JSON.stringify(path)} && echo "OK $trusted_path" || echo "NO $why"`).stdout.trim();
+    const { executableTrust } = await import('../src/runtime.js');
+    const { realHost } = await import('../src/host.js');
+    const r = executableTrust(realHost, path);
+    return { sh, ts: r.problems.length === 0 && r.real ? `OK ${r.real}` : `NO ${r.problems.join('; ')}` };
+  }
+  function layout() {
+    const dir = tempDir('nc-link-');
+    symlinkSync('/bin', join(dir, 'bin'));                    // intermediate link → root-owned /bin
+    symlinkSync('hop2', join(dir, 'hop1'));                   // several hops, relative
+    symlinkSync(join(dir, 'bin'), join(dir, 'hop2'));
+    symlinkSync('../../../../../../../../bin', join(dir, 'up')); // relative target with ..
+    symlinkSync('loop-b', join(dir, 'loop-a'));
+    symlinkSync('loop-a', join(dir, 'loop-b'));
+    symlinkSync(join(dir, 'gone'), join(dir, 'dangling'));
+    return dir;
+  }
+
+  it.each([['bin/sh'], ['hop1/sh'], ['up/sh'], ['loop-a/sh'], ['dangling/sh']])('<user-owned temp>/%s → refused by both (the directory before the link is checked)', async (rel) => {
+    const r = await both(join(layout(), rel));
+    expect(r.sh, r.sh).toMatch(/^NO /);
+    expect(r.ts, r.ts).toMatch(/^NO /);
+  });
+
+  it('legitimate root-owned system paths are accepted by both, also through system symlinks and ..', async () => {
+    const paths = ['/bin/sh', '/bin/./sh'];
+    if (lstatSync('/var').isSymbolicLink()) paths.push('/var/../../bin/sh'); // macOS: /var → private/var
+    for (const path of paths) {
+      const r = await both(path);
+      expect(r.sh, path).toBe(`OK ${r.ts.slice(3)}`);
+      expect(r.ts, path).toMatch(/^OK \//);
+    }
   });
 });
 

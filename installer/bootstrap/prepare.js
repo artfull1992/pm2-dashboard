@@ -101,8 +101,8 @@ const short = (sha) => sha.slice(0, 12);
 /** @param {string} text */
 const lastLine = (text) => (text.trim().split('\n').at(-1) ?? '').slice(0, 300);
 /**
- * The credentials of the proxy variables (user and password of their URLs, raw and decoded): replaced wherever they
- * appear, also outside a URL. @param {Readonly<Record<string, string | undefined>>} env @returns {string[]}
+ * The credentials of the proxy variables (user and password of their URLs, raw and decoded, any length): replaced
+ * wherever they appear, also outside a URL. @param {Readonly<Record<string, string | undefined>>} env @returns {string[]}
  */
 export function secretsOf(env) {
   /** @type {Set<string>} */
@@ -119,7 +119,9 @@ export function secretsOf(env) {
       }
     } catch { /* not a URL: nothing to extract */ }
   }
-  return [...out].filter((s) => s.length >= 3).sort((a, b) => b.length - a.length);
+  // No length limit: a 1–2 character password is still a password. Masking every occurrence may also hit ordinary text
+  // that happens to contain it — readability is the price, a leaked credential is not acceptable (review 36413d3).
+  return [...out].filter((s) => s.length > 0).sort((a, b) => b.length - a.length);
 }
 /** Credentials are never written or shown: known secrets and any user:password@ in a URL. @param {string} text @param {readonly string[]} [secrets] */
 export const redact = (text, secrets = []) => {
@@ -329,6 +331,14 @@ function describe(sys, paths, o, sha, id, target, invalid) {
 
 /** @param {Options} o @param {Sys} sys @param {Paths} [paths] @returns {Promise<number>} */
 export async function prepare(o, sys, paths = { ...PATHS }) {
+  // Every line this preparation prints is cleaned like the log: a short proxy credential may surface anywhere.
+  const secrets = secretsOf(sys.env);
+  const { line, error } = sys;
+  return run(o, { ...sys, line: (t) => { line(redact(t, secrets)); }, error: (t) => { error(redact(t, secrets)); } }, paths);
+}
+
+/** @param {Options} o @param {Sys} sys @param {Paths} paths @returns {Promise<number>} */
+async function run(o, sys, paths) {
   const cancelled = () => {
     sys.line(o.runtimeInstalled
       ? '\nСкасовано. Крім щойно встановленого runtime (/opt/node-control-runtime) система не змінювалась.'

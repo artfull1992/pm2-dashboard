@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { agentMain } from '../src/agent.js';
 import type { Context, Preflight } from '../src/engine.js';
-import { nodeVersionOk, RUNTIME, runtimePreflight, runtimeStep } from '../src/runtime.js';
+import { executableTrust, nodeVersionOk, RUNTIME, runtimePreflight, runtimeStep } from '../src/runtime.js';
 import { serverMain } from '../src/server.js';
 import { capture, FakeHost } from './fake-host.js';
 
@@ -295,5 +295,55 @@ describe('npm next to the runtime', () => {
     runtimePreflight(h, p, { npm: false });
     expect(p.errors).toEqual([]);
     expect(npmCalls(h)).toEqual([]);
+  });
+});
+
+// Review Codex 36413d3 (P1): the path is checked component by component as it is resolved — every directory of the
+// ORIGINAL path, every intermediate/final symlink and the components of each target — never only its realpath.
+describe('intermediate symlinks do not hide untrusted path components (P1, 36413d3)', () => {
+  const nodeCalls = (h: FakeHost) => h.calls.filter((c) => c.command.endsWith('/node') || c.command === RUNTIME.node);
+  /** /opt/node-control-runtime/bin → (symlink) … → a root-owned /usr/bin/node: only the path before it is varied. */
+  function host(arrange: (h: FakeHost) => void) {
+    const h = new FakeHost();
+    h.dir(RUNTIME.dir);
+    arrange(h);
+    h.changes.length = 0;
+    h.calls.length = 0;
+    return h;
+  }
+  const refusedWithoutRun = (h: FakeHost, why: RegExp) => {
+    expect(executableTrust(h, RUNTIME.node).problems.join('; ')).toMatch(why);
+    const p = pre();
+    runtimePreflight(h, p, { npm: true });
+    expect(p.errors.join()).toMatch(why);
+    expect(nodeCalls(h)).toEqual([]);
+    expect(h.calls.filter((c) => c.command.endsWith('/npm'))).toEqual([]);
+  };
+
+  it.each([
+    ['a foreign owner of the directory before the intermediate symlink', (h: FakeHost) => { h.dir(RUNTIME.dir, 0o755, 1000); h.symlink('/usr/bin', RUNTIME.bin); }, /каталог \/opt\/node-control-runtime належить UID 1000/],
+    ['a world-writable (non-sticky) directory before the intermediate symlink', (h: FakeHost) => { h.dir(RUNTIME.dir, 0o777); h.symlink('/usr/bin', RUNTIME.bin); }, /каталог \/opt\/node-control-runtime доступний на запис/],
+    ['a group-writable directory before the intermediate symlink', (h: FakeHost) => { h.dir(RUNTIME.dir, 0o775); h.symlink('/usr/bin', RUNTIME.bin); }, /каталог \/opt\/node-control-runtime доступний на запис/],
+    ['an intermediate symlink owned by another user', (h: FakeHost) => { h.symlink('/usr/bin', RUNTIME.bin); const l = h.files.get(RUNTIME.bin); if (l) l.uid = 1000; }, /посилання \/opt\/node-control-runtime\/bin належить UID 1000/],
+    ['several hops, a later one under a user-owned directory', (h: FakeHost) => { h.symlink('/opt/hop1', RUNTIME.bin); h.dir('/opt/user', 0o755, 1000); h.symlink('/opt/user/hop2', '/opt/hop1'); h.symlink('/usr/bin', '/opt/user/hop2'); }, /каталог \/opt\/user належить UID 1000/],
+    ['a relative target with .. through a user-owned directory', (h: FakeHost) => { h.dir('/home/u', 0o755, 1000); h.dir('/home/u/bin', 0o755, 0); h.file('/home/u/bin/node', 'bin', 0o755); h.symlink('../../home/u/bin', RUNTIME.bin); }, /каталог \/home\/u належить UID 1000/],
+    ['a symlink loop', (h: FakeHost) => { h.symlink('/opt/loop-b', RUNTIME.bin); h.symlink('/opt/loop-a', '/opt/loop-b'); h.symlink('/opt/loop-b', '/opt/loop-a'); }, /забагато посилань/],
+    ['a dangling intermediate symlink', (h: FakeHost) => { h.symlink('/opt/gone', RUNTIME.bin); }, /\/opt\/gone не існує/],
+  ])('%s → refused, nothing executed', (_n, arrange, why) => {
+    refusedWithoutRun(host((h) => { arrange(h); if (!h.stat(RUNTIME.node) && h.stat(RUNTIME.bin)?.kind === 'dir') h.symlink('/usr/bin/node', RUNTIME.node); }), why);
+  });
+
+  it.each([
+    ['safe root-owned system symlinks (/bin → usr/bin, relative with ..)', (h: FakeHost) => { h.dir(RUNTIME.bin); h.symlink('usr/bin', '/bin'); h.symlink('../../../bin/./node', RUNTIME.node); }, '/usr/bin/node'],
+    ['several root-owned hops with relative targets', (h: FakeHost) => { h.symlink('../hop', RUNTIME.bin); h.symlink('/usr/lib/../bin', '/opt/hop'); h.dir('/usr/lib'); }, '/usr/bin/node'],
+    ['the downloaded runtime layout', (h: FakeHost) => { const v = `${RUNTIME.dir}/versions/node-v22.23.4-linux-x64/bin`; for (const d of [`${RUNTIME.dir}/versions`, `${RUNTIME.dir}/versions/node-v22.23.4-linux-x64`, v, RUNTIME.bin]) h.dir(d); h.file(`${v}/node`, 'bin', 0o755); h.file(`${v}/npm`, 'bin', 0o755); h.symlink('../versions/node-v22.23.4-linux-x64/bin/node', RUNTIME.node); }, `${RUNTIME.dir}/versions/node-v22.23.4-linux-x64/bin/node`],
+    ['the link to a compatible system Node.js', (h: FakeHost) => { h.dir(RUNTIME.bin); h.symlink('/usr/bin/node', RUNTIME.node); }, '/usr/bin/node'],
+  ])('%s → allowed; the version is read only after the checks', (_n, arrange, real) => {
+    const h = host(arrange);
+    expect(executableTrust(h, RUNTIME.node)).toEqual({ real, problems: [] });
+    const p = pre();
+    runtimePreflight(h, p, { npm: false });
+    expect(p.errors).toEqual([]);
+    expect(nodeCalls(h).map((c) => c.args)).toEqual([['--version']]);
   });
 });

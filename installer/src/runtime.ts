@@ -1,4 +1,4 @@
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Preflight, Step } from './engine.js';
 import type { Host } from './host.js';
 
@@ -28,46 +28,66 @@ export function nodeVersionOk(text: string, min = RUNTIME.min): boolean {
   return minor !== Number(want[2]) ? minor > Number(want[2]) : patch >= Number(want[3]);
 }
 
+/** Most symlinks followed while resolving one path (Linux allows 40): a loop is refused, never followed forever. */
+export const MAX_SYMLINKS = 40;
+
 /**
- * Trust of an executable BEFORE it is ever run as root (the same rule as install.sh, executable_trusted): every symlink
- * hop owned by root; every directory of every hop (canonical, up to /) owned by root and not writable by group/other —
- * only a root-owned sticky directory (like /tmp) may be; the final target a root-owned regular file, executable, not
- * writable by group/other. Uses lstat/readlink/realpath only — nothing is executed. Returns the canonical file.
+ * Trust of an executable BEFORE it is ever run as root (the same rule as install.sh, executable_trusted). The path is
+ * resolved component by component exactly as the kernel would, and EVERY component met on the way is checked — the
+ * directories of the original path, each intermediate and final symlink, every component of each symlink target:
+ *   - a directory: owned by root, not writable by group/other — except a root-owned sticky directory (like /tmp);
+ *   - a symlink: owned by root (it lies in a directory checked above, so nobody else can replace it);
+ *   - the final target: a root-owned regular file, executable, not writable by group/other.
+ * Only lstat/readlink — nothing is executed, realpath is never used (it would hide the components before a link).
+ * Returns the resolved file.
  */
 export function executableTrust(host: Host, path: string): { real: string | null; problems: string[] } {
-  const problems: string[] = [];
-  const dirChain = (start: string) => {
-    for (let dir = start; ; dir = dirname(dir)) {
-      const info = host.stat(dir);
-      if (!info || info.kind !== 'dir') problems.push(`${dir} не є каталогом`);
-      else if (info.uid !== 0) problems.push(`каталог ${dir} належить UID ${String(info.uid)}, не root`);
-      else if ((info.mode & 0o022) !== 0 && (info.mode & 0o1000) === 0) problems.push(`каталог ${dir} доступний на запис групі/іншим`);
-      if (dir === '/') return;
-    }
+  if (!path.startsWith('/')) return { real: null, problems: [`${path}: потрібен абсолютний шлях`] };
+  const dirProblem = (dir: string): string | null => {
+    const info = host.stat(dir);
+    if (!info || info.kind !== 'dir') return `${dir} не є каталогом`;
+    if (info.uid !== 0) return `каталог ${dir} належить UID ${String(info.uid)}, не root`;
+    if ((info.mode & 0o022) !== 0 && (info.mode & 0o1000) === 0) return `каталог ${dir} доступний на запис групі/іншим`;
+    return null;
   };
-  let p = path;
-  for (let hop = 0; hop < 16; hop++) {
-    const parent = host.realpath(dirname(p));
-    if (!parent) return { real: null, problems: [...problems, `${dirname(p)} не існує`] };
-    dirChain(parent);
-    const here = join(parent, basename(p));
-    const info = host.stat(here);
-    if (!info) return { real: null, problems: [...problems, `${here} не існує (посилання нікуди не веде)`] };
+  const rootProblem = dirProblem('/');
+  if (rootProblem) return { real: null, problems: [rootProblem] };
+  let current = '/';
+  let rest = path.split('/').filter((c) => c !== '');
+  let links = 0;
+  while (rest.length > 0) {
+    const [component, ...tail] = rest;
+    rest = tail;
+    if (component === '.' || component === undefined) continue;
+    if (component === '..') { current = dirname(current); continue; } // its parents were checked on the way here
+    const next = current === '/' ? `/${component}` : `${current}/${component}`;
+    const info = host.stat(next);
+    if (!info) return { real: null, problems: [`${next} не існує (посилання нікуди не веде)`] };
     if (info.kind === 'symlink') {
-      if (info.uid !== 0) problems.push(`посилання ${here} належить UID ${String(info.uid)}, не root`);
-      const target = host.readlink(here) ?? '';
-      p = target.startsWith('/') ? target : join(parent, target);
+      if (info.uid !== 0) return { real: null, problems: [`посилання ${next} належить UID ${String(info.uid)}, не root`] };
+      if (++links > MAX_SYMLINKS) return { real: null, problems: [`${path}: забагато посилань (цикл?)`] };
+      const target = host.readlink(next) ?? '';
+      if (target.startsWith('/')) current = '/';
+      rest = [...target.split('/').filter((c) => c !== ''), ...rest];
       continue;
     }
-    if (info.kind !== 'file') problems.push(`${here} не є звичайним файлом`);
-    else {
-      if (info.uid !== 0) problems.push(`${here} належить UID ${String(info.uid)}, не root`);
-      if ((info.mode & 0o022) !== 0) problems.push(`${here} доступний на запис групі/іншим`);
-      if ((info.mode & 0o100) === 0) problems.push(`${here} не виконуваний`);
+    if (info.kind === 'dir') {
+      const problem = dirProblem(next);
+      if (problem) return { real: null, problems: [problem] };
+      current = next;
+      continue;
     }
-    return { real: here, problems };
+    if (rest.length > 0) return { real: null, problems: [`${next} не є каталогом`] };
+    const problems: string[] = [];
+    if (info.kind !== 'file') problems.push(`${next} не є звичайним файлом`);
+    else {
+      if (info.uid !== 0) problems.push(`${next} належить UID ${String(info.uid)}, не root`);
+      if ((info.mode & 0o022) !== 0) problems.push(`${next} доступний на запис групі/іншим`);
+      if ((info.mode & 0o100) === 0) problems.push(`${next} не виконуваний`);
+    }
+    return { real: next, problems };
   }
-  return { real: null, problems: [...problems, `${path}: забагато посилань`] };
+  return { real: null, problems: [`${path} веде до каталогу, а не до файлу`] };
 }
 
 /** Every entry of a runtime tree owned by root; nothing but symlinks writable by group/other. */
@@ -111,7 +131,8 @@ export function npmProblem(host: Host, real: string, version: string): string | 
  * (needed for the production dependencies of the API) must be trusted and run on the same Node.js.
  */
 export function runtimePreflight(host: Host, p: Preflight, options: { npm: boolean }): void {
-  const existing = host.stat(RUNTIME.node) !== null;
+  // A runtime path that exists — or is a (possibly broken) symlink at any level — is checked and never bypassed for /usr/bin/node.
+  const existing = host.stat(RUNTIME.node) !== null || [RUNTIME.node, RUNTIME.bin, RUNTIME.dir].some((p) => host.stat(p)?.kind === 'symlink');
   const candidate = existing ? RUNTIME.node : RUNTIME.system;
   if (!existing && !host.stat(RUNTIME.system)) {
     p.errors.push(`немає сумісного Node.js: ${RUNTIME.node} відсутній, ${RUNTIME.system} — немає (${requirement()}). `
@@ -119,7 +140,8 @@ export function runtimePreflight(host: Host, p: Preflight, options: { npm: boole
     return;
   }
   const trust = executableTrust(host, candidate);
-  const problems = [...trust.problems, ...(existing && trust.real?.startsWith(`${RUNTIME.dir}/`) ? treeProblems(host, RUNTIME.dir) : [])];
+  // The whole runtime directory, whatever the link points to: the services keep using its lexical path.
+  const problems = [...trust.problems, ...(existing && host.stat(RUNTIME.dir)?.kind === 'dir' ? treeProblems(host, RUNTIME.dir) : [])];
   if (problems.length > 0 || !trust.real) {
     p.errors.push(`${candidate} не виконується: ${problems.slice(0, 3).join('; ')} — Node.js має належати root і бути доступним на запис лише root (разом із каталогами); інсталятор його не запускає й не змінює`);
     return;

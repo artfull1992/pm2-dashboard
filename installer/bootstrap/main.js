@@ -4,7 +4,7 @@ import { lstatSync, realpathSync, statfsSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
-import { EXIT, prepare } from './prepare.js';
+import { EXIT, prepare, redact, secretsOf } from './prepare.js';
 
 // Entry point of the guided preparation, started ONLY by ./install.sh (as root, on the checked Node.js runtime):
 //   node installer/bootstrap/main.js --checkout <dir> --component server|agent --launcher <install.sh> [--runtime-installed]
@@ -147,7 +147,13 @@ export async function main(argv, sys = realSys) {
     sys.error('✗ потрібні --checkout, --launcher і --component server|agent (installer/bootstrap/main.js запускає лише ./install.sh)');
     return EXIT.usage;
   }
-  return prepare({ checkout, component, launcher, runtimeInstalled: values['runtime-installed'] }, sys);
+  try {
+    return await prepare({ checkout, component, launcher, runtimeInstalled: values['runtime-installed'] }, sys);
+  } catch (error) {
+    // Anything unexpected: one cleaned line — never a raw message or stack that could carry a proxy credential.
+    sys.error(`✗ внутрішня помилка підготовки: ${redact((error instanceof Error ? error.message : String(error)).split('\n')[0] ?? '', secretsOf(sys.env)).slice(0, 300)}`);
+    return EXIT.failed;
+  }
 }
 
 if (process.argv[1] && import.meta.filename === realpathSync(process.argv[1])) {

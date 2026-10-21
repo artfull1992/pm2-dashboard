@@ -88,8 +88,33 @@ export class FakeHost implements Host {
   text(path: string): string { return this.files.get(path)?.content ?? ''; }
 
   // --- Host ---------------------------------------------------------------------------------------------------------
+  /**
+   * Like the kernel: symlinks in every component are followed; the last one only when `followLast` (lstat vs stat).
+   * Returns the resolved path (may not exist) or null on a loop.
+   */
+  private resolve(path: string, followLast: boolean): string | null {
+    let rest = path.split('/').filter((c) => c !== '');
+    let current = '';
+    for (let hops = 0; rest.length > 0;) {
+      const [c, ...tail] = rest;
+      rest = tail;
+      if (c === undefined || c === '.') continue;
+      if (c === '..') { current = current.slice(0, current.lastIndexOf('/')); continue; }
+      const next = `${current}/${c}`;
+      const n = this.files.get(next);
+      if (n?.kind === 'symlink' && (rest.length > 0 || followLast)) {
+        if (++hops > 40) return null;
+        const t = n.target ?? '';
+        if (t.startsWith('/')) current = '';
+        rest = [...t.split('/').filter((x) => x !== ''), ...rest];
+        continue;
+      }
+      current = next;
+    }
+    return current === '' ? '/' : current;
+  }
   stat(path: string): FileInfo | null {
-    const n = this.files.get(path);
+    const n = this.files.get(this.resolve(path, false) ?? '');
     return n ? { kind: n.kind, mode: n.mode, uid: n.uid, gid: n.gid } : null;
   }
   readFile(path: string): string {
@@ -101,17 +126,14 @@ export class FakeHost implements Host {
     const prefix = path === '/' ? '/' : `${path}/`;
     return [...this.files.keys()].filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes('/') && p !== path).map((p) => p.slice(prefix.length));
   }
-  readlink(path: string): string | null { const n = this.files.get(path); return n?.kind === 'symlink' ? n.target ?? null : null; }
+  readlink(path: string): string | null { const n = this.files.get(this.resolve(path, false) ?? ''); return n?.kind === 'symlink' ? n.target ?? null : null; }
   /** Paths are canonical in the fake unless a test maps an alias (a symlinked prefix) to its real prefix. */
   aliases = new Map<string, string>();
   realpath(path: string): string | null {
     let p = normalize(path).replace(/\/$/, '') || '/';
     for (const [alias, real] of this.aliases) if (p === alias || p.startsWith(`${alias}/`)) p = real + p.slice(alias.length);
-    for (let hops = 0; this.files.get(p)?.kind === 'symlink' && hops < 8; hops++) {
-      const target = this.files.get(p)?.target ?? '';
-      p = target.startsWith('/') ? target : normalize(`${dirname(p)}/${target}`);
-    }
-    return this.files.has(p) ? p : null;
+    const resolved = this.resolve(p, true);
+    return resolved !== null && this.files.has(resolved) ? resolved : null;
   }
   sha256File(path: string): string { return createHash('sha256').update(this.readFile(path)).digest('hex'); }
   failWrite(match: string | RegExp, once = true): void {
