@@ -1,5 +1,35 @@
 # Поточний стан проєкту
 
+## Виправлення bootstrap за review Codex `33e2f2e` (2026-10-21) — готово до повторного review Codex, x86_64 — відкритий блокер
+
+Статус: **готово до повторного незалежного review Codex**, з **відкритим validation blocker x86_64** (див. нижче). APPROVED не виставлявся. База: `8235bfe`. Production і сервер користувача не підключались; PM2-застосунки не змінювались; команд `pm2` не було.
+
+| # | Зауваження | Виправлення | Regression (до → після) |
+|---|---|---|---|
+| P1 | `runtimePreflight` запускав `RUNTIME.node --version` до перевірки власника/прав | `executableTrust` (installer/src/runtime.ts) і `executable_trusted` (install.sh) — одне правило, лише `stat`/`readlink`, до будь-якого запуску: кожне посилання й кожен канонічний каталог кожного кроку до `/` — root без запису для групи/інших (крім root sticky); кінцевий файл — виконуваний файл root без запису для інших; для окремого runtime — усе дерево. Так само перевіряються системний `/usr/bin/node` і npm до запуску | До: FakeHost `{"untrustedNodeExecuted":true,"rejected":true}`. Після: `runtime.test.ts` — 11 сценаріїв відмови (інший UID, group/world-writable, невиконуваний, root-файл під каталогом користувача / world-writable каталогом / writable `/opt`, посилання на ціль користувача, висяче посилання, посилання не root, чужий файл у дереві runtime) + недовірений `/usr/bin/node`: **0 викликів** будь-якого node; дозволені runtime і посилання на системний — рівно один `--version` після перевірок. **Linux arm64, root, справжні процеси:** скомпільований `agent.js plan` і `install.sh` для a/b/c/c2/d/e/h — маркер виконання не створено, причина в повідомленні; f/g (дозволені) — прийнято |
+| P1/P2 | Пароль проксі в argv (`env -i NAME=value`); сирий вивід у повному build-log | Команда = `{argv, env}`: несекретні змінні — `env` в argv, змінні проксі — **лише environment процесу** (`spawn` з повним явним env; `runuser` за абсолютним шляхом зберігає його); від root нічого не успадковується. Під `sudo` проксі зберігаються за назвою (`--preserve-env=<назви>`). Журнал очищається до запису: повні рядки (фрагменти зшиваються), облікові дані проксі сирі й декодовані, будь-який `user:pass@`; те саме — консоль, хвіст, помилки | До: `{"credentialInArgv":true,"credentialInStoredLog":true,"credentialInConsole":false}`. Після: `bootstrap.test.ts` — успішна й невдала збірки: усі `false`, сторонній секрет root не в argv/env, проксі в env кожної команди збирача; справжній дочірній процес (argv + `/proc/self/cmdline` / argv, environment), URL розірваний між фрагментами → у журналі лише `***`; `realSys.run/pipe` — env лише з `cmd.env`. `launcher.test.ts`: sudo отримує `--preserve-env=HTTPS_PROXY,NO_PROXY`, пароля в argv немає. **Linux arm64, справжній проксі з Basic auth:** збирання Central Server від звичайного користувача через sudo — 15 автентифікованих CONNECT, 0 відмов; пароль у argv будь-якого процесу — 0 з 33 вибірок; `HTTPS_PROXY` в environment процесів `npm ci` — так; у build-log — 0; у транскрипті термінала — 0; журнали `root 600`. Хибний пароль → `E407` у хвості, реліз не збережено, пароль ніде не з'явився |
+| P2 | Сумісний Node без npm обирався; збирання падало пізніше | `install.sh`: де потрібен npm (основний маршрут; `--release … --component server`), npm має бути довіреним і працювати на тому самому Node (`npm version --json`); інакше — пропозиція окремого runtime після «так» **у тому самому запуску**. Неповний наявний runtime — зупинка без заміни. Agent із готового релізу npm не потребує. Інсталятори: `npmProblem` (довіра → `npm version` з каталогом runtime першим у PATH) | **Linux arm64:** пара node/npm — обрано системний; без npm / npm падає / npm на Node 21.7.3 / npm не root — запропоновано окремий runtime (недовірений npm не запущено); advanced Agent без npm — системний Node; `agent.js plan` без npm — жодної вимоги npm; `server.js plan` — причина з порадою `--component server`. Один запуск `./install.sh`: відмова від runtime → 130, нічого не створено; згода → runtime 22.23.4 і продовження до плану підготовки в тому самому запуску; системні Node/npm без змін. Тести: `runtime.test.ts` (npm відсутній/падає/інший Node/недовірений/сумісний/неповний наявний runtime/Agent) |
+| — | **Знахідка VM-прогону:** після переходу на мінімальне env `runuser` не знаходився (`spawnSync runuser ENOENT`, sbin немає в PATH дочірнього процесу) | `/usr/sbin/runuser` за абсолютним шляхом | regression-тест; повторний VM-прогін — успішний |
+| — | **Обмеження npm з пакета Ubuntu:** npm 9.2 не надсилає `Proxy-Authorization` (перевірено захопленням заголовків); npm 10.9.9 офіційного runtime — надсилає | задокументовано обхід: окремий runtime через `--node-archive` | — |
+
+| Перевірка | Результат |
+|---|---|
+| `npm run check:local` | exit 0 (див. звіт) |
+| installer | 265/265 (зокрема runtime 46, bootstrap 37, launcher 33) |
+| Пакування | бандл поточного дерева: `--help`, без TTY, вимога root, змінений/зайвий файл, не з бандла, `BUNDLE.json = null` — контрольовані відмови; скомпільовані `agent.js`/`server.js` перевірено на VM |
+| `git diff --check`, `check:secrets` | OK |
+
+**Межі:**
+- **x86_64 — відкритий блокер.** Ubuntu x86_64 (платформа фактичного збою) не перевірено: на машині перевірки (Apple arm64) немає x86_64-середовища. qemu не встановлено, нових залежностей без погодження не ставив. Rosetta для Linux на ядрі Ubuntu 26.04 падає (`Failed to find vdso DT_HASH`, зафіксовано раніше). Потрібно одне з:
+  - дозвіл встановити qemu (`brew install qemu`) для одноразової x86_64-VM у Lima;
+  - або надана одноразова Ubuntu x86_64-VM.
+
+  arm64-прогони не видаються за x86_64.
+- VM (нові одноразові клони `nc-rv-agent`, `nc-rv-api`) перевіряли тестовий commit робочого дерева (`a36b00c`, git bundle). Після прогону змінено лише інформаційний рядок перед передачею майстру та документацію.
+- Наскрізне встановлення Agent/API на виправленій ревізії до `apply` не повторювалось. Перевірено preflight, runtime, npm, збирання й передачу майстру; `apply` не змінювався.
+
+**Документація:** INSTALLATION (довіра до runtime/npm до запуску, коли потрібен npm, проксі в environment і через sudo, очищення журналу, обмеження npm Ubuntu), DEPLOYMENT (довіра до runtime), ADR-027 (уточнення). README/ARCHITECTURE перевірено — гарантій там не змінено.
+
 ## Незалежний review Codex — bootstrap одним install.sh: CHANGES REQUIRED (2026-10-21)
 
 Перевірено `8235bfe` від бази `d0cb5fe`; початкове дерево чисте. Прочитано launcher, bootstrap/main.js/prepare.js, runtime preflight/step, зміни build-release/release-dir, units, тести та документацію. Основний сценарій, розділення привілеїв і цільова збірка Agent реалізовані, але є блокери:

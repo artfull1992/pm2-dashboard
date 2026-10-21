@@ -118,6 +118,19 @@ describe('install.sh: before root', () => {
       expect(f.sudoArgv()).toEqual(['--', f.launcher, ...args]);
     }
   });
+
+  it('proxy variables survive the sudo re-run by name only — their values (credentials) never reach argv', () => {
+    if (spawnSync('id', ['-u'], { encoding: 'utf8' }).stdout.trim() === '0') return;
+    const f = cleanCheckout();
+    const pw = ['Pr', 'ox', 'yPw', '91'].join('');
+    const driver = ['import os,pty,sys', 'pid, fd = pty.fork()', 'if pid == 0:', '  os.chdir(sys.argv[1]); os.execvp(sys.argv[2], sys.argv[2:])',
+      'while True:', '  try: d = os.read(fd, 4096)', '  except OSError: break', '  if not d: break', '_, st = os.waitpid(pid, 0)', 'sys.exit(os.waitstatus_to_exitcode(st))'].join('\n');
+    const r = spawnSync('python3', ['-c', driver, f.root, 'bash', f.launcher], { encoding: 'utf8', env: { ...env(f.bin), HTTPS_PROXY: `http://u:${pw}@proxy.example.com:3128`, NO_PROXY: 'localhost' }, timeout: 20_000 });
+    expect(r.status).toBe(0);
+    const argv = f.sudoArgv() ?? [];
+    expect(argv).toEqual(['--preserve-env=HTTPS_PROXY,NO_PROXY', '--', f.launcher]);
+    expect(argv.join(' ').includes(pw)).toBe(false);
+  });
 });
 
 describe('install.sh functions (sourced): versions and the pinned runtime', () => {
@@ -137,44 +150,61 @@ describe('install.sh functions (sourced): versions and the pinned runtime', () =
     }
   });
 
-  function fakeNode(dir: string, version: string): string {
+  /** A fake `node` that leaves a marker when executed: a refusal must happen without running it. */
+  function fakeNode(dir: string, version: string): { path: string; ran: () => boolean } {
     const path = join(dir, `node-${version || 'broken'}`);
-    writeFileSync(path, version ? `#!/bin/sh\necho ${version}\n` : '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-    return path;
+    const marker = join(dir, `RAN-${version || 'broken'}`);
+    writeFileSync(path, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n${version ? `echo ${version}` : 'exit 1'}\n`, { mode: 0o755 });
+    return { path, ran: () => existsSync(marker) };
   }
   const select = (system: string, runtimeDir: string, extra = '') => sourced(
-    `read_spec "$spec"; trust_init; RUNTIME_DIR=${JSON.stringify(runtimeDir)}; RUNTIME_NODE="$RUNTIME_DIR/bin/node"; SYSTEM_NODE=${JSON.stringify(system)}; node_archive=""; ${extra} select_runtime; echo "NODE=$node"; echo "WHY=$why"`,
+    `read_spec "$spec"; trust_init; RUNTIME_DIR=${JSON.stringify(runtimeDir)}; RUNTIME_NODE="$RUNTIME_DIR/bin/node"; SYSTEM_NODE=${JSON.stringify(system)}; node_archive=""; ${extra} select_runtime 1; echo "NODE=$node"; echo "WHY=$why"`,
   );
 
-  it.each([
-    ['21.7.3', /^NODE=$/m, /Системний Node\.js 21\.7\.3 .* не підходить: потрібен 22 не старший за 22\.22\.0/],
-    ['22.21.0', /^NODE=$/m, /Системний Node\.js 22\.21\.0/],
-    ['24.14.0', /^NODE=$/m, /Системний Node\.js 24\.14\.0/],
-    ['', /^NODE=$/m, /не встановлено|не підходить/],
-    ['22.23.4', /^NODE=.*node-22\.23\.4$/m, /сумісний — окремий runtime не завантажується/],
-  ])('no runtime yet, system Node.js %j → %s', (version, nodeLine, message) => {
+  // Review Codex 2026-10-21 (P1): nothing is executed before executable_trusted accepted it. These fakes live in a
+  // user-owned temporary directory, so they are untrusted: never run (no marker), the separate runtime is offered.
+  it.each([['21.7.3'], ['22.23.4'], ['']])('system Node.js %j in a user-owned directory → not executed, runtime offered', (version) => {
     const dir = tempDir('nc-rt-');
-    const r = select(fakeNode(dir, version), join(dir, 'runtime'));
+    const fake = fakeNode(dir, version);
+    const r = select(fake.path, join(dir, 'runtime'));
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout).toMatch(nodeLine);
-    expect(r.stdout).toMatch(message);
+    expect(r.stdout).toMatch(/^NODE=$/m);
+    expect(r.stdout).toMatch(/не використовується \(не запускався\): каталог .* не належить root або доступний на запис/);
+    expect(fake.ran()).toBe(false);
   });
 
-  it('--node-archive asks for the runtime even when the system Node.js is compatible', () => {
+  it('no system Node.js / --node-archive → the separate runtime is required', () => {
     const dir = tempDir('nc-rt-');
-    const r = select(fakeNode(dir, '22.23.4'), join(dir, 'runtime'), 'node_archive=/x.tar.gz;');
+    expect(select(join(dir, 'absent'), join(dir, 'runtime')).stdout).toMatch(/не встановлено/);
+    const r = select(fakeNode(dir, '22.23.4').path, join(dir, 'runtime'), 'node_archive=/x.tar.gz;');
     expect(r.stdout).toMatch(/^NODE=$/m);
     expect(r.stdout).toMatch(/передано --node-archive/);
   });
 
-  it('an existing runtime that is not root-owned is never used (and never replaced)', () => {
+  it('an existing runtime that is not root-owned is refused before it runs (and never replaced)', () => {
     const dir = tempDir('nc-rt-');
     mkdirSync(join(dir, 'runtime', 'bin'), { recursive: true });
-    symlinkSync(fakeNode(dir, '22.23.4'), join(dir, 'runtime', 'bin', 'node'));
-    const r = select(fakeNode(dir, '22.23.4'), join(dir, 'runtime'));
+    const fake = fakeNode(dir, '22.23.4');
+    symlinkSync(fake.path, join(dir, 'runtime', 'bin', 'node'));
+    const r = select(fake.path, join(dir, 'runtime'));
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/має належати root без запису для інших/);
+    expect(r.stderr).toMatch(/не виконується: .*інсталятор його не запускає й не змінює/);
+    expect(fake.ran()).toBe(false);
     expect(existsSync(join(dir, 'runtime', 'bin', 'node'))).toBe(true);
+  });
+
+  it('executable_trusted: a root-owned system binary under root-owned directories passes; user-owned file/link/dangling link do not', () => {
+    const sh = realpathSync('/bin/sh');
+    expect(sourced(`executable_trusted ${JSON.stringify(sh)} && echo "OK $trusted_path"`).stdout.trim()).toBe(`OK ${sh}`);
+    const dir = tempDir('nc-rt-');
+    const fake = fakeNode(dir, '22.23.4');
+    symlinkSync('/bin/sh', join(dir, 'link-to-sh'));
+    symlinkSync(join(dir, 'gone'), join(dir, 'dangling'));
+    for (const path of [fake.path, join(dir, 'link-to-sh'), join(dir, 'dangling')]) {
+      const r = sourced(`executable_trusted ${JSON.stringify(path)} && echo OK || echo "NO $why"`);
+      expect(r.stdout, path).toMatch(/^NO /);
+    }
+    expect(fake.ran()).toBe(false);
   });
 });
 

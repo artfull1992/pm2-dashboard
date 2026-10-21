@@ -23,7 +23,7 @@ async function run(h: FakeHost, argv: string[], input: SecretInput = noTty) {
   const code = await serverMain(argv, { host: h, out: c.out, input, cwd: '/root', releaseTool: '/transfer/server-release.js' });
   return { code, ...c, all: c.all };
 }
-const mutatingCalls = (h: FakeHost) => h.calls.filter((c) => !['is-active', 'is-enabled', '--version', 'status'].includes(c.args.at(c.command === 'runuser' ? -1 : 0) ?? '') && !['ss', 'id', 'journalctl'].includes(c.command));
+const mutatingCalls = (h: FakeHost) => h.calls.filter((c) => !['is-active', 'is-enabled', '--version', 'status'].includes(c.args.at(c.command === 'runuser' ? -1 : 0) ?? '') && !['ss', 'id', 'journalctl'].includes(c.command) && !(c.command.endsWith('/npm') && c.args[0] === 'version'));
 
 describe('server installer: first installation', () => {
   it('plan inspects only: no change, no mutating command; lists what apply would do', async () => {

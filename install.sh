@@ -156,33 +156,90 @@ install_runtime() {
   runtime_installed=1
 }
 
-# Which Node.js runs everything from here on. Sets `node` (or `node=""` = the runtime must be installed) and `why`.
+# Trust of an executable BEFORE it is ever run as root — the same rule as installer/src/runtime.ts (executableTrust):
+# every symlink hop owned by root; every directory of every hop (canonical, up to /) owned by root and not writable by
+# group/other (only a root-owned sticky directory like /tmp may be); the final target a root-owned regular executable
+# file without group/other write. Only stat/readlink — nothing is executed. Sets `trusted_path` or `why`.
+root_dir_chain() {
+  local d=$1
+  while :; do
+    [ -n "$(find "$d" -maxdepth 0 -type d -user 0 \( \( ! -perm -020 ! -perm -002 \) -o -perm -1000 \) -print 2>/dev/null)" ] \
+      || { why="каталог $d не належить root або доступний на запис групі/іншим"; return 1; }
+    [ "$d" = / ] && return 0
+    d=$(dirname -- "$d")
+  done
+}
+executable_trusted() {
+  local p=$1 dir t hop
+  trusted_path="" why=""
+  for hop in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    dir=$(cd -P -- "$(dirname -- "$p")" 2>/dev/null && pwd -P) || { why="каталог $(dirname -- "$p") не існує"; return 1; }
+    root_dir_chain "$dir" || return 1
+    p="${dir%/}/$(basename -- "$p")"
+    if [ -L "$p" ]; then
+      [ -n "$(find "$p" -maxdepth 0 -user 0 -print)" ] || { why="посилання $p не належить root"; return 1; }
+      t=$(readlink -- "$p")
+      case $t in /*) p=$t ;; *) p="${dir%/}/$t" ;; esac
+      continue
+    fi
+    [ -e "$p" ] || { why="$p не існує (посилання нікуди не веде)"; return 1; }
+    [ -n "$(find "$p" -maxdepth 0 -type f -user 0 ! -perm -020 ! -perm -002 -perm -100 -print)" ] \
+      || { why="$p — не виконуваний файл root або доступний на запис групі/іншим"; return 1; }
+    trusted_path=$p
+    return 0
+  done
+  why="$1: забагато посилань"; return 1
+}
+
+# npm next to a trusted Node.js ($1 = canonical node, $2 = its version): trusted itself (before it runs) and running on
+# exactly that Node.js. Sets `why` otherwise.
+npm_usable() {
+  local npm reported
+  npm="$(dirname -- "$1")/npm"
+  [ -e "$npm" ] || [ -L "$npm" ] || { why="немає npm поруч із $1"; return 1; }
+  executable_trusted "$npm" || { why="npm поруч із $1 не довірений: $why"; return 1; }
+  reported=$(env -i PATH="$(dirname -- "$1"):/usr/bin:/bin" HOME=/root "$npm" version --json 2>/dev/null \
+    | sed -n 's/^ *"node": *"\([0-9.]*\)".*/\1/p') || true
+  [ -n "$reported" ] || { why="npm поруч із $1 не працює"; return 1; }
+  [ "$reported" = "$2" ] || { why="npm поруч із $1 працює на Node.js $reported, а не $2"; return 1; }
+}
+
+# Which Node.js runs everything from here on. $1 = 1 when npm is needed (a build, or the API's production
+# dependencies). Sets `node` (or `node=""` = the separate runtime must be installed) and `why`. Nothing is executed
+# before executable_trusted accepted it; an existing runtime is never switched or replaced here.
 select_runtime() {
+  local need_npm=${1:-1} v bad real
   node="" why=""
-  local v bad real
   if [ -e "$RUNTIME_NODE" ] || [ -L "$RUNTIME_NODE" ]; then
-    # Existing runtime: root-only writable (symlinks excluded from the mode test), compatible — never switched here.
-    bad=$(find "$RUNTIME_DIR" \( ! -user 0 -o \( ! -type l \( -perm -020 -o -perm -002 \) \) \) -print -quit)
-    [ -z "$bad" ] || die "$RUNTIME_DIR має належати root без запису для інших (виявлено: $bad) — runtime не використовується"
-    assert_ancestors "$RUNTIME_DIR"
-    real=$(readlink -f -- "$RUNTIME_NODE" || true)
-    [ -n "$real" ] && [ -n "$(find "$real" -maxdepth 0 -type f -user 0 ! -perm -020 ! -perm -002 -print)" ] \
-      || die "$RUNTIME_NODE веде в ${real:-нікуди}: це має бути файл root без запису для інших"
-    assert_ancestors "$real"
+    executable_trusted "$RUNTIME_NODE" || die "$RUNTIME_NODE не виконується: $why. Runtime має належати root і бути доступним на запис лише root (разом із каталогами); інсталятор його не запускає й не змінює."
+    real=$trusted_path
+    case $real in
+      "$RUNTIME_DIR"/*)
+        bad=$(find "$RUNTIME_DIR" \( ! -user 0 -o \( ! -type l \( -perm -020 -o -perm -002 \) \) \) -print -quit)
+        [ -z "$bad" ] || die "$RUNTIME_DIR має належати root без запису для інших (виявлено: $bad) — runtime не використовується" ;;
+    esac
     v=$(node_version "$RUNTIME_NODE")
     version_ok "$v" || die "$RUNTIME_NODE — Node.js ${v:-не запускається}, потрібен 22 не старший за $NODE_MIN. Наявний runtime не замінюється автоматично (docs/INSTALLATION.md, «Runtime Node.js»)."
+    if [ "$need_npm" = 1 ] && ! npm_usable "$real" "$v"; then
+      die "$why: наявний runtime $RUNTIME_NODE неповний для цього сценарію. Інсталятор його не замінює й не перемикає автоматично — оновлення runtime за docs/DEPLOYMENT.md («Runtime Node.js»)."
+    fi
     node=$RUNTIME_NODE
     echo "Node.js $v: $RUNTIME_NODE"
     return 0
   fi
-  v=""; [ -x "$SYSTEM_NODE" ] && v=$(node_version "$SYSTEM_NODE")
-  if [ -z "$node_archive" ] && [ -n "$v" ] && version_ok "$v"; then
-    node=$SYSTEM_NODE
-    echo "Node.js $v у $SYSTEM_NODE сумісний — окремий runtime не завантажується (служби використовуватимуть посилання $RUNTIME_NODE → $SYSTEM_NODE; створює його інсталятор після «так»)."
-  elif [ -n "$node_archive" ]; then why="Runtime Node Control ще не встановлено; передано --node-archive."
-  elif [ -z "$v" ]; then why="Сумісного Node.js немає: $RUNTIME_NODE відсутній, $SYSTEM_NODE не встановлено."
-  else why="Системний Node.js $v ($SYSTEM_NODE) не підходить: потрібен 22 не старший за $NODE_MIN (вимога залежностей з package-lock.json)."
+  if [ -n "${node_archive:-}" ]; then why="Runtime Node Control ще не встановлено; передано --node-archive."; return 0; fi
+  if [ ! -e "$SYSTEM_NODE" ] && [ ! -L "$SYSTEM_NODE" ]; then why="Сумісного Node.js немає: $RUNTIME_NODE відсутній, $SYSTEM_NODE не встановлено."; return 0; fi
+  if ! executable_trusted "$SYSTEM_NODE"; then why="Системний $SYSTEM_NODE не використовується (не запускався): $why."; return 0; fi
+  real=$trusted_path
+  v=$(node_version "$SYSTEM_NODE")
+  if ! version_ok "$v"; then
+    why="Системний Node.js ${v:-(не запускається)} ($SYSTEM_NODE) не підходить: потрібен 22 не старший за $NODE_MIN (вимога залежностей з package-lock.json)."; return 0
   fi
+  if [ "$need_npm" = 1 ] && ! npm_usable "$real" "$v"; then
+    why="Системний Node.js $v сумісний, але $why (npm потрібен для збирання й залежностей API; системні Node.js і npm не змінюються)."; return 0
+  fi
+  node=$SYSTEM_NODE
+  echo "Node.js $v у $SYSTEM_NODE сумісний — окремий runtime не завантажується (служби використовуватимуть посилання $RUNTIME_NODE → $SYSTEM_NODE; створює його інсталятор після «так»)."
 }
 
 # Sourced (tests): functions only.
@@ -221,6 +278,11 @@ trap 'printf "\nСкасовано.\n" >&2; exit 130' INT
 if [ "$(id -u)" != 0 ]; then
   command -v sudo >/dev/null 2>&1 || die "потрібні права root, а sudo не знайдено: запустіть ./install.sh від root"
   echo "Потрібні права root (системні каталоги, служби). Перезапуск через sudo; збирання релізу виконуватиметься від вашого користувача $(id -un), не від root."
+  # Proxy variables survive sudo's env_reset by NAME only (--preserve-env=<names>): values — possibly with credentials —
+  # stay in the environment, never in argv. Nothing else of the user's environment is kept.
+  keep=""
+  for v in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy NO_PROXY no_proxy; do [ -n "${!v:-}" ] && keep="${keep:+$keep,}$v"; done
+  if [ -n "$keep" ]; then exec sudo --preserve-env="$keep" -- "$self" ${args[@]+"${args[@]}"}; fi
   exec sudo -- "$self" ${args[@]+"${args[@]}"}
 fi
 
@@ -255,7 +317,11 @@ fi
 trust_init
 
 # --- Node.js runtime -----------------------------------------------------------------------------------------------
-select_runtime
+# npm is needed for a build (the main route) and for the production dependencies of the API; an Agent installed from a
+# prepared release (--release … --component agent, or the component chosen later in the wizard) needs no npm.
+need_npm=1
+[ -n "$release" ] && [ "$component" != server ] && need_npm=0
+select_runtime "$need_npm"
 if [ -z "$node" ]; then
   printf '\n%s\n' "$why"
   echo "Буде встановлено окремий runtime Node Control:"

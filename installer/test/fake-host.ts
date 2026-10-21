@@ -47,6 +47,8 @@ export class FakeHost implements Host {
   euidValue = 0;
   /** `node --version` by the real path of the binary (default v22.23.4). */
   nodeVersions = new Map<string, string>();
+  /** Node.js an npm (by path) actually runs on ("broken" = npm fails); default: the node next to it. */
+  npmNode = new Map<string, string>();
   clock = new Date('2026-10-20T10:00:00.000Z');
   private nextUid = 990;
 
@@ -244,7 +246,14 @@ export class FakeHost implements Host {
         return this.node(args, this.nodeVersions.get(real) ?? 'v22.23.4');
       }
       case 'runuser': return this.runuser(args, options);
-      default: return { code: 127, stdout: '', stderr: `${command}: not simulated` };
+      default:
+        if (command.endsWith('/npm') && args[0] === 'version') {
+          // npm runs on the node found first in PATH (options.env.PATH): report that node's version
+          const dir = (options.env?.PATH ?? '').split(':')[0] ?? '';
+          const node = this.npmNode.get(command) ?? (this.nodeVersions.get(`${dir}/node`) ?? 'v22.23.4');
+          return node === 'broken' ? { code: 1, stdout: '', stderr: 'npm: crashed' } : ok(`{"npm":"10.9.9","node":"${node.replace(/^v/, '')}"}\n`);
+        }
+        return { code: 127, stdout: '', stderr: `${command}: not simulated` };
     }
   }
 

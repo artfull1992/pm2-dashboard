@@ -126,7 +126,7 @@ describe('runtimePreflight', () => {
     const p = pre();
     runtimePreflight(h, p, { npm: false });
     expect(p.errors.join()).toContain(`${RUNTIME.system} — ${version}`);
-    expect(p.errors.join()).toMatch(/\.\/install\.sh завантажить окремий runtime, не змінюючи системний/);
+    expect(p.errors.join()).toMatch(/\.\/install\.sh встановить окремий runtime, не змінюючи системний/);
   });
 
   it('no Node.js at all → refused; the API needs npm next to the real binary', () => {
@@ -196,5 +196,104 @@ describe('every Node.js command of the installers uses the runtime path', () => 
     expect(code, out.all).toBe(0);
     expect(out.all).toContain(`${RUNTIME.node} /opt/node-control-agent/current/agent/dist/pm2-broker.js fingerprint`);
     expect(out.all).not.toMatch(/\/usr\/bin\/node \/opt/);
+  });
+});
+
+// Review Codex 2026-10-21 (P1): trust is checked BEFORE the runtime is executed — an untrusted binary is never run,
+// not even for --version. Every refusal asserts ZERO calls of any Node.js binary.
+describe('runtime trust before execution (P1)', () => {
+  const REAL = `${RUNTIME.dir}/versions/node-v22.23.4-linux-x64/bin/node`;
+  const nodeCalls = (h: FakeHost) => h.calls.filter((c) => c.command.endsWith('/node') || c.command === RUNTIME.node);
+  const refused = (h: FakeHost, why: RegExp) => {
+    const p = pre();
+    runtimePreflight(h, p, { npm: true });
+    expect(p.errors.join(), JSON.stringify(p.errors)).toMatch(why);
+    expect(p.errors.join()).toMatch(/інсталятор його не запускає й не змінює/);
+    expect(nodeCalls(h)).toEqual([]);
+    expect(h.changes).toEqual([]);
+  };
+
+  it.each([
+    ['an executable of another UID', (h: FakeHost) => { h.file(REAL, 'bin', 0o755, 1000); }, /належить UID 1000, не root/],
+    ['a group-writable executable', (h: FakeHost) => { h.file(REAL, 'bin', 0o775); }, /доступний на запис групі\/іншим/],
+    ['a world-writable executable', (h: FakeHost) => { h.file(REAL, 'bin', 0o757); }, /доступний на запис групі\/іншим/],
+    ['a non-executable file', (h: FakeHost) => { h.file(REAL, 'bin', 0o644); }, /не виконуваний/],
+    ['a root-owned executable under a user-owned intermediate directory', (h: FakeHost) => { h.dir(`${RUNTIME.dir}/versions`, 0o755, 1000); }, /каталог \/opt\/node-control-runtime\/versions належить UID 1000/],
+    ['a root-owned executable under a world-writable (non-sticky) directory', (h: FakeHost) => { h.dir(`${RUNTIME.dir}/versions/node-v22.23.4-linux-x64/bin`, 0o777); }, /bin доступний на запис групі\/іншим/],
+    ['a writable /opt above everything', (h: FakeHost) => { h.dir('/opt', 0o777); }, /каталог \/opt доступний на запис/],
+    ['a symlink to a user-owned target', (h: FakeHost) => { h.dir('/home/u', 0o755, 1000); h.file('/home/u/node', 'bin', 0o755, 1000); h.files.delete(RUNTIME.node); h.symlink('/home/u/node', RUNTIME.node); }, /\/home\/u.*UID 1000/],
+    ['a dangling symlink', (h: FakeHost) => { h.files.delete(REAL); }, /нікуди не веде/],
+    ['a link owned by another user', (h: FakeHost) => { const l = h.files.get(RUNTIME.node); if (l) l.uid = 1000; }, /посилання \/opt\/node-control-runtime\/bin\/node належить UID 1000/],
+    ['a user-owned file inside the runtime tree (npm/lib)', (h: FakeHost) => { h.file(`${RUNTIME.dir}/versions/node-v22.23.4-linux-x64/bin/npm`, 'bin', 0o755, 1000); }, /npm належить UID 1000/],
+  ])('existing runtime: %s → refused without running anything', (_n, arrange, why) => {
+    const h = runtimeHost('downloaded');
+    arrange(h);
+    h.calls.length = 0;
+    h.changes.length = 0;
+    refused(h, why);
+  });
+
+  it('no runtime yet: an untrusted /usr/bin/node is not executed either', () => {
+    const h = runtimeHost('none');
+    h.file('/usr/bin/node', 'bin', 0o755, 1000);
+    refused(h, /\/usr\/bin\/node належить UID 1000/);
+  });
+
+  it('allowed: a root-owned downloaded runtime and the link to a compatible system Node.js are run only after the checks', () => {
+    for (const [kind, real] of [['downloaded', REAL], ['system', '/usr/bin/node']] as const) {
+      const h = runtimeHost(kind);
+      if (kind === 'downloaded') h.file(`${RUNTIME.dir}/versions/node-v22.23.4-linux-x64/bin/npm`, 'bin', 0o755);
+      h.calls.length = 0;
+      const p = pre();
+      runtimePreflight(h, p, { npm: true });
+      expect(p.errors, kind).toEqual([]);
+      expect(p.notes.join()).toContain(real);
+      expect(nodeCalls(h).map((c) => c.args)).toEqual([['--version']]);
+    }
+  });
+});
+
+// Review Codex 2026-10-21 (P2): npm must be present, trusted and run on the same Node.js — only where it is needed.
+describe('npm next to the runtime', () => {
+  const npmCalls = (h: FakeHost) => h.calls.filter((c) => c.command.endsWith('/npm'));
+  it.each([
+    ['missing', (h: FakeHost) => { h.files.delete('/usr/bin/npm'); }, /немає npm поруч із \/usr\/bin\/node/, 0],
+    ['not working', (h: FakeHost) => { h.npmNode.set('/usr/bin/npm', 'broken'); }, /npm поруч із \/usr\/bin\/node не працює/, 1],
+    ['running on another Node.js', (h: FakeHost) => { h.npmNode.set('/usr/bin/npm', 'v21.7.3'); }, /працює на Node\.js v21\.7\.3, а не v22\.23\.4/, 1],
+    ['not trusted (user-owned) — and then never run', (h: FakeHost) => { h.file('/usr/bin/npm', 'bin', 0o755, 1000); }, /npm поруч із \/usr\/bin\/node не довірений/, 0],
+  ])('Central API with npm %s → refused with the way to a complete runtime', (_n, arrange, why, npmRuns) => {
+    const h = runtimeHost('none');
+    arrange(h);
+    const p = pre();
+    runtimePreflight(h, p, { npm: true });
+    expect(p.errors.join()).toMatch(why);
+    expect(p.errors.join()).toMatch(/--component server запропонує окремий runtime Node Control із npm/);
+    expect(npmCalls(h)).toHaveLength(npmRuns);
+  });
+
+  it('a compatible Node.js/npm pair passes (npm runs with that node first in PATH)', () => {
+    const h = runtimeHost('none');
+    const p = pre();
+    runtimePreflight(h, p, { npm: true });
+    expect(p.errors).toEqual([]);
+    expect(npmCalls(h)).toHaveLength(1);
+  });
+
+  it('an existing runtime without a working npm is reported, never replaced', () => {
+    const h = runtimeHost('downloaded');
+    h.files.delete(`${RUNTIME.dir}/versions/node-v22.23.4-linux-x64/bin/npm`);
+    const p = pre();
+    runtimePreflight(h, p, { npm: true });
+    expect(p.errors.join()).toMatch(/немає npm поруч.*Наявний runtime інсталятор не замінює/);
+    expect(h.changes).toEqual([]);
+  });
+
+  it('the Agent (prepared artifact, no npm dependencies) does not require npm at all', () => {
+    const h = runtimeHost('none');
+    h.files.delete('/usr/bin/npm');
+    const p = pre();
+    runtimePreflight(h, p, { npm: false });
+    expect(p.errors).toEqual([]);
+    expect(npmCalls(h)).toEqual([]);
   });
 });

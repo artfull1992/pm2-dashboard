@@ -16,6 +16,8 @@ export interface RunOptions {
   /** The child talks to the operator's terminal directly (hidden prompts of existing CLIs). */
   interactive?: boolean;
   cwd?: string;
+  /** Extra environment for the child (merged over the installer's own). */
+  env?: Readonly<Record<string, string>>;
 }
 /** Bounded streaming read of a command's stdout: lines are handed over one by one, nothing else is kept. */
 export interface ScanOptions {
@@ -141,7 +143,7 @@ export const realHost: Host = {
       const r = spawnSync(command, args, { cwd: options.cwd ?? '/', stdio: 'inherit' });
       return { code: r.status ?? 1, stdout: '', stderr: '' };
     }
-    const r = spawnSync(command, args, { encoding: 'utf8', cwd: options.cwd ?? '/', input: options.input ?? '', stdio: ['pipe', 'pipe', 'pipe'] });
+    const r = spawnSync(command, args, { encoding: 'utf8', cwd: options.cwd ?? '/', input: options.input ?? '', stdio: ['pipe', 'pipe', 'pipe'], ...(options.env ? { env: { ...process.env, ...options.env } } : {}) });
     return { code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr };
   },
   scan(command, args, o) {

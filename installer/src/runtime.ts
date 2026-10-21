@@ -1,4 +1,4 @@
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { Preflight, Step } from './engine.js';
 import type { Host } from './host.js';
 
@@ -28,47 +28,121 @@ export function nodeVersionOk(text: string, min = RUNTIME.min): boolean {
   return minor !== Number(want[2]) ? minor > Number(want[2]) : patch >= Number(want[3]);
 }
 
-function versionOf(host: Host, node: string): string {
-  if (!host.stat(node)) return '';
-  const r = host.run(node, ['--version']);
-  return r.code === 0 ? r.stdout.trim() : '';
+/**
+ * Trust of an executable BEFORE it is ever run as root (the same rule as install.sh, executable_trusted): every symlink
+ * hop owned by root; every directory of every hop (canonical, up to /) owned by root and not writable by group/other —
+ * only a root-owned sticky directory (like /tmp) may be; the final target a root-owned regular file, executable, not
+ * writable by group/other. Uses lstat/readlink/realpath only — nothing is executed. Returns the canonical file.
+ */
+export function executableTrust(host: Host, path: string): { real: string | null; problems: string[] } {
+  const problems: string[] = [];
+  const dirChain = (start: string) => {
+    for (let dir = start; ; dir = dirname(dir)) {
+      const info = host.stat(dir);
+      if (!info || info.kind !== 'dir') problems.push(`${dir} не є каталогом`);
+      else if (info.uid !== 0) problems.push(`каталог ${dir} належить UID ${String(info.uid)}, не root`);
+      else if ((info.mode & 0o022) !== 0 && (info.mode & 0o1000) === 0) problems.push(`каталог ${dir} доступний на запис групі/іншим`);
+      if (dir === '/') return;
+    }
+  };
+  let p = path;
+  for (let hop = 0; hop < 16; hop++) {
+    const parent = host.realpath(dirname(p));
+    if (!parent) return { real: null, problems: [...problems, `${dirname(p)} не існує`] };
+    dirChain(parent);
+    const here = join(parent, basename(p));
+    const info = host.stat(here);
+    if (!info) return { real: null, problems: [...problems, `${here} не існує (посилання нікуди не веде)`] };
+    if (info.kind === 'symlink') {
+      if (info.uid !== 0) problems.push(`посилання ${here} належить UID ${String(info.uid)}, не root`);
+      const target = host.readlink(here) ?? '';
+      p = target.startsWith('/') ? target : join(parent, target);
+      continue;
+    }
+    if (info.kind !== 'file') problems.push(`${here} не є звичайним файлом`);
+    else {
+      if (info.uid !== 0) problems.push(`${here} належить UID ${String(info.uid)}, не root`);
+      if ((info.mode & 0o022) !== 0) problems.push(`${here} доступний на запис групі/іншим`);
+      if ((info.mode & 0o100) === 0) problems.push(`${here} не виконуваний`);
+    }
+    return { real: here, problems };
+  }
+  return { real: null, problems: [...problems, `${path}: забагато посилань`] };
+}
+
+/** Every entry of a runtime tree owned by root; nothing but symlinks writable by group/other. */
+function treeProblems(host: Host, dir: string): string[] {
+  const out: string[] = [];
+  for (const name of host.list(dir)) {
+    const path = join(dir, name);
+    const info = host.stat(path);
+    if (!info) continue;
+    if (info.uid !== 0) out.push(`${path} належить UID ${String(info.uid)}`);
+    else if (info.kind !== 'symlink' && (info.mode & 0o022) !== 0) out.push(`${path} доступний на запис групі/іншим`);
+    if (info.kind === 'dir') out.push(...treeProblems(host, path));
+    if (out.length >= 3) break;
+  }
+  return out;
 }
 
 const requirement = () => `потрібен Node.js 22 не старший за ${RUNTIME.min}`;
 
 /**
- * Read-only: which Node.js the installation will use. An existing RUNTIME.node must be compatible and root-only
- * writable; without it a compatible /usr/bin/node is linked by the runtime step. npm must lie next to the real binary
- * (the API release installs its production dependencies with it).
+ * The npm next to a trusted Node.js: itself trusted (checked before it runs), and running on exactly that Node.js
+ * (`npm version --json` with its directory first in PATH). Returns the problem, or null when npm is usable.
+ */
+export function npmProblem(host: Host, real: string, version: string): string | null {
+  const npm = join(dirname(real), 'npm');
+  if (!host.stat(npm)) return `немає npm поруч із ${real}`;
+  const trust = executableTrust(host, npm);
+  if (trust.problems.length > 0) return `npm поруч із ${real} не довірений: ${trust.problems.slice(0, 2).join('; ')}`;
+  const r = host.run(npm, ['version', '--json'], { env: { PATH: `${dirname(real)}:/usr/bin:/bin` } });
+  let node: unknown;
+  try { node = r.code === 0 ? (JSON.parse(r.stdout) as Record<string, unknown>).node : undefined; } catch { node = undefined; }
+  if (typeof node !== 'string') return `npm поруч із ${real} не працює`;
+  if (`v${node}` !== version) return `npm поруч із ${real} працює на Node.js v${node}, а не ${version}`;
+  return null;
+}
+
+/**
+ * Read-only: which Node.js the installation will use. Trust is checked BEFORE anything runs (executableTrust; for an
+ * existing runtime also its whole tree): an untrusted binary is never executed, not even for --version. An existing
+ * RUNTIME.node must then be compatible; without it a compatible /usr/bin/node is linked by the runtime step. npm
+ * (needed for the production dependencies of the API) must be trusted and run on the same Node.js.
  */
 export function runtimePreflight(host: Host, p: Preflight, options: { npm: boolean }): void {
-  let real: string | null;
-  if (host.stat(RUNTIME.node)) {
-    real = host.realpath(RUNTIME.node);
-    const version = versionOf(host, RUNTIME.node);
-    const info = real ? host.stat(real) : null;
-    const dir = host.stat(RUNTIME.dir);
-    if (!real || !info || info.uid !== 0 || (info.mode & 0o022) !== 0 || !dir || dir.uid !== 0 || (dir.mode & 0o022) !== 0) {
-      p.errors.push(`${RUNTIME.node} має належати root і бути доступним на запис лише root (stat ${RUNTIME.dir}; ${real ?? 'посилання нікуди не веде'}) — інсталятор runtime не змінює`);
-      return;
-    }
-    if (!nodeVersionOk(version)) {
-      p.errors.push(`${RUNTIME.node} — Node.js ${version || 'не запускається'}: ${requirement()}. Наявний runtime інсталятор не замінює (docs/INSTALLATION.md, «Runtime Node.js»)`);
-      return;
-    }
-    p.notes.push(`Node.js ${version} (${RUNTIME.node} → ${real})`);
-  } else {
-    const version = versionOf(host, RUNTIME.system);
-    if (!nodeVersionOk(version)) {
-      p.errors.push(`немає сумісного Node.js: ${RUNTIME.node} відсутній, ${RUNTIME.system} — ${version || 'немає'} (${requirement()}). `
-        + './install.sh завантажить окремий runtime, не змінюючи системний (docs/INSTALLATION.md, «Runtime Node.js»)');
-      return;
-    }
-    real = host.realpath(RUNTIME.system) ?? RUNTIME.system;
-    p.notes.push(`Node.js ${version} (${RUNTIME.system}): буде створено посилання ${RUNTIME.node} → ${RUNTIME.system}; системний Node.js не змінюється`);
+  const existing = host.stat(RUNTIME.node) !== null;
+  const candidate = existing ? RUNTIME.node : RUNTIME.system;
+  if (!existing && !host.stat(RUNTIME.system)) {
+    p.errors.push(`немає сумісного Node.js: ${RUNTIME.node} відсутній, ${RUNTIME.system} — немає (${requirement()}). `
+      + './install.sh встановить окремий runtime, не змінюючи системний (docs/INSTALLATION.md, «Runtime Node.js»)');
+    return;
   }
-  if (options.npm && !host.stat(join(dirname(real), 'npm'))) {
-    p.errors.push(`немає npm поруч із ${real} (потрібен для залежностей API): для системного Node.js — apt install npm; або видаліть посилання ${RUNTIME.node} лише якщо воно ваше й запустіть ./install.sh`);
+  const trust = executableTrust(host, candidate);
+  const problems = [...trust.problems, ...(existing && trust.real?.startsWith(`${RUNTIME.dir}/`) ? treeProblems(host, RUNTIME.dir) : [])];
+  if (problems.length > 0 || !trust.real) {
+    p.errors.push(`${candidate} не виконується: ${problems.slice(0, 3).join('; ')} — Node.js має належати root і бути доступним на запис лише root (разом із каталогами); інсталятор його не запускає й не змінює`);
+    return;
+  }
+  const real = trust.real;
+  const r = host.run(candidate, ['--version']);
+  const version = r.code === 0 ? r.stdout.trim() : '';
+  if (!nodeVersionOk(version)) {
+    p.errors.push(existing
+      ? `${RUNTIME.node} — Node.js ${version || 'не запускається'}: ${requirement()}. Наявний runtime інсталятор не замінює (docs/INSTALLATION.md, «Runtime Node.js»)`
+      : `немає сумісного Node.js: ${RUNTIME.node} відсутній, ${RUNTIME.system} — ${version || 'не запускається'} (${requirement()}). ./install.sh встановить окремий runtime, не змінюючи системний (docs/INSTALLATION.md, «Runtime Node.js»)`);
+    return;
+  }
+  p.notes.push(existing
+    ? `Node.js ${version} (${RUNTIME.node} → ${real})`
+    : `Node.js ${version} (${RUNTIME.system}): буде створено посилання ${RUNTIME.node} → ${RUNTIME.system}; системний Node.js не змінюється`);
+  if (options.npm) {
+    const problem = npmProblem(host, real, version);
+    if (problem) {
+      p.errors.push(`${problem} (потрібен для залежностей API). ${existing
+        ? 'Наявний runtime інсталятор не замінює (docs/DEPLOYMENT.md, «Runtime Node.js»)'
+        : 'sudo ./install.sh --release <реліз> --component server запропонує окремий runtime Node Control із npm; системний Node.js не змінюється'}`);
+    }
   }
 }
 

@@ -13,8 +13,9 @@ import { EXIT, prepare } from './prepare.js';
 /** @typedef {import('./prepare.js').Sys} Sys */
 /** @typedef {import('./prepare.js').RunResult} RunResult */
 
-/** @param {import('node:stream').Readable} stream @param {(line: string) => void} each */
-function lines(stream, each) {
+/** Complete lines only: a chunk boundary inside a line (e.g. inside a URL) is joined before `each` sees it.
+ * @param {import('node:stream').Readable} stream @param {(line: string) => void} each */
+export function lines(stream, each) {
   let partial = '';
   stream.setEncoding('utf8');
   stream.on('data', (/** @type {string} */ chunk) => {
@@ -43,13 +44,14 @@ export const realSys = {
     const r = spawnSync('id', ['-nG', name], { encoding: 'utf8' });
     return r.status === 0 ? r.stdout.trim().split(/\s+/).filter((g) => g !== '') : [];
   },
-  run(argv, cwd) {
-    const r = spawnSync(argv[0] ?? '', argv.slice(1), { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  // Every child gets exactly cmd.env (the allowlist built by prepare.js) — not this process's environment.
+  run(cmd, cwd) {
+    const r = spawnSync(cmd.argv[0] ?? '', cmd.argv.slice(1), { cwd, env: cmd.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     return { code: r.status ?? 1, stdout: r.stdout, stderr: r.error ? r.error.message : r.stderr };
   },
-  stream(argv, cwd, log, onLine) {
+  stream(cmd, cwd, log, onLine) {
     return new Promise((resolve) => {
-      const child = spawn(argv[0] ?? '', argv.slice(1), { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(cmd.argv[0] ?? '', cmd.argv.slice(1), { cwd, env: cmd.env, stdio: ['ignore', 'pipe', 'pipe'] });
       /** @param {string} line */
       const each = (line) => { log(`${line}\n`); onLine(line); };
       lines(child.stdout, each);
@@ -60,8 +62,8 @@ export const realSys = {
   },
   pipe(a, b, cwd) {
     return new Promise((resolve) => {
-      const left = spawn(a[0] ?? '', a.slice(1), { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-      const right = spawn(b[0] ?? '', b.slice(1), { cwd, stdio: ['pipe', 'ignore', 'pipe'] });
+      const left = spawn(a.argv[0] ?? '', a.argv.slice(1), { cwd, env: a.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const right = spawn(b.argv[0] ?? '', b.argv.slice(1), { cwd, env: b.env, stdio: ['pipe', 'ignore', 'pipe'] });
       let stderr = '';
       /** @param {Buffer | string} chunk */
       const keep = (chunk) => { stderr = (stderr + chunk.toString()).slice(-4000); };

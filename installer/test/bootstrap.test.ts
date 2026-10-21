@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { main } from '../bootstrap/main.js';
-import { BUILDER, type Component, EXIT, type Paths, prepare, redact, type RunResult, type Sys, type UserInfo } from '../bootstrap/prepare.js';
+import { BUILDER, RUNUSER, type Cmd, type Component, EXIT, type Paths, prepare, redact, type RunResult, type Sys, type UserInfo } from '../bootstrap/prepare.js';
 
 // The guided preparation (installer/bootstrap) with a scripted system: users, commands and the terminal are fakes,
 // files are real (temporary directories), so the release store, the log, the staging copy and the verification of the
@@ -57,21 +57,25 @@ function setup(o: Options = {}) {
   const me = statSync(root).uid;
   const users = new Map<string, UserInfo>((o.users ?? []).map((u) => [u.name, u]));
   const commands: string[][] = [];
+  /** The complete environment each recorded command was given (same order as `commands`). */
+  const envs: Record<string, string>[] = [];
+  const record = (cmd: Cmd) => { commands.push([...cmd.argv]); envs.push({ ...cmd.env }); return cmd.argv; };
   const output: string[] = [];
   const handOver: string[][] = [];
   const answers = [...(o.answers ?? ['так'])];
   let workspace: string | null = null;
-  const strip = (argv: readonly string[]) => (argv[0] === 'runuser' ? argv.slice(4) : [...argv]);
+  const strip = (argv: readonly string[]) => (argv[0] === RUNUSER ? argv.slice(4) : [...argv]);
   const sys: Sys = {
     euid: () => o.euid ?? 0,
     env: o.env ?? {},
     user: (name) => users.get(name) ?? null,
     ownerOf: (path) => (path === checkout ? (o.checkoutOwner ?? 0) : null),
     groupsOf: (name) => o.groups?.[name] ?? [name],
-    run(argv, cwd) {
-      commands.push([...argv]);
-      const a = strip(argv);
-      const tail = a.slice(a.indexOf('env') >= 0 ? a.findIndex((x, i) => i > a.indexOf('env') && !x.includes('=') && x !== '-i') : 0);
+    run(cmd, cwd) {
+      const full = strip(record(cmd));
+      // `env NAME=value… cmd` → cmd (the variables are checked separately)
+      const a = full[0] === 'env' ? full.slice(full.findIndex((x, i) => i > 0 && !x.includes('='))) : full;
+      const tail = a;
       if (tail[1]?.endsWith('build-release.js') && tail[2] === '--check') return o.check ?? ok(`[build-release] revision=${SHA}\n`);
       if (tail[0] === 'git' && tail.includes('status')) return ok(' M backend/src/app.ts\n?? notes.txt\n');
       switch (a[0]) {
@@ -91,15 +95,17 @@ function setup(o: Options = {}) {
         default: return { code: 127, stdout: '', stderr: `${a[0] ?? ''}: not simulated (cwd ${cwd})` };
       }
     },
-    stream(argv, _cwd, log, onLine) {
-      commands.push([...argv]);
+    stream(cmd, _cwd, log, onLine) {
+      const argv = record(cmd);
       const out = argv[argv.indexOf('--out') + 1] ?? '';
       for (const stage of ['npm-ci', 'frontend-build', 'package']) { log(`[build-release] stage=${stage}\n`); onLine(`[build-release] stage=${stage}`); }
       log('npm http fetch GET 200 https://registry.npmjs.org/x (proxy http://user:s3cret@proxy.example.com:3128)\n');
+      if (o.env?.HTTPS_PROXY) log(`proxy ${o.env.HTTPS_PROXY}\n`);
       return Promise.resolve(o.build ? o.build(out, argv) : (writeRelease(out, argv.includes('agent') ? 'agent' : 'server'), 0));
     },
-    pipe(a, b) {
-      commands.push([...a], [...b]);
+    pipe(ca, cb) {
+      const a = record(ca);
+      const b = record(cb);
       if (a.includes('archive')) { mkdirSync(join(workspace ?? '', 'src'), { recursive: true }); return Promise.resolve(ok()); }
       // builder: tar -cf - -C <out> names… → root: tar -xf - -C <staging>: copied as is (symlinks too, like tar)
       const from = a[a.indexOf('-C') + 1] ?? '';
@@ -123,7 +129,7 @@ function setup(o: Options = {}) {
     handOver(argv) { handOver.push([...argv]); return Promise.resolve(0); },
   };
   const opts = (component: Component = 'server', runtimeInstalled = false) => ({ checkout, component, launcher: join(checkout, 'install.sh'), runtimeInstalled });
-  return { root, paths, checkout, sys, commands, output, handOver, opts, me, users, text: () => output.join('\n'), workspace: () => workspace };
+  return { root, paths, checkout, sys, commands, envs, output, handOver, opts, me, users, text: () => output.join('\n'), workspace: () => workspace };
 }
 
 const ALICE: UserInfo = { name: 'alice', uid: 1000, gid: 1000, home: '/home/alice', shell: '/bin/bash' };
@@ -135,12 +141,12 @@ describe('guided preparation: who builds (never root)', () => {
     const s = setup({ env: sudoEnv, users: [ALICE], checkoutOwner: 1000 });
     expect(await prepare(s.opts(), s.sys, s.paths)).toBe(0);
     const [b] = builds(s);
-    expect(b?.slice(0, 6)).toEqual(['runuser', '-u', 'alice', '--', 'env', '-i']);
+    expect(b?.slice(0, 5)).toEqual([RUNUSER, '-u', 'alice', '--', 'env']);
     expect(b).toContain('HOME=/home/alice');
     expect(b).toContain('PATH=/opt/node-control-runtime/versions/node-v22.23.4-linux-x64/bin:/usr/bin:/bin'); // the checked Node.js first
     expect(b).toContain('/opt/node-control-runtime/versions/node-v22.23.4-linux-x64/bin/node');
     expect(b?.join(' ')).not.toMatch(/SECRET_TOKEN|ncag_|\/root\/evil/); // nothing of root's environment
-    expect(s.commands.find((c) => c.includes('archive'))?.slice(0, 4)).toEqual(['runuser', '-u', 'alice', '--']);
+    expect(s.commands.find((c) => c.includes('archive'))?.slice(0, 4)).toEqual([RUNUSER, '-u', 'alice', '--']);
     expect(s.commands.some((c) => c[0] === 'useradd')).toBe(false);
     expect(s.workspace()).toContain(s.paths.sudoWorkBase);
   });
@@ -151,11 +157,21 @@ describe('guided preparation: who builds (never root)', () => {
     const useradd = s.commands.find((c) => c[0] === 'useradd');
     expect(useradd).toEqual(['useradd', '--system', '--user-group', '--home-dir', s.paths.builderHome, '--create-home', '--shell', '/usr/sbin/nologin', BUILDER]);
     expect((statSync(s.paths.builderHome).mode & 0o777).toString(8)).toBe('700');
-    expect(builds(s)[0]?.slice(0, 4)).toEqual(['runuser', '-u', BUILDER, '--']);
+    expect(builds(s)[0]?.slice(0, 4)).toEqual([RUNUSER, '-u', BUILDER, '--']);
     expect(builds(s)[0]).toContain('--component');
     const archive = s.commands.find((c) => c.includes('archive'));
     expect(archive?.[0]).toBe('env'); // root (owner of the checkout) reads git; the builder never sees the checkout
     expect(s.text()).toMatch(/системний користувач nodecontrol-build для збирання: без shell, без sudo/);
+  });
+
+  it('runuser is called by its absolute path: the minimal child environment has no sbin in PATH (VM regression)', async () => {
+    const s = setup({ env: sudoEnv, users: [ALICE], checkoutOwner: 1000 });
+    expect(await prepare(s.opts(), s.sys, s.paths)).toBe(0);
+    expect(RUNUSER).toBe('/usr/sbin/runuser');
+    expect(s.commands.some((c) => c[0] === 'runuser')).toBe(false);
+    for (const [i, c] of s.commands.entries()) {
+      if (c[0] !== RUNUSER && c[0] !== 'env') expect(s.envs[i]?.PATH, c.join(' ')).toMatch(/\/usr\/sbin/); // root utilities: ROOT_ENV
+    }
   });
 
   it('every command that runs build code or npm runs as a non-root user', async () => {
@@ -163,7 +179,7 @@ describe('guided preparation: who builds (never root)', () => {
       expect(await prepare(s.opts(), s.sys, s.paths)).toBe(0);
       const code = s.commands.filter((c) => c.some((a) => /build-release\.js$|^npm$|^tar$/.test(a)) && !c.includes('--check') && !c.includes('-xf'));
       expect(code.length).toBeGreaterThan(1);
-      for (const c of code) expect(c[0], c.join(' ')).toBe('runuser');
+      for (const c of code) expect(c[0], c.join(' ')).toBe(RUNUSER);
     }
   });
 
@@ -234,7 +250,7 @@ describe('guided preparation: plan, confirmation, prerequisites', () => {
       const s = setup({ checkoutOwner: 0, answers: [answer] });
       expect(await prepare(s.opts(), s.sys, s.paths)).toBe(EXIT.cancelled);
       expect(s.text()).toMatch(/Буде виконано:[\s\S]*збирання від користувача nodecontrol-build \(не root\)[\s\S]*Скасовано\. Нічого не змінено\./);
-      expect(s.commands.filter((c) => ['useradd', 'mktemp'].includes(c[0] ?? '') || c[0] === 'runuser')).toEqual([]);
+      expect(s.commands.filter((c) => ['useradd', 'mktemp'].includes(c[0] ?? '') || c[0] === RUNUSER)).toEqual([]);
       expect(existsSync(s.paths.store) || existsSync(s.paths.logs)).toBe(false);
     }
   });
@@ -260,21 +276,23 @@ describe('guided preparation: plan, confirmation, prerequisites', () => {
   it('an Agent needs no PostgreSQL; with a proxy configured the registry check is left to npm', async () => {
     const s = setup({ checkoutOwner: 0, tcp: false, https: false, env: { HTTPS_PROXY: 'http://proxy.example.com:3128' } });
     expect(await prepare(s.opts('agent'), s.sys, s.paths)).toBe(0);
-    expect(builds(s)[0]).toContain('HTTPS_PROXY=http://proxy.example.com:3128');
+    const i = s.commands.indexOf(builds(s)[0] ?? []);
+    expect(s.envs[i]?.HTTPS_PROXY).toBe('http://proxy.example.com:3128'); // through the process environment
+    expect(builds(s)[0]?.join(' ')).not.toContain('HTTPS_PROXY');
   });
 });
 
 describe('guided preparation: the release', () => {
   it('server: built, copied by root into the store (700), verified, then the guided installer of THAT release with the chosen component', async () => {
     const s = setup({ checkoutOwner: 0 });
-    expect(await prepare(s.opts(), s.sys, s.paths)).toBe(0);
+    expect(await prepare(s.opts(), s.sys, s.paths), s.text()).toBe(0);
     const target = join(s.paths.store, `${SHA}-server`);
     expect(readdirSync(target).sort()).toEqual([`node-control-agent-${SHA}.tar.gz`, `node-control-agent-${SHA}.tar.gz.sha256`, `node-control-api-${SHA}.tar.gz`, `node-control-api-${SHA}.tar.gz.sha256`, 'server-bundle']);
     expect((statSync(s.paths.store).mode & 0o777).toString(8)).toBe('700');
     expect(s.handOver).toEqual([[join(s.checkout, 'install.sh'), '--release', target, '--component', 'server']]);
     expect(readdirSync(s.paths.store)).toEqual([`${SHA}-server`]); // no staging left behind
     expect(existsSync(s.workspace() ?? '')).toBe(false); // workspace removed (by the builder)
-    expect(s.commands.find((c) => c.includes('rm'))?.slice(0, 4)).toEqual(['runuser', '-u', BUILDER, '--']);
+    expect(s.commands.find((c) => c.includes('rm'))?.slice(0, 4)).toEqual([RUNUSER, '-u', BUILDER, '--']);
     const [log] = readdirSync(s.paths.logs);
     expect(log).toBe('build-bbbbbbbbbbbb-server-20261021T120000Z.log');
     expect((statSync(join(s.paths.logs, log ?? '')).mode & 0o777).toString(8)).toBe('600');
@@ -360,3 +378,105 @@ describe('bootstrap entry point and helpers', () => {
     expect(redact('GET https://u:p@registry.example.com/x and http://proxy.example.com:3128')).toBe('GET https://***@registry.example.com/x and http://proxy.example.com:3128');
   });
 });
+
+// Review Codex 2026-10-21 (P1/P2): proxy credentials only in the process environment, never in argv; the full build log,
+// console and errors are cleaned BEFORE writing. Secrets are synthetic and assembled at runtime; reports are booleans.
+const SECRET = ['Syn', 'th', 'Pw', '-7Q', 'x9'].join('');
+const PROXY = `http://proxyuser:${SECRET}@proxy.example.com:3128`;
+const ROOT_SECRET = ['root', 'Only', 'Tok', 'en42'].join('');
+
+describe('proxy credentials (P1/P2)', () => {
+  const env = { SUDO_USER: 'alice', SUDO_UID: '1000', HTTPS_PROXY: PROXY, https_proxy: PROXY, NO_PROXY: 'localhost', ROOT_ONLY_SECRET: ROOT_SECRET };
+  const logs = (s: ReturnType<typeof setup>) => readdirSync(s.paths.logs).map((f) => readFileSync(join(s.paths.logs, f), 'utf8')).join('\n');
+
+  it.each([['successful build', undefined], ['failed build', (out: string) => { mkdirSync(out, { recursive: true }); return 1; }]] as const)('%s: no credential in any argv, the stored log or the console; proxy kept in the environment', async (_n, build) => {
+    const s = setup({ env, users: [ALICE], checkoutOwner: 1000, ...(build ? { build } : {}) });
+    await prepare(s.opts(), s.sys, s.paths);
+    const report = {
+      credentialInArgv: s.commands.some((c) => c.join(' ').includes(SECRET)),
+      proxyNameInArgv: s.commands.some((c) => c.some((a) => /^(HTTPS?_PROXY|https?_proxy|NO_PROXY)=/.test(a))),
+      rootSecretAnywhere: [...s.commands.map((c) => c.join(' ')), ...s.envs.map((e) => JSON.stringify(e))].some((t) => t.includes(ROOT_SECRET)),
+      credentialInStoredLog: logs(s).includes(SECRET),
+      credentialInConsole: s.text().includes(SECRET),
+    };
+    expect(report).toEqual({ credentialInArgv: false, proxyNameInArgv: false, rootSecretAnywhere: false, credentialInStoredLog: false, credentialInConsole: false });
+    // npm/git of the builder still see the proxy: through the process environment of every builder command
+    const builderCmds = s.commands.map((c, i) => [c, s.envs[i]] as const).filter(([c]) => c[0] === RUNUSER);
+    expect(builderCmds.length).toBeGreaterThan(2);
+    for (const [, e] of builderCmds) expect(e?.HTTPS_PROXY === PROXY && e.NO_PROXY === 'localhost').toBe(true);
+    expect(logs(s)).toContain('proxy http://***@proxy.example.com:3128');
+  });
+
+  it('secretsOf/redact: raw and percent-decoded credentials, also outside a URL; short or absent values untouched', async () => {
+    const { secretsOf } = await import('../bootstrap/prepare.js');
+    const encoded = `http://u%40corp:${encodeURIComponent(`${SECRET}/!`)}@p.example.com`;
+    const secrets = secretsOf({ HTTPS_PROXY: encoded, HTTP_PROXY: 'not a url', NO_PROXY: 'localhost' });
+    const text = `a ${SECRET}/! b u@corp c ${encoded}`;
+    const cleaned = redact(text, secrets);
+    expect([cleaned.includes(SECRET), cleaned.includes('u@corp')]).toEqual([false, false]);
+    expect(redact('plain text', secretsOf({}))).toBe('plain text');
+  });
+});
+
+describe('real processes: argv, environment and split output (no runuser needed)', () => {
+  it('the build child gets the proxy only through its environment; a secret split across chunks never reaches the log', async () => {
+    const { realSys } = await import('../bootstrap/main.js');
+    const s = setup({ env: { HTTPS_PROXY: PROXY, ROOT_ONLY_SECRET: ROOT_SECRET }, checkoutOwner: 0 });
+    const report = join(s.root, 'child-report.json');
+    // The fake build-release.js (a real Node.js child): reports what IT sees, prints the proxy URL in two chunks, writes a release.
+    const child = `
+      const fs = require('fs'), path = require('path');
+      const args = process.argv.slice(2); const out = args[args.indexOf('--out') + 1];
+      const pw = new URL(process.env.HTTPS_PROXY).password;
+      const cmdline = fs.existsSync('/proc/self/cmdline') ? fs.readFileSync('/proc/self/cmdline', 'utf8') : process.argv.join(' ');
+      fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify({ proxyInEnv: !!process.env.HTTPS_PROXY, secretInArgv: process.argv.join(' ').includes(pw) || cmdline.includes(pw),
+        rootSecretInEnv: Object.values(process.env).some((v) => String(v).includes(${JSON.stringify(ROOT_SECRET)})), path: !!process.env.PATH, home: !!process.env.HOME }));
+      const url = process.env.HTTPS_PROXY; const cut = url.indexOf(pw) + 3;
+      process.stdout.write('[build-release] stage=npm-ci\\nnpm error proxy ' + url.slice(0, cut));
+      setTimeout(() => { process.stdout.write(url.slice(cut) + ' failed\\n');
+        const sha = ${JSON.stringify(SHA)}, b = path.join(out, 'server-bundle'), files = { 'install/wizard.js': '// w' }, h = (t) => require('crypto').createHash('sha256').update(t).digest('hex');
+        for (const [f, c] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(b, f)), { recursive: true }); fs.writeFileSync(path.join(b, f), c); }
+        fs.writeFileSync(path.join(b, 'BUNDLE.json'), JSON.stringify({ revision: sha, files: Object.fromEntries(Object.entries(files).map(([f, c]) => [f, h(c)])) }));
+        for (const k of ['api', 'agent']) { const n = 'node-control-' + k + '-' + sha + '.tar.gz'; fs.writeFileSync(path.join(out, n), k); fs.writeFileSync(path.join(out, n + '.sha256'), h(k) + '  ' + n + '\\n'); }
+      }, 150);`;
+    s.sys.nodePath = process.execPath;
+    const fakePipe = s.sys.pipe.bind(s.sys);
+    s.sys.pipe = async (a, b, cwd) => {
+      const r = await fakePipe(a, b, cwd);
+      if (a.argv.includes('archive')) {
+        const ws = s.workspace() ?? '';
+        mkdirSync(join(ws, 'src', 'scripts', 'deploy'), { recursive: true });
+        writeFileSync(join(ws, 'src', 'scripts', 'deploy', 'build-release.js'), child);
+      }
+      return r;
+    };
+    s.sys.stream = (cmd, cwd, log, onLine) => realSys.stream({ argv: cmd.argv[0] === RUNUSER ? cmd.argv.slice(4) : cmd.argv, env: cmd.env }, cwd, log, onLine);
+    expect(await prepare(s.opts(), s.sys, s.paths), s.text()).toBe(0);
+    expect(JSON.parse(readFileSync(report, 'utf8'))).toEqual({ proxyInEnv: true, secretInArgv: false, rootSecretInEnv: false, path: true, home: true });
+    const log = readdirSync(s.paths.logs).map((f) => readFileSync(join(s.paths.logs, f), 'utf8')).join('');
+    expect([log.includes(SECRET), log.includes('npm error proxy http://***@proxy.example.com:3128 failed')]).toEqual([false, true]);
+  });
+
+  it('realSys.run / pipe give each child exactly its cmd.env (nothing of this process) and never put it in argv', async () => {
+    const { realSys } = await import('../bootstrap/main.js');
+    process.env.NC_TEST_PARENT_ONLY = ROOT_SECRET;
+    try {
+      const probe = `const pw=new URL(process.env.HTTPS_PROXY).password; process.stdout.write(JSON.stringify({ proxy: !!process.env.HTTPS_PROXY, parent: !!process.env.NC_TEST_PARENT_ONLY, argv: process.argv.join(' ').includes(pw) }))`;
+      const env = { PATH: '/usr/bin:/bin', HTTPS_PROXY: PROXY };
+      const r = realSys.run({ argv: [process.execPath, '-e', probe], env }, '/');
+      expect(JSON.parse(r.stdout)).toEqual({ proxy: true, parent: false, argv: false });
+      const out = join(tempDirFor(), 'piped.json');
+      const p = await realSys.pipe({ argv: [process.execPath, '-e', probe], env }, { argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(out)}, require('fs').readFileSync(0))`], env: { PATH: '/usr/bin:/bin' } }, '/');
+      expect(p.code).toBe(0);
+      expect(JSON.parse(readFileSync(out, 'utf8'))).toEqual({ proxy: true, parent: false, argv: false });
+    } finally {
+      delete process.env.NC_TEST_PARENT_ONLY;
+    }
+  });
+});
+
+function tempDirFor(): string {
+  const d = realpathSync(mkdtempSync(join(tmpdir(), 'nc-boot-real-')));
+  dirs.push(d);
+  return d;
+}

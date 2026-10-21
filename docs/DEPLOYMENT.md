@@ -33,7 +33,7 @@ Central API та Agents — Node.js 22, systemd. PM2 керує лише зас�
 | Параметр | Значення |
 |---|---|
 | Сервер | `control-server` (`203.0.113.10`), Ubuntu 26.04.1 LTS; деплоїти лише після перевірки `hostname` |
-| Runtime | з 2026-10-21 — `/opt/node-control-runtime/bin/node` (Node.js 22 ≥ 22.22.0; root, без запису для інших): посилання на окремий офіційний Node.js у `/opt/node-control-runtime/versions/` або на сумісний `/usr/bin/node`. Цей шлях використовують усі units, `server-release.js`, міграції й bootstrap. Глобальний Node не оновлюється в межах деплою (розділ «Runtime Node.js» нижче). Раніше встановлені units — `/usr/bin/node` |
+| Runtime | з 2026-10-21 — `/opt/node-control-runtime/bin/node` (Node.js 22 ≥ 22.22.0; root, без запису для інших): посилання на окремий офіційний Node.js у `/opt/node-control-runtime/versions/` або на сумісний `/usr/bin/node`. Цей шлях використовують усі units, `server-release.js`, міграції й bootstrap. Інсталятори перевіряють довіру до нього (власник root, канонічні каталоги, посилання) до будь-якого запуску. Глобальний Node не оновлюється в межах деплою (розділ «Runtime Node.js» нижче). Раніше встановлені units — `/usr/bin/node` |
 | Сервісний користувач | `nodecontrol` — системний, `/usr/sbin/nologin`, без home, без sudo, власна група |
 | systemd unit | `node-control-api.service` ← `deploy/systemd/node-control-api.service` |
 | Релізи | `/opt/node-control/releases/<git-sha>` — `root:root`, без запису для group/other; з 2026-10-20 `prepare` задає права явно (каталоги 755, файли 644/755) незалежно від umask і від root передає все дерево (зокрема `node_modules`) `root:root`; відсутні батьківські каталоги `--base` створюються з 755, наявні не змінюються |
