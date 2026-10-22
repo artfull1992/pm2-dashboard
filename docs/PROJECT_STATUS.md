@@ -1,5 +1,41 @@
 # Поточний стан проєкту
 
+## Production: деплой `7c35626` і оновлення агента (2026-10-22, за прямим запитом користувача)
+
+Користувач попросив розгорнути все з `main` на прод і оновити агентів, де потрібно. Frontend-коміти `bf7ab5f`, `1659f87` і `7c35626` незалежного APPROVED Codex не мають; деплой — рішення користувача.
+
+**Що змінилось відносно продового `26808f9`:** лише frontend. Backend, міграції, код агента, installer і units API ті самі.
+
+**Центральний сервер (API + frontend), штатна процедура:**
+- артефакт зібрано `build-release.js --from-tree` на одноразовій VM з Node 22.22.1; API `sha256 523183315e98635452d951beb0b0163d2ab4064f73f91af8e14d31c7f04df34a`;
+- baseline: health 200/200, heartbeat та inventory свіжі, 23 процеси;
+- резервні копії `api.env`, unit і `pg_dump` (`pg_restore --list` OK);
+- `prepare` → `config` (без змін) → `migrate status` (pending 0) → unit без змін → `activate` (`previous` = `26808f9`) → restart лише `node-control-api`.
+
+Перевірки після деплою:
+- `active`, `NRestarts=0`, 0 warn/error у журналі;
+- health 200/200 локально й через HTTPS;
+- публічні `index.html`, JS і CSS побайтово = `frontend/dist` релізу;
+- анонімний маршрут доступів → 401.
+
+**Агенти:**
+- **Центральний сервер** — агент вимкнений і не зареєстрований; не оновлювався.
+- **SERVER-TG-BOT** — уже на коді агента `26808f9` (протокол 2, auto); не оновлювався, код агента відтоді не змінювався.
+- **BACKEND-API-STUD** — був `2340c00` (протокол 1: логи лише admin). Системний Node 22.15 < мінімуму 22.22.0, тому створено окремий runtime `/opt/node-control-runtime` з офіційного `node-v22.23.4-linux-x64` (SHA-256 = значення в `installer/bootstrap/node-runtime.env`). Системний Node не змінювався.
+  - Резервні копії `agent.env`, env/allowlist broker, env exporter і units.
+  - `prepare --no-install` і `activate` агента `7c35626` (`sha256 5441fb62ccfd82eb25296a429ed24f62fb7b169ece72e6fdab0bec8dc370d6e8`).
+  - Units агента, broker і exporter — з релізу (запуск через runtime), `daemon-reload`, restart broker, потім агента.
+  - Режим broker не змінювався (allowlist, 5 цілей, логи дозволені для всіх 5).
+  - Результат: протокол 2, `allowlist`, 5/5 цілей `ok`; heartbeat, inventory і `logs poll` OK; exporter відпрацював з нового runtime.
+
+**PM2:** 23 процеси на обох серверах — той самий набір, без змін статусу, рестартів і uptime. pm2-команди не виконувались; доступи й користувачі не змінювались.
+
+**Rollback** (за потреби):
+- API — `server-release.js rollback` на `26808f9` (той самий scoped backend, frontend попередній);
+- агент — `server-release.js rollback --base /opt/node-control-agent`, повернення units із резервної копії, `daemon-reload` і restart.
+
+Runtime лишається на диску.
+
 ## Незалежний повторний review Codex — touch-виправлення `7c35626` (2026-10-22) — APPROVED
 
 Перевірено diff від `dca7703`, відповідність промпту виправлення, браузерні regression-тести та документацію Code → Docs / Docs → Code. Попереднє P2 закрито: `@media (max-width:760px), (any-pointer:coarse)` вмикає 44 px незалежно від ширини на пристроях із coarse pointer; широкий fine-only desktop зберігає 36/32 px. Навігаційний breakpoint не змінено; checkbox/radio залишаються компактними. Політика hybrid через `any-pointer` описана правильно; перевірка справжнього hybrid-пристрою не виконувалась і не заявляється.
