@@ -104,3 +104,28 @@ for (const width of [1440, 390]) {
     });
   }
 }
+
+// Touch tablet (review dca7703): a 1024 px window with a coarse pointer gets 44 px tabs and numeric fields; pairs stay
+// aligned, nothing overflows. A wide fine-pointer desktop keeps 36 px (checked above via the shared height bounds).
+for (const scheme of ['light', 'dark'] as const) {
+  test.describe(`touch tablet 1024×768, ${scheme}`, () => {
+    test.use({ colorScheme: scheme, viewport: { width: 1024, height: 768 }, hasTouch: true, isMobile: true });
+    test('rules tabs and numeric fields have 44 px hit areas on a coarse pointer', async ({ page }) => {
+      await open(page);
+      expect(await page.evaluate(() => matchMedia('(any-pointer: coarse)').matches)).toBe(true);
+      await page.getByText('Додаткові параметри').tap();
+      for (const name of ['Інтеграції', 'Правила сповіщень']) {
+        expect(Math.round((await page.getByRole('link', { name, exact: true }).boundingBox())?.height ?? 0)).toBe(44);
+      }
+      const fields = page.locator('form .affix');
+      const heights = new Set<number>();
+      for (let i = 0; i < await fields.count(); i++) heights.add(Math.round((await fields.nth(i).boundingBox())?.height ?? 0));
+      expect([...heights]).toEqual([44]);
+      const [a, b] = [await box(page, /CPU.*поріг проблеми/), await box(page, /CPU.*поріг відновлення/)];
+      expect(Math.abs(a.y - b.y)).toBeLessThanOrEqual(1);
+      expect(Math.round((await page.getByRole('button', { name: 'Зберегти' }).boundingBox())?.height ?? 0)).toBe(44);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+      if (shots) await page.screenshot({ path: `${shots}/settings-rules-touch-1024-${scheme}.png`, fullPage: true });
+    });
+  });
+}

@@ -210,3 +210,106 @@ for (const theme of ['dark', 'light'] as const) {
     });
   });
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Hit areas by INPUT, not only by width (review dca7703): a touch tablet at 1024 px gets 44 px controls and 44×44
+// icon buttons; a wide fine-pointer desktop stays compact (36/32); a narrow window keeps 44. Measured on real elements
+// in the browser. Checkbox/radio stay 16×16 (their label is the hit area). Hybrid devices cannot be emulated here.
+
+/** A real `.button.icon-button` (the shared primitive; no screen uses it yet in stage 1) measured with the page CSS. */
+const iconButton = (page: Page) => page.evaluate(() => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'button icon-button';
+  b.setAttribute('aria-label', 'Синтетична іконкова кнопка');
+  b.textContent = '⋯';
+  document.body.append(b);
+  const r = b.getBoundingClientRect();
+  b.remove();
+  return [Math.round(r.width), Math.round(r.height)];
+});
+const height = async (page: Page, locator: ReturnType<Page['locator']>) => Math.round((await locator.boundingBox())?.height ?? 0);
+
+const MODALITIES = [
+  { name: 'touch tablet 1024×768 (hasTouch, coarse pointer)', viewport: { width: 1024, height: 768 }, touch: true, regular: 44, compact: 44, icon: [44, 44] },
+  { name: 'fine-pointer desktop 1440×900', viewport: { width: 1440, height: 900 }, touch: false, regular: 36, compact: 32, icon: [32, 32] },
+  { name: 'narrow window 390×844 (fine pointer)', viewport: { width: 390, height: 844 }, touch: false, regular: 44, compact: 44, icon: [44, 44] },
+] as const;
+
+for (const theme of ['dark', 'light'] as const) {
+  for (const m of MODALITIES) {
+    test.describe(`${theme} · ${m.name}`, () => {
+      test.use({ colorScheme: theme, viewport: m.viewport, hasTouch: m.touch, isMobile: m.touch });
+
+      test('control hit areas follow the input method', async ({ page }) => {
+        // The emulated input really is what the case says.
+        await page.route('**/api/**', (route) => route.fulfill({ status: 401, json: {} }));
+        await page.goto('/');
+        expect(await page.evaluate(() => matchMedia('(any-pointer: coarse)').matches)).toBe(m.touch);
+        // Login: field and submit.
+        await expect(page.getByLabel('Email')).toBeVisible();
+        expect(await height(page, page.getByLabel('Email'))).toBe(m.regular);
+        expect(await height(page, page.getByRole('button', { name: 'Увійти' }))).toBe(m.regular);
+        // Icon primitive: both dimensions.
+        const [w, h] = await iconButton(page);
+        expect(w).toBeGreaterThanOrEqual(m.icon[0]);
+        expect(h).toBeGreaterThanOrEqual(m.icon[1]);
+        await noPageOverflow(page);
+        await page.unrouteAll();
+
+        // Signed in: navigation, row menu trigger, menu items, dialog controls; compact choices; no overflow.
+        const mutations = await api(page);
+        await page.goto('/users');
+        const trigger = page.getByRole('button', { name: 'Дії: operator@example.com' });
+        await expect(trigger).toBeVisible();
+        expect(await height(page, trigger)).toBe(m.compact);
+        expect(await height(page, page.getByRole('button', { name: 'Новий користувач' }))).toBe(m.regular);
+        const pager = page.getByRole('navigation', { name: 'Сторінки користувачів' }).getByRole('button', { name: 'Назад' });
+        expect(await height(page, pager)).toBe(m.compact);
+        if (m.viewport.width > 760) expect(await height(page, page.getByRole('navigation', { name: 'Основна навігація' }).getByRole('link', { name: 'Користувачі' }))).toBe(m.regular);
+        await trigger.click();
+        const item = page.getByRole('menuitem', { name: 'Доступи' });
+        expect(await height(page, item)).toBeGreaterThanOrEqual(m.regular);
+        await item.click();
+        const dialog = page.getByRole('dialog', { name: 'Доступи: operator@example.com' });
+        const box = dialog.getByRole('checkbox', { name: /^billing-api/ });
+        await expect(box).toBeVisible();
+        expect(await box.evaluate((e) => { const r = e.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; })).toEqual([16, 16]);
+        // The label (the real hit area) is at least the compact size and toggles the box.
+        const label = dialog.locator('label.check').filter({ hasText: 'billing-api' });
+        expect(await height(page, label)).toBeGreaterThanOrEqual(32);
+        await (m.touch ? label.tap() : label.click());
+        await expect(box).toBeChecked();
+        expect(await height(page, dialog.getByLabel('Пошук сервісу'))).toBe(m.regular);
+        expect(await height(page, dialog.getByRole('button', { name: 'Зберегти доступи' }))).toBe(m.regular);
+        await expect(dialog.getByRole('button', { name: 'Зберегти доступи' })).toBeInViewport();
+        expect(await dialog.evaluate((d) => d.scrollWidth <= d.clientWidth + 1)).toBe(true);
+        await noPageOverflow(page);
+        if (shots) await page.screenshot({ path: `${shots}/touch-${theme}-${String(m.viewport.width)}-${m.touch ? 'coarse' : 'fine'}.png` });
+        expect(mutations).toEqual([]);
+      });
+    });
+  }
+}
+
+test('hybrid policy (static): the touch sizes are bound to any-pointer: coarse, not to the primary pointer or width alone', async ({ page }) => {
+  // Playwright/Chromium cannot emulate a device that has both a fine and a coarse pointer, so the hybrid case is checked
+  // on the loaded stylesheet: a rule under a media query that includes `(any-pointer: coarse)` sets both size tokens.
+  await page.route('**/api/**', (route) => route.fulfill({ status: 401, json: {} }));
+  await page.goto('/');
+  const conditions = await page.evaluate(() => {
+    const out: string[] = [];
+    for (const sheet of [...document.styleSheets]) {
+      for (const rule of [...sheet.cssRules]) {
+        if (rule instanceof CSSMediaRule) {
+          const sets = [...rule.cssRules].some((r) => r instanceof CSSStyleRule && r.selectorText === ':root'
+            && r.style.getPropertyValue('--control-h').trim() === '44px' && r.style.getPropertyValue('--control-sm').trim() === '44px');
+          if (sets) out.push(rule.media.mediaText);
+        }
+      }
+    }
+    return out;
+  });
+  expect(conditions.some((c) => c.includes('any-pointer: coarse'))).toBe(true);
+  expect(conditions.some((c) => c.includes('max-width: 760px'))).toBe(true);
+});

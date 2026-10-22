@@ -85,8 +85,15 @@
   }
 }
 
-@media (max-width: 760px) {
-  :root { --control-h: 44px; --control-sm: 44px; }   /* touch targets */
+/* Hit areas follow the INPUT, independently of the layout breakpoints (review dca7703):
+   - any coarse pointer present (phone, touch tablet, hybrid laptop with a touch screen) → 44 px controls and 44×44
+     icon buttons, whatever the width; on a hybrid device the larger size applies even while a mouse is used —
+     a control can always be reached by finger;
+   - narrow windows (≤ 760 px) → 44 px as well (likely touch; layout is single-column anyway);
+   - only a wide window with fine pointers only keeps the compact 36 / 32 px.
+   Navigation breakpoints are layout, not input, and are not changed by this rule. */
+@media (max-width: 760px), (any-pointer: coarse) {
+  :root { --control-h: 44px; --control-sm: 44px; }
 }
 
 /* ------------------------------------------------------------------ base */
@@ -119,7 +126,8 @@ h1, h2, h3, p { margin: 0; }
 .button--danger:hover:not(:disabled) { background: var(--danger-soft); }
 .button--ghost { background: transparent; border-color: transparent; }
 .button--small { min-height: var(--control-sm); padding: 0 10px; font-size: var(--font-sm); }
-/* Icon-only buttons: a square hit area of at least --control-sm (44 px on touch layouts); the label is aria-label. */
+/* Icon-only buttons: a square hit area of at least --control-sm in both dimensions (32×32 fine pointer, 44×44 with a
+   coarse pointer or a narrow window); the name is aria-label. */
 .icon-button { min-width: var(--control-sm); min-height: var(--control-sm); padding: 0; }
 .button--block { width: 100%; }
 .button-row { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
