@@ -1,5 +1,23 @@
 # Поточний стан проєкту
 
+## Production: керування на щойно підключеному сервері — Agent `26808f9`, broker auto (2026-10-22)
+
+Скарга: Agent встановлено, але керування сервісами недоступне. Діагностика (лише читання):
+- Agent і broker встановлено з ревізії `36413d3` (до ADR-028), broker у режимі allowlist;
+- root-allowlist порожній (`targets: 0`), тому API отримував 0 цілей і кнопок керування не було ні в кого;
+- heartbeat, inventory (18 процесів) і broker працювали.
+
+Рішення користувача — оновлення до auto. Виконано штатно:
+- резервні копії `agent.env`, env/allowlist і unit broker;
+- `server-release.js prepare --no-install` і `activate` Agent `26808f9` (той самий перевірений артефакт, `sha256 412f4401…c182`);
+- unit broker із релізу (відрізнялися лише коментарі; `systemd-analyze verify`);
+- `install/agent.js plan` → `apply --enable-control --control-mode auto`: резервна копія env, `NC_BROKER_MODE=auto`, restart broker; ключ Agent не змінювався, allowlist лишився на диску;
+- restart Agent.
+
+Результат: `server_control_status` цього сервера — протокол 2, `auto`, `targets_total` 18, 18 цілей `ok`. Heartbeat та inventory прийнято; 23 PM2-процеси без змін статусу, перезапусків і uptime; pm2-команди не виконувались. Інший керований сервер лишається на протоколі v1 (allowlist; логи лише admin).
+
+Далі за admin: керування доступне admin одразу; operator — лише після «Користувачі» → «Доступи».
+
 ## Production: розгортання ресурсних доступів (ADR-028) — 2026-10-22
 
 **Причина відсутності «Доступів» в UI (доведено, до змін):**
