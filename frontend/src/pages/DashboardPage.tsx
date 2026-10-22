@@ -52,63 +52,78 @@ function Partial({ shown, total, what }: { shown: number; total: number; what: s
   return total > shown ? <p className="hint">{`Показано ${String(shown)} з ${String(total)} ${what}.`}</p> : null;
 }
 
+/** Hostname under the server name only when it says something new. */
+const extraHostname = (name: string, hostname: string | undefined) => (hostname && hostname.trim().toLowerCase() !== name.trim().toLowerCase() ? hostname : null);
+
 function Overview({ d, outdated, scoped }: { d: DashboardView; outdated: boolean; scoped: boolean }) {
   const s = d.servers;
   const p = d.processes;
   const staleServers = d.inventory.stale + d.inventory.unavailable + d.inventory.notReported;
+  const serverProblems = d.attentionServers.total > 0;
+  const processProblems = d.attentionProcesses.total > 0;
   return (
     <>
+      {/* Exact numbers always (zeros included) — never an implied "everything is fine". */}
+      <div className={`metrics dash-stats${outdated ? ' dash--outdated' : ''}`} role="group" aria-label="Підсумки">
+          <Stat label="Сервери онлайн" value={`${n(s.online)} з ${n(s.active)}`} tone={s.active === 0 ? 'neutral' : s.online === s.active ? 'ok' : 'warn'}
+            detail={s.inactive > 0 ? `активних; ще ${n(s.inactive)} неактивних не враховано` : 'активних серверів'} />
+          <Stat label="Не звітують" value={n(s.offline + s.neverConnected)} tone={s.offline + s.neverConnected > 0 ? 'bad' : 'neutral'}
+            detail={`офлайн ${n(s.offline)} · без першого звіту ${n(s.neverConnected)}`} />
+          <Stat label="PM2-процеси зараз" value={n(p.live.total)} tone="neutral"
+            detail={`працюють ${n(p.live.online)} · перехідні ${n(p.live.transitional)}`} />
+          <Stat label="Проблемні сервіси" value={n(p.live.problem)} tone={p.live.problem > 0 ? 'bad' : 'neutral'} detail="помилка, зупинено, очікує рестарту або невідомо" />
+          <Stat label="Неактуальні дані" value={n(p.notLive)} tone={p.notLive + staleServers > 0 ? 'warn' : 'neutral'}
+            detail={`процесів зі старим станом · серверів без актуального PM2: ${n(staleServers)}`} />
+      </div>
+
       <Section title="Потребують уваги" titleId="attention-title">
         {s.active === 0 ? (scoped
           ? <EmptyState title="Немає наданих серверів">Огляд показує лише сервери й сервіси, до яких адміністратор надав вам доступ («Користувачі» → «Доступи»).</EmptyState>
-          : <EmptyState title="Ще немає активних серверів">Додайте сервер і підключіть агента на сторінці «Сервери».</EmptyState>) : (
-          <div className="split">
-            <div>
-              <h3 className="split__title">{`Сервери (${n(d.attentionServers.total)})`}</h3>
-              {d.attentionServers.items.length === 0 ? <p className="list__empty">Усі активні сервери звітують і мають актуальні дані PM2.</p> : (
-                <ul className="list">
-                  {d.attentionServers.items.map((a) => (
-                    <li key={a.id}>
-                      <Link to={`/servers/${a.id}`}>{a.name}</Link> <StatusBadge status={a.status} />
-                      <span className="list__meta">{REASON_TEXT[a.reason]}{a.lastSeenAt ? ` · останній сигнал ${formatDate(a.lastSeenAt)}` : ''}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <Partial shown={d.attentionServers.items.length} total={d.attentionServers.total} what="серверів" />
+          : <EmptyState title="Ще немає активних серверів">Додайте сервер і підключіть агента на сторінці «Сервери».</EmptyState>)
+          : !serverProblems && !processProblems ? (
+            // "No problems" is said only about current data; stale data is named separately, never counted as healthy.
+            <p className="calm" role="status">
+              <StatusIndicator tone="ok">Проблем немає</StatusIndicator>
+              <span className="hint">{p.notLive > 0 ? ` серед актуальних даних; ${n(p.notLive)} процесів мають неактуальний стан.` : ': усі активні сервери звітують, проблемних сервісів немає.'}</span>
+            </p>
+          ) : (
+            // Only categories that have something take space; one category uses the whole width.
+            <div className="attention">
+              {serverProblems ? (
+                <div className="attention__group attention__group--servers">
+                  <h3 className="split__title">{`Сервери (${n(d.attentionServers.total)})`}</h3>
+                  <ul className="list">
+                    {d.attentionServers.items.map((a) => (
+                      <li key={a.id}>
+                        <Link to={`/servers/${a.id}`}>{a.name}</Link> <StatusBadge status={a.status} />
+                        <span className="list__meta">{REASON_TEXT[a.reason]}{a.lastSeenAt ? ` · останній сигнал ${formatDate(a.lastSeenAt)}` : ''}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <Partial shown={d.attentionServers.items.length} total={d.attentionServers.total} what="серверів" />
+                </div>
+              ) : null}
+              {processProblems ? (
+                <div className="attention__group attention__group--processes">
+                  <h3 className="split__title">{`Сервіси з проблемним статусом (${n(d.attentionProcesses.total)})`}</h3>
+                  <ul className="list">
+                    {d.attentionProcesses.items.map((a) => (
+                      <li key={`${a.serverId}:${String(a.pmId)}`}>
+                        <span className="mono">{a.name}</span> <ProcessStatusBadge status={a.status} />
+                        <span className="list__meta">
+                          <Link to={`/servers/${a.serverId}`}>{a.serverName}</Link> · PM2 id {a.pmId}
+                          {a.restarts === null ? '' : ` · рестартів усього ${n(a.restarts)}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <Partial shown={d.attentionProcesses.items.length} total={d.attentionProcesses.total} what="сервісів" />
+                </div>
+              ) : null}
+              {serverProblems && !processProblems ? <p className="hint attention__note">Проблемних сервісів серед актуальних даних немає; сервіси серверів без актуальних даних тут не враховано.</p> : null}
             </div>
-            <div>
-              <h3 className="split__title">{`Сервіси з проблемним статусом (${n(d.attentionProcesses.total)})`}</h3>
-              {d.attentionProcesses.items.length === 0 ? <p className="list__empty">Серед актуальних даних проблемних сервісів немає. Сервіси серверів без актуальних даних тут не враховано — див. список серверів.</p> : (
-                <ul className="list">
-                  {d.attentionProcesses.items.map((a) => (
-                    <li key={`${a.serverId}:${String(a.pmId)}`}>
-                      <span className="mono">{a.name}</span> <ProcessStatusBadge status={a.status} />
-                      <span className="list__meta">
-                        <Link to={`/servers/${a.serverId}`}>{a.serverName}</Link> · PM2 id {a.pmId}
-                        {a.restarts === null ? '' : ` · рестартів усього ${n(a.restarts)}`}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <Partial shown={d.attentionProcesses.items.length} total={d.attentionProcesses.total} what="сервісів" />
-            </div>
-          </div>
-        )}
+          )}
       </Section>
-
-      <div className={`metrics dash-stats${outdated ? ' dash--outdated' : ''}`} role="group" aria-label="Підсумки">
-        <Stat label="Сервери онлайн" value={`${n(s.online)} з ${n(s.active)}`} tone={s.active === 0 ? 'neutral' : s.online === s.active ? 'ok' : 'warn'}
-          detail={s.inactive > 0 ? `активних; ще ${n(s.inactive)} неактивних не враховано` : 'активних серверів'} />
-        <Stat label="Не звітують" value={n(s.offline + s.neverConnected)} tone={s.offline + s.neverConnected > 0 ? 'bad' : 'neutral'}
-          detail={`офлайн ${n(s.offline)} · без першого звіту ${n(s.neverConnected)}`} />
-        <Stat label="PM2-процеси зараз" value={n(p.live.total)} tone="neutral"
-          detail={`працюють ${n(p.live.online)} · перехідні ${n(p.live.transitional)} (лише актуальні дані)`} />
-        <Stat label="Проблемні сервіси" value={n(p.live.problem)} tone={p.live.problem > 0 ? 'bad' : 'neutral'} detail="помилка, зупинено, очікує рестарту або невідомо" />
-        <Stat label="Неактуальні дані" value={n(p.notLive)} tone={p.notLive + staleServers > 0 ? 'warn' : 'neutral'}
-          detail={`процесів зі старим станом · серверів без актуального PM2: ${n(staleServers)}`} />
-      </div>
 
       {d.serverList.items.length > 0 ? (
         <Section title="Сервери" titleId="dash-servers-title" meta="Стан агента й поточне навантаження; системний моніторинг серверів — у Zabbix"
@@ -125,7 +140,7 @@ function Overview({ d, outdated, scoped }: { d: DashboardView; outdated: boolean
               <tbody>
                 {d.serverList.items.map((srv) => (
                   <tr key={srv.id}>
-                    <th scope="row"><Link to={`/servers/${srv.id}`}>{srv.name}</Link>{srv.metrics ? <span className="cell-meta">{srv.metrics.hostname}</span> : null}</th>
+                    <th scope="row"><Link to={`/servers/${srv.id}`}>{srv.name}</Link>{extraHostname(srv.name, srv.metrics?.hostname) ? <span className="cell-meta">{srv.metrics?.hostname}</span> : null}</th>
                     <td><StatusBadge status={srv.status} /></td>
                     <td className="date secondary">{srv.lastSeenAt ? formatDate(srv.lastSeenAt) : '—'}</td>
                     <td className="num">{srv.metrics ? srv.metrics.loadAverage.map(load).join(' / ') : '—'}</td>

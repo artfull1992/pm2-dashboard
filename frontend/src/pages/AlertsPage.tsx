@@ -23,7 +23,7 @@ const RESOLUTION_TEXT = {
 } as const;
 const DELIVERY_TEXT = {
   none: 'Не надсилалось', queued: 'У черзі', sending: 'Надсилається', sent: 'Надіслано', failed: 'Не доставлено',
-  unknown: 'Результат невідомий (можливий дублікат)', dropped: 'Відкинуто: черга переповнена',
+  unknown: 'Результат невідомий', dropped: 'Відкинуто: черга переповнена',
 } as const;
 
 function detailText(i: Incident): string {
@@ -38,41 +38,63 @@ function detailText(i: Incident): string {
   }
 }
 
-function IncidentTable({ items, resolved }: { items: Incident[]; resolved: boolean }) {
+/** Per-incident delivery: only what the outbox knows. "Надіслано" only for a confirmed send; no time is invented. */
+function DeliveryCell({ n, deliveryOn }: { n: NonNullable<Incident['notification']>; deliveryOn: boolean | null }) {
+  if (!n.notify) return <span className="secondary">Без сповіщення (повтор у межах cooldown)</span>;
+  const waiting = n.state === 'queued' || n.state === 'sending';
+  return (
+    <>
+      {DELIVERY_TEXT[n.state]}
+      {(() => {
+        // One secondary line: why it waits, that an unknown result may mean a duplicate, the last error.
+        const meta = [
+          waiting && deliveryOn === false ? 'надсилання зараз вимкнено' : null,
+          n.state === 'unknown' ? 'можливо, надіслано двічі' : null,
+          n.lastError ? `${n.lastError} · спроб: ${String(n.attempts)}` : null,
+        ].filter((x): x is string => x !== null);
+        return meta.length > 0 ? <span className="cell-meta">{meta.join(' · ')}</span> : null;
+      })()}
+    </>
+  );
+}
+
+function IncidentTable({ items, resolved, deliveryOn }: { items: Incident[]; resolved: boolean; deliveryOn: boolean | null }) {
   const delivery = items.some((i) => i.notification !== null);
   return (
     <div className="table-wrap">
-      <table className="table">
+      <table className="table incidents">
         <caption className="visually-hidden">{resolved ? 'Закриті інциденти' : 'Активні проблеми'}</caption>
         <thead>
           <tr>
-            <th scope="col">Проблема</th><th scope="col">Сервер / сервіс</th><th scope="col">Показник</th>
+            <th scope="col">Застосунок / сервер</th><th scope="col">Проблема</th><th scope="col">Показник</th>
             <th scope="col">Початок</th><th scope="col">{resolved ? 'Закрито' : 'Останнє спостереження'}</th>
-            {delivery ? <th scope="col">Сповіщення</th> : null}
+            {delivery ? <th scope="col">Сповіщення цього інциденту</th> : null}
           </tr>
         </thead>
         <tbody>
           {items.map((i) => (
             <tr key={i.id}>
               <th scope="row">
-                {RULE_TITLE[i.rule]}
-                <span className="cell-meta"><StatusIndicator tone={resolved ? 'muted' : i.severity === 'critical' ? 'bad' : 'warn'}>{i.severity === 'critical' ? 'Критично' : 'Попередження'}</StatusIndicator></span>
+                {/* The application first (what to look at), the server under it; server incidents name the server. */}
+                {i.processName
+                  ? <><span className="mono incidents__app">{i.processName}</span><span className="cell-meta"><Link to={`/servers/${i.serverId}`}>{i.serverName}</Link>{i.pmId === null ? null : ` · PM2 id ${String(i.pmId)}`}</span></>
+                  : <Link to={`/servers/${i.serverId}`}>{i.serverName}</Link>}
+                {!resolved && i.serverStatus !== 'online' && i.rule !== 'server_offline' ? <span className="cell-meta cell-meta--strong">{i.serverStatus === 'inactive' ? 'Сервер неактивний' : 'Сервер не звітує: стан не оновлюється'}</span> : null}
               </th>
               <td>
-                <Link to={`/servers/${i.serverId}`}>{i.serverName}</Link>
-                {i.processName ? <span className="cell-meta"><span className="mono">{i.processName}</span>{i.pmId === null ? null : ` · PM2 id ${String(i.pmId)}`}</span> : null}
-                {!resolved && i.serverStatus !== 'online' && i.rule !== 'server_offline' ? <span className="cell-meta cell-meta--strong">{i.serverStatus === 'inactive' ? 'Сервер неактивний' : 'Сервер не звітує: стан не оновлюється'}</span> : null}
+                {RULE_TITLE[i.rule]}
+                {/* Severity as a small labelled dot (text, not colour only); no repeated large badge per row. */}
+                <span className={`severity severity--${resolved ? 'muted' : i.severity}`}>{i.severity === 'critical' ? 'Критично' : 'Попередження'}</span>
               </td>
-              <td>{detailText(i)}</td>
+              <td className="num-text">{detailText(i)}</td>
               <td className="date">{formatDate(i.openedAt)}</td>
               <td className="date">{resolved ? <>{formatDate(i.resolvedAt)}<span className="cell-meta">{i.resolution ? RESOLUTION_TEXT[i.resolution] : ''}</span></> : formatDate(i.lastObservedAt)}</td>
-              {delivery ? (
-                <td>{i.notification ? (i.notification.notify ? <>{DELIVERY_TEXT[i.notification.state]}{i.notification.lastError ? <span className="cell-meta">{`${i.notification.lastError} · спроб: ${String(i.notification.attempts)}`}</span> : null}</> : <span className="secondary">Без сповіщення (повтор у межах cooldown)</span>) : '—'}</td>
-              ) : null}
+              {delivery ? <td>{i.notification ? <DeliveryCell n={i.notification} deliveryOn={deliveryOn} /> : '—'}</td> : null}
             </tr>
           ))}
         </tbody>
       </table>
+      {delivery && deliveryOn === false ? <p className="table-note">«Сповіщення цього інциденту» — результат доставки саме цього інциденту: він міг бути надісланий раніше, коли надсилання працювало. Зараз надсилання вимкнено.</p> : null}
     </div>
   );
 }
@@ -90,7 +112,7 @@ function StatusBanner({ s }: { s: AlertsStatus }) {
           ? `Остання перевірка: ${formatDate(s.engine.lastEvaluationAt)}${failedLast ? ' — з помилкою' : ''}.`
           : 'Рушій увімкнено, але перевірок ще не було.'}
       </StatusIndicator>
-      <span>{s.delivery.enabled ? 'Надсилання в Slack увімкнено.' : 'Надсилання в Slack вимкнено: інциденти лише записуються.'}</span>
+      <span>{s.delivery.enabled ? 'Надсилання в Slack увімкнено.' : 'Надсилання в Slack зараз вимкнено: нові інциденти лише записуються.'}</span>
     </div>
   );
 }
@@ -145,7 +167,7 @@ export function AlertsPage() {
               : s.engine.lastEvaluationAt ? `За останньою перевіркою (${formatDate(s.engine.lastEvaluationAt)}) відкритих проблем немає.` : 'Перевірок ще не було.'}
           </EmptyState>
         ) : null}
-        {a && a.items.length > 0 ? <IncidentTable items={a.items} resolved={false} /> : null}
+        {a && a.items.length > 0 ? <IncidentTable items={a.items} resolved={false} deliveryOn={s ? s.delivery.enabled : null} /> : null}
         {a?.nextBefore ? <p className="hint">{`Показано перші ${String(a.items.length)} активних.`}</p> : null}
       </Section>
 
@@ -153,7 +175,7 @@ export function AlertsPage() {
         {resolved.state.status === 'loading' ? <LoadingState /> : null}
         {resolved.state.status === 'error' ? <ErrorState title="Не вдалося завантажити історію" onRetry={resolved.reload}>{formatRetry(resolved.state.retryAfterSeconds)}</ErrorState> : null}
         {r && r.items.length === 0 ? <EmptyState title="Закритих інцидентів немає" /> : null}
-        {r && r.items.length > 0 ? <IncidentTable items={r.items} resolved /> : null}
+        {r && r.items.length > 0 ? <IncidentTable items={r.items} resolved deliveryOn={s ? s.delivery.enabled : null} /> : null}
         <nav className="pager" aria-label="Сторінки історії">
           <button type="button" className="button button--small" disabled={cursors.length === 1} onClick={() => { setCursors(cursors.slice(0, -1)); }}>Новіші</button>
           <span className="pager__page">{`Сторінка ${String(cursors.length)}`}</span>

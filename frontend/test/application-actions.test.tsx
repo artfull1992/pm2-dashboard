@@ -132,7 +132,7 @@ describe('applications list: row actions', () => {
     await user.click(screen.getByRole('button', { name: 'Дії: worker на alpha' }));
     expect(capReads(calls).filter((u) => u === 'A/control')).toHaveLength(1);
     await act(async () => { slow.resolve(json(200, control(A))); await Promise.resolve(); });
-    expect(await screen.findByText(/Не дозволено керування/)).toBeTruthy(); // worker is not allowlisted
+    expect(await screen.findByText(/Процесу немає в allowlist сервера/)).toBeTruthy(); // worker is not allowlisted
     expect(capReads(calls).filter((u) => u === 'A/control')).toHaveLength(1);
   });
 
@@ -233,10 +233,10 @@ describe('applications list: row actions', () => {
   });
 
   it.each([
-    ['server offline (row)', { items: () => [app(A, { serverStatus: 'offline' })] }, /Потрібні актуальні дані/],
-    ['stale inventory', { items: () => [app(A, { inventoryState: 'stale' })] }, /Потрібні актуальні дані/],
-    ['control disabled in the API', { controlFor: (id: string) => control(id, { enabled: false }) }, /Керування зараз недоступне/],
-    ['broker report stale', { controlFor: (id: string) => control(id, { broker: { state: 'ok', daemon: 'ok', allowlist: 'ok', reportedAt: new Date().toISOString(), fresh: false } }) }, /Керування зараз недоступне/],
+    ['server offline (row)', { items: () => [app(A, { serverStatus: 'offline' })] }, /Дані inventory неактуальні/],
+    ['stale inventory', { items: () => [app(A, { inventoryState: 'stale' })] }, /Дані inventory неактуальні/],
+    ['control disabled in the API', { controlFor: (id: string) => control(id, { enabled: false }) }, /Керування вимкнено на сервері API \(аварійний вимикач\)/],
+    ['broker report stale', { controlFor: (id: string) => control(id, { broker: { state: 'ok', daemon: 'ok', allowlist: 'ok', reportedAt: new Date().toISOString(), fresh: false } }) }, /Broker давно не звітував/],
     ['fingerprint mismatch', { controlFor: (id: string) => control(id, { targets: [target(id, { matchStatus: 'fingerprint_mismatch' })] }) }, /fingerprint/],
   ] as [string, Opts, RegExp][])('%s → control items disabled with the reason, no POST', async (_n, opts, reason) => {
     const calls = backend('operator', { ...opts, logsFor: (id) => logTargets(id, { state: 'not_connected', targets: [] }) });
@@ -260,7 +260,7 @@ describe('applications list: row actions', () => {
     renderAt();
     const user = userEvent.setup();
     await user.click(await menuOf('alpha'));
-    expect(await screen.findByText(/Не дозволено керування|Ідентичність процесу не підтверджена/)).toBeTruthy();
+    expect(await screen.findByText(/Процесу немає в allowlist сервера|Ідентичність процесу не підтверджена|Кілька цілей broker/)).toBeTruthy();
     expect(screen.queryByRole('menuitem')).toBeNull();
   });
 

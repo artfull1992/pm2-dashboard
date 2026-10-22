@@ -84,12 +84,15 @@ function ServicePicker({ server, disabled, onChange }: { server: DraftServer; di
 
   return (
     <div className="access-picker">
-      <div className="field">
-        <label htmlFor={searchId}>Пошук сервісу</label>
-        <input id={searchId} type="search" value={q} maxLength={128} disabled={disabled} autoComplete="off" spellCheck={false}
-          onKeyDown={noEnter} onChange={(e) => { setQ(e.target.value); }} aria-controls={listId} />
+      <div className="access-picker__bar">
+        <div className="field">
+          <label htmlFor={searchId}>Пошук сервісу</label>
+          <input id={searchId} type="search" value={q} maxLength={128} disabled={disabled} autoComplete="off" spellCheck={false}
+            onKeyDown={noEnter} onChange={(e) => { setQ(e.target.value); }} aria-controls={listId} />
+        </div>
+        {/* The selection is the draft, not the search result: searching never drops a chosen service. */}
+        <p className="hint access-picker__count" aria-live="polite">{`Вибрано: ${String(server.services.length)}`}</p>
       </div>
-      <p className="hint" aria-live="polite">{`Вибрано: ${String(server.services.length)}`}</p>
       {list.status === 'loading' ? <p className="hint">Завантаження сервісів…</p> : null}
       {list.status === 'error' ? <p className="form-error" role="alert">{list.text}</p> : null}
       <ul id={listId} className="access-picker__list" aria-label={`Сервіси ${server.serverName}`}>
@@ -97,8 +100,8 @@ function ServicePicker({ server, disabled, onChange }: { server: DraftServer; di
           <li key={`g:${name}`}>
             <label className="check">
               <input type="checkbox" checked disabled={disabled} onChange={() => { toggle(name); }} />
-              <span>{name}</span>
-              {server.unavailable.includes(name) ? <span className="tag tag--warning">недоступний: зник із сервера</span> : null}
+              <span className="check__text">{name}</span>
+              {server.unavailable.includes(name) ? <span className="tag tag--warning check__meta" title="Наданий раніше сервіс зараз відсутній на сервері">зник із сервера</span> : null}
             </label>
           </li>
         ))}
@@ -106,8 +109,8 @@ function ServicePicker({ server, disabled, onChange }: { server: DraftServer; di
           <li key={item.name}>
             <label className="check">
               <input type="checkbox" checked={chosen.has(item.name)} disabled={disabled} onChange={() => { toggle(item.name); }} />
-              <span>{item.name}</span>
-              {item.processes !== 1 ? <span className="hint">{item.processes === 0 ? 'не в inventory' : `${String(item.processes)} процеси з цим іменем`}</span> : null}
+              <span className="check__text">{item.name}</span>
+              {item.processes !== 1 ? <span className="check__meta">{item.processes === 0 ? 'не в inventory' : `${String(item.processes)} процеси`}</span> : null}
             </label>
           </li>
         )) : null}
@@ -266,7 +269,8 @@ export function AccessDialog({ user, onClose, onSaved }: { user: UserView; onClo
     <FormDialog title={title} className="dialog--wide" submitLabel="Зберегти доступи" pendingLabel="Збереження…" pending={pending} dirty={dirty}
       onSubmit={(e) => { void onSubmit(e); }} onClose={onClose}>
       <p className="hint">
-        {`Роль: ${user.role === 'operator' ? 'оператор — перегляд, керування процесами й логи' : 'спостерігач — лише перегляд'} у межах наданих серверів і сервісів. Без доступів користувач нічого не бачить.`}
+        {user.role === 'operator' ? 'Оператор: перегляд, керування процесами й логи — лише на наданих серверах і сервісах.' : 'Спостерігач: лише перегляд наданих серверів і сервісів.'}
+        {' Без доступів користувач нічого не бачить. Зміни застосовуються лише після «Зберегти доступи».'}
         {user.isActive ? '' : ' Користувач зараз деактивований.'}
       </p>
       {error ? (
@@ -282,8 +286,7 @@ export function AccessDialog({ user, onClose, onSaved }: { user: UserView; onClo
           return (
             <li key={s.serverId} className="access-server">
               <div className="access-server__head">
-                <strong>{s.serverName}</strong>
-                {s.serverActive ? null : <span className="tag">неактивний</span>}
+                <span className="access-server__name">{s.serverName}{s.serverActive ? null : <span className="tag">неактивний</span>}</span>
                 <button type="button" className="button button--small button--danger" disabled={pending} aria-label={`Прибрати ${s.serverName}`}
                   onClick={() => { setDraft((d) => d.filter((x) => x.serverId !== s.serverId)); }}>Прибрати</button>
               </div>
@@ -291,11 +294,11 @@ export function AccessDialog({ user, onClose, onSaved }: { user: UserView; onClo
                 <legend className="visually-hidden">{`Обсяг доступу до ${s.serverName}`}</legend>
                 <label className="check">
                   <input type="radio" name={`mode-${s.serverId}`} checked={s.mode === 'all'} onChange={() => { update(s.serverId, { mode: 'all' }); }} />
-                  <span>Усі сервіси (поточні й майбутні)</span>
+                  <span className="check__text">Усі сервіси (поточні й майбутні)</span>
                 </label>
                 <label className="check">
                   <input type="radio" name={`mode-${s.serverId}`} checked={s.mode === 'selected'} onChange={() => { update(s.serverId, { mode: 'selected' }); }} />
-                  <span>Вибрані сервіси</span>
+                  <span className="check__text">Вибрані сервіси</span>
                 </label>
               </fieldset>
               {s.mode === 'selected' ? <ServicePicker server={s} disabled={pending} onChange={(services) => { update(s.serverId, { services }); }} /> : null}

@@ -108,15 +108,24 @@ describe('log viewer', () => {
   });
 
   it.each([
-    ['target not allowed', (id: string) => logTargets(id, { targets: [] }), 'Логи не дозволені'],
-    ['different PM2 id', (id: string) => logTargets(id, { targets: [{ targetKey: 'api', name: 'api', pmId: 9, matchStatus: 'ok' }] }), 'Логи не дозволені'],
-    ['identity mismatch', (id: string) => logTargets(id, { targets: [{ targetKey: 'api', name: 'api', pmId: null, matchStatus: 'fingerprint_mismatch' }] }), 'Логи не дозволені'],
-    ['old agent/broker', (id: string) => logTargets(id, { state: 'unsupported', targets: [] }), 'Перегляд логів не підтримується: потрібні оновлені Agent і broker'],
-    ['agent offline', (id: string) => logTargets(id, { state: 'not_connected', targets: [] }), 'Логи: агент не на зв’язку'],
-  ])('%s → no logs item, explained', async (_n, targets, hint) => {
+    ['target not allowed', (id: string) => logTargets(id, { targets: [] })],
+    ['different PM2 id', (id: string) => logTargets(id, { targets: [{ targetKey: 'api', name: 'api', pmId: 9, matchStatus: 'ok' }] })],
+    ['identity mismatch', (id: string) => logTargets(id, { targets: [{ targetKey: 'api', name: 'api', pmId: null, matchStatus: 'fingerprint_mismatch' }] })],
+  ])('%s → no logs item; this process\'s cause is in its row menu', async (_n, targets) => {
     backend('operator', undefined, targets);
     renderAt(`/servers/${A}`);
-    expect(await screen.findByText(hint)).toBeTruthy();
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Чому недоступно: api' }));
+    expect(await screen.findByText(/Логи не дозволені allowlist сервера/)).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Переглянути логи' })).toBeNull();
+  });
+
+  it.each([
+    ['old agent/broker', (id: string) => logTargets(id, { state: 'unsupported', targets: [] }), /Перегляд логів не підтримується: потрібні оновлені Agent і broker/],
+    ['agent offline', (id: string) => logTargets(id, { state: 'not_connected', targets: [] }), /Логи: агент не на зв’язку/],
+  ])('%s → no logs item; the server-wide cause is said once above the table', async (_n, targets, hint) => {
+    backend('operator', undefined, targets);
+    renderAt(`/servers/${A}`);
+    expect(await screen.findAllByText(hint)).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Дії: api' })).toBeNull();
   });
 

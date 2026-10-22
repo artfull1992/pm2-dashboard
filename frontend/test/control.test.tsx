@@ -68,21 +68,35 @@ describe('process control on the server page', () => {
   });
 
   it.each([
-    ['control disabled in the API', { enabled: false }, /вимкнене на сервері API/],
+    ['control disabled in the API', { enabled: false }, /вимкнено на сервері API/],
     ['broker report stale', { broker: { state: 'ok', daemon: 'ok', allowlist: 'ok', reportedAt: '2026-10-13T10:00:00.000Z', fresh: false } }, /давно не звітував/],
     ['broker unavailable', { broker: { state: 'unavailable', daemon: null, allowlist: null, reportedAt: new Date().toISOString(), fresh: true } }, /недоступний/],
     ['allowlist invalid', { broker: { state: 'ok', daemon: 'ok', allowlist: 'invalid', reportedAt: new Date().toISOString(), fresh: true } }, /allowlist некоректний/],
     ['server offline', { serverStatus: 'offline' }, /Сервер не онлайн/],
     ['identity changed', { targets: [target({ matchStatus: 'fingerprint_mismatch', pmId: null })] }, /fingerprint/],
-  ])('%s → buttons disabled with an explanation', async (_n, over, text) => {
-    backend('operator', undefined, (id) => control(id, over));
+  ])('%s → actions disabled, the explanation reachable from the row menu', async (_n, over, text) => {
+    const calls = backend('operator', undefined, (id) => control(id, over));
     renderAt(`/servers/${A}`);
     const s = await section();
-    expect(await s.findByText(text)).toBeTruthy();
-    const trigger = s.queryByRole<HTMLButtonElement>('button', { name: /^Дії:/ });
-    if (trigger) expect(trigger.disabled).toBe(true);
-    else expect(s.getByText(/Керування зараз недоступне|fingerprint/)).toBeTruthy();
-    expect(screen.queryByRole('menuitem', { name: 'Перезапустити' })).toBeNull();
+    // The row keeps one usable trigger; the cause is inside its menu (and, when server-wide, once above the table).
+    // A known target → "Дії" with disabled items; an unconfirmed one (e.g. changed definition) → "Недоступно".
+    const trigger = await s.findByRole<HTMLButtonElement>('button', { name: /^(Дії|Чому недоступно): api$/ });
+    expect(trigger.disabled).toBe(false);
+    await userEvent.setup().click(trigger);
+    expect(screen.getAllByText(text).length).toBeGreaterThan(0);
+    const item = screen.queryByRole('menuitem', { name: 'Перезапустити' });
+    if (item) {
+      expect(item.getAttribute('aria-disabled')).toBe('true');
+      await userEvent.setup().click(item);
+    }
+    expect(posts(calls)).toEqual([]);
+  });
+
+  it('a server-wide cause is said once above the table, not on every row', async () => {
+    backend('operator', undefined, (id) => control(id, { enabled: false }));
+    renderAt(`/servers/${A}`);
+    const s = await section();
+    expect(await s.findAllByText(/вимкнено на сервері API/)).toHaveLength(1);
   });
 
   it('an open row menu survives polling refreshes (stable keys: no remount, focus and expanded state kept)', async () => {
@@ -133,8 +147,12 @@ describe('process control on the server page', () => {
     const calls = backend('operator', undefined, (id) => control(id, { targets }));
     renderAt(`/servers/${A}`);
     const s = await section();
-    await s.findByText(/Не дозволено керування|Ідентичність процесу не підтверджена/);
+    // No action at all: one compact, keyboard-reachable "Недоступно" that explains this process's cause.
+    const why = await s.findByRole('button', { name: 'Чому недоступно: api' });
     expect(s.queryByRole('button', { name: /^Дії:/ })).toBeNull();
+    await userEvent.setup().click(why);
+    expect(await screen.findByText(/Процесу немає в allowlist сервера|Ідентичність процесу не підтверджена|Кілька цілей broker/)).toBeTruthy();
+    expect(screen.queryByRole('menuitem')).toBeNull();
     expect(posts(calls)).toEqual([]);
   });
 
@@ -143,8 +161,9 @@ describe('process control on the server page', () => {
       ? json(200, { ...apps(A), items: apps(A).items.map((app) => ({ ...app, inventoryState: 'stale' })) }) : undefined);
     renderAt(`/servers/${A}`);
     const s = await section();
-    await s.findByText('Потрібні актуальні дані');
-    expect(s.getByRole<HTMLButtonElement>('button', { name: 'Дії: api' }).disabled).toBe(true);
+    await userEvent.setup().click(await s.findByRole('button', { name: 'Дії: api' }));
+    expect(await screen.findByText(/Дані inventory неактуальні/)).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Перезапустити' }).getAttribute('aria-disabled')).toBe('true');
   });
 
   it('confirmation names server, process and target; cancel sends nothing; confirm sends only key/action/target with CSRF', async () => {
@@ -170,9 +189,11 @@ describe('process control on the server page', () => {
     expect(body).toMatchObject({ targetKey: 'api-prod', action: 'restart' });
     expect(body.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
     expect(await s.findByText(/У черзі/)).toBeTruthy();
-    // The row menu is now disabled (command not final): focus moves to the command status, not to <body>.
+    // The row's actions are now disabled (command not final): focus moves to the command status, not to <body>.
     await waitFor(() => { expect(document.activeElement?.textContent).toMatch(/Перезапустити «api-prod»: У черзі/); });
-    expect(s.getByRole<HTMLButtonElement>('button', { name: 'Дії: api' }).disabled).toBe(true);
+    await user.click(s.getByRole('button', { name: 'Дії: api' }));
+    expect(screen.getByRole('menuitem', { name: 'Перезапустити' }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.getByText(/Команда для цього процесу ще виконується/)).toBeTruthy();
   });
 
   it('"accepted" is not success: success is shown only after the confirmed command status', async () => {

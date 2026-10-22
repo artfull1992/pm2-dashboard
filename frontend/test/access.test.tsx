@@ -97,7 +97,7 @@ describe('access editor', () => {
     renderApp('/users');
     const u = await open();
     const dialog = await screen.findByRole('dialog', { name: 'Доступи: other@example.test' });
-    expect(await within(dialog).findByText('недоступний: зник із сервера')).toBeTruthy();
+    expect(await within(dialog).findByText('зник із сервера')).toBeTruthy();
     expect(within(dialog).getByRole<HTMLInputElement>('checkbox', { name: /old-job/ }).checked).toBe(true);
     const radios = within(dialog).getAllByRole<HTMLInputElement>('radio', { name: 'Усі сервіси (поточні й майбутні)' });
     expect(radios[1]?.checked).toBe(true); // beta: all

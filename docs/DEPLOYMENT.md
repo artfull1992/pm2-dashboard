@@ -426,7 +426,7 @@ systemctl enable pm2-$OWNER.service      # БЕЗ --now і без start, якщ�
 
 ### Перегляд логів (Task 010, ADR-018)
 
-Міграцій немає. Порядок rollout: **API/UI → реліз Agent (Agent і broker — один артефакт) → restart Agent і broker → (лише з погодження) `logs: true` у allowlist.** До останнього кроку читання логів вимкнене: UI показує «Логи не дозволені». Старий Agent/broker → «Перегляд логів не підтримується».
+Міграцій немає. Порядок rollout: **API/UI → реліз Agent (Agent і broker — один артефакт) → restart Agent і broker → (лише з погодження) `logs: true` у allowlist.** До останнього кроку читання логів вимкнене: у меню рядка — «Логи не дозволені allowlist сервера». Старий Agent/broker → «Перегляд логів не підтримується».
 
 ```bash
 # Увімкнути логи для погодженого сервісу (root на керованій ноді). Backup → правка → перевірка; broker перечитує allowlist сам.

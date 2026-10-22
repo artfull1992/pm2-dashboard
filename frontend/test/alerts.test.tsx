@@ -77,10 +77,35 @@ describe('alerts page', () => {
     renderApp('/alerts');
     const active = (await screen.findByRole('heading', { name: /Активні проблеми/ })).closest('section') as HTMLElement;
     expect(await within(active).findByText('Не доставлено')).toBeTruthy();
-    expect(within(active).getByText('Результат невідомий (можливий дублікат)')).toBeTruthy();
+    expect(within(active).getByText('Результат невідомий')).toBeTruthy();
     expect(within(active).getByText('Без сповіщення (повтор у межах cooldown)')).toBeTruthy();
     expect(screen.getByText('Налаштовано (значення не показується)')).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/hooks\.slack\.com/);
+  });
+
+  it('Slack switched off now vs the delivery result of each incident: queued is never "sent", the column is explained', async () => {
+    backend('admin', (req) => {
+      if (req.url === '/api/alerts/status') return json(200, status({ admin: adminBlock, delivery: { enabled: false } }));
+      if (req.url.startsWith('/api/alerts?state=active')) {
+        return json(200, { items: [
+          inc(1, { processName: 'billing-api', notification: { notify: true, state: 'sent', attempts: 1, lastError: null } }),
+          inc(2, { processName: 'mailer', notification: { notify: true, state: 'queued', attempts: 0, lastError: null } }),
+        ], nextBefore: null });
+      }
+      return undefined;
+    });
+    renderApp('/alerts');
+    const active = (await screen.findByRole('heading', { name: /Активні проблеми/ })).closest('section') as HTMLElement;
+    expect(await screen.findByText(/Надсилання в Slack зараз вимкнено/)).toBeTruthy();
+    const row = (name: string) => (within(active).getByText(name).closest('tr') as HTMLElement);
+    expect(within(row('billing-api')).getByText('Надіслано')).toBeTruthy(); // delivered earlier: kept as a fact
+    expect(within(row('mailer')).getByText('У черзі')).toBeTruthy();
+    expect(within(row('mailer')).queryByText('Надіслано')).toBeNull();
+    expect(within(row('mailer')).getByText(/надсилання зараз вимкнено/)).toBeTruthy();
+    expect(within(active).getByText(/результат доставки саме цього інциденту/)).toBeTruthy();
+    // The application leads the row; the server is under it.
+    const first = row('billing-api').querySelector('th');
+    expect(first?.firstElementChild?.textContent).toBe('billing-api');
   });
 
   it('enabled with no active incidents: the empty state names the time of the last evaluation', async () => {

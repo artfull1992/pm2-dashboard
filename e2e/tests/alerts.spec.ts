@@ -46,7 +46,7 @@ test('the evaluator opens an incident for a server that stopped reporting; opera
   await login(page, 'operator');
   await page.getByRole('button', { name: 'Меню' }).click();
   await page.getByRole('link', { name: 'Сповіщення' }).click();
-  await expect(page.getByText('Надсилання в Slack вимкнено: інциденти лише записуються.')).toBeVisible();
+  await expect(page.getByText('Надсилання в Slack зараз вимкнено: нові інциденти лише записуються.')).toBeVisible();
   const active = page.getByRole('region', { name: /Активні проблеми/ });
   await expect(async () => {
     await page.reload();

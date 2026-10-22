@@ -106,10 +106,21 @@ h1, h2, h3, p { margin: 0; }
 /* ------------------------------------------------------------------ forms */
 .field { display: grid; gap: 6px; min-width: 0; }
 .field label { font-weight: 600; font-size: var(--font-sm); }
-.field input, .field select, .dialog__body input {
-  font: inherit; font-size: .9375rem; min-height: var(--control-h); padding: 0 12px; width: 100%;
+/* Text fields and selects only. Choice controls (checkbox, radio, switch) never get a text field's width, height or
+   padding: they have their own rules below. :where() keeps this at zero specificity, so component rules win without
+   !important. */
+:where(.field, .dialog__body) :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="hidden"], [type="file"]), select, textarea) {
+  font: inherit; font-size: .9375rem; min-height: var(--control-h); padding: 0 12px; width: 100%; min-width: 0;
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text);
 }
+/* Native checkbox / radio: one compact size everywhere (the whole label is the click target). */
+input[type="checkbox"], input[type="radio"] { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--primary); cursor: pointer; }
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allowed; }
+/* A choice row: control + text that keeps its own width (never squeezed to a few letters) and wraps only when it must. */
+.check { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--space-2); min-width: 0; min-height: 32px; padding: 2px 0; font-size: var(--font-sm); cursor: pointer; }
+/* The name keeps at least ~12 characters of width; a status that does not fit moves under it instead of squeezing it. */
+.check__text { flex: 1 1 12ch; min-width: 0; overflow-wrap: anywhere; }
+.check__meta { flex: none; color: var(--text-muted); font-size: var(--font-xs); }
 .field input[aria-invalid="true"] { border-color: var(--danger); }
 .field__error, .account__error { color: var(--danger); font-size: var(--font-sm); }
 .form-error { color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); font-size: var(--font-sm); }
@@ -235,6 +246,16 @@ h1, h2, h3, p { margin: 0; }
 .table .nowrap { white-space: nowrap; }
 .cell-meta { display: block; margin-top: 2px; color: var(--text-muted); font-size: var(--font-xs); font-weight: 400; }
 .cell-meta--strong { color: var(--warning); }
+.incidents__app { font-weight: 600; font-size: var(--font-sm); }
+.incidents td:nth-child(2) { min-width: 200px; }
+.incidents td:last-child { min-width: 170px; }
+.severity { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: var(--font-xs); color: var(--text-muted); }
+.severity::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+.severity--critical { color: var(--danger); }
+.severity--critical::before { background: var(--danger); }
+.severity--warning { color: var(--warning); }
+.severity--warning::before { background: var(--warning); }
+.table .num-text { font-variant-numeric: tabular-nums; }
 .table-note { padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); font-size: var(--font-xs); }
 .table--outdated td, .table--outdated tbody th { color: var(--text-muted); }
 .toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3) var(--space-4); }
@@ -266,13 +287,18 @@ h1, h2, h3, p { margin: 0; }
 .list__meta { flex-basis: 100%; color: var(--text-muted); font-size: var(--font-xs); }
 .list__empty { color: var(--text-muted); font-size: var(--font-sm); }
 .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); }
+/* Overview "attention": only non-empty groups; one group takes the whole width, two share it. */
+.attention { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: var(--space-4) var(--space-5); align-items: start; }
+.attention__group { min-width: 0; }
+.attention__note { grid-column: 1 / -1; }
+.calm { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; padding: var(--space-3) var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .split__title { font-size: var(--font-sm); font-weight: 600; margin-bottom: var(--space-2); }
 @media (max-width: 900px) { .split { grid-template-columns: minmax(0, 1fr); } }
 
 /* ------------------------------------------------------------------ dialogs */
 .dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: var(--space-4); overflow-y: auto; background: rgb(8 12 20 / 45%); }
 .dialog { background: var(--elevated); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); width: min(100%, 480px); padding: var(--space-5); display: grid; gap: var(--space-4); }
-.dialog__title { font-size: 1.125rem; font-weight: 600; }
+.dialog__title { font-size: 1.125rem; font-weight: 600; overflow-wrap: anywhere; }
 .dialog__body { display: grid; gap: var(--space-3); }
 .dialog__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 .dialog--wide { width: min(100%, 980px); max-height: calc(100vh - 32px); overflow: auto; }
@@ -284,22 +310,40 @@ h1, h2, h3, p { margin: 0; }
 
 /* ------------------------------------------------------------------ access editor (ADR-028) */
 .access-servers { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
-.access-server { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); display: grid; gap: var(--space-2); background: var(--surface); }
-.access-server__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-.access-server__head .button { margin-left: auto; }
-.access-server__mode { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
-.check { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--font-sm); min-width: 0; overflow-wrap: anywhere; }
-.access-picker { display: grid; gap: var(--space-2); }
-.access-picker__list, .access-add__list { list-style: none; margin: 0; padding: var(--space-1) var(--space-2); max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); display: grid; gap: 2px; }
+.access-server { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); display: grid; gap: var(--space-2); background: var(--surface); min-width: 0; }
+.access-server__head { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.access-server__name { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.access-server__head .button { flex: none; }
+.access-server__mode { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0 var(--space-5); min-width: 0; }
+.access-picker { display: grid; gap: var(--space-2); min-width: 0; }
+.access-picker__bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-2) var(--space-4); }
+.access-picker__bar .field { flex: 1 1 260px; }
+.access-picker__count { flex: none; padding-bottom: 10px; }
+/* Bounded list: names in columns as wide as a readable name (min 220 px), one column on a phone. */
+.access-picker__list { list-style: none; margin: 0; padding: var(--space-1) var(--space-3); max-height: 288px; overflow-y: auto; overscroll-behavior: contain;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 var(--space-4); }
 .access-picker__list:empty { display: none; }
-.access-add { display: grid; gap: var(--space-2); }
-.access-add__list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 2px 0; }
+.access-add { display: grid; gap: var(--space-2); min-width: 0; }
+.access-add__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.access-add__list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; padding: 2px 0; }
+.access-add__list li > span { min-width: 0; overflow-wrap: anywhere; }
 .tag--warning { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); background: var(--warning-soft); }
+/* Long dialogs (access editor): the dialog itself scrolls; title and actions stay in view. */
+.dialog--wide > .dialog__title { position: sticky; top: calc(-1 * var(--space-5)); z-index: 1; margin: calc(-1 * var(--space-5)) calc(-1 * var(--space-5)) 0; padding: var(--space-5) var(--space-5) var(--space-2); background: var(--elevated); }
+.dialog--wide .form-actions { position: sticky; bottom: calc(-1 * var(--space-5)); z-index: 1; margin: 0 calc(-1 * var(--space-5)) calc(-1 * var(--space-5)); padding: var(--space-3) var(--space-5) var(--space-5); background: var(--elevated); border-top: 1px solid var(--border); }
+@media (max-width: 760px) {
+  .dialog--wide > .dialog__title { top: calc(-1 * var(--space-4)); margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) 0; padding: var(--space-4) var(--space-4) var(--space-2); }
+  .dialog--wide .form-actions { bottom: calc(-1 * var(--space-4)); margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4)); padding: var(--space-3) var(--space-4) var(--space-4); }
+  .access-picker__list { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* ------------------------------------------------------------------ row action menu (normal flow: never clipped) */
 .service-actions { display: grid; gap: 4px; min-width: 96px; max-width: 220px; }
 .action-menu__trigger { gap: var(--space-3); min-height: var(--control-sm); padding: 0 10px; font-size: var(--font-sm); }
 .action-menu__trigger[aria-expanded="true"] { border-color: var(--primary); color: var(--primary); }
+/* "Недоступно": the same compact trigger, visually secondary (it only explains, it acts on nothing). */
+.action-menu__trigger--subtle { border-color: transparent; background: transparent; color: var(--text-muted); font-weight: 400; }
+.action-menu__trigger--subtle:hover:not(:disabled) { background: var(--surface-2); }
 .action-menu__popup { position: fixed; top: 0; left: 0; z-index: 40; display: grid; gap: 2px; padding: 4px; min-width: 180px; max-width: calc(100vw - 16px); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--elevated); box-shadow: var(--shadow); }
 .action-menu__popup:focus { outline: none; }
 .action-menu__list { display: grid; }
@@ -344,7 +388,6 @@ h1, h2, h3, p { margin: 0; }
 .detail-list dt { color: var(--text-muted); font-size: var(--font-xs); }
 .detail-list dd { margin: 0; overflow-wrap: anywhere; }
 .log-auto { display: inline-flex; gap: 6px; align-items: center; font-size: var(--font-sm); }
-.log-auto input { width: auto; min-height: 0; margin: 0; }
 .log-text { margin: 0; max-height: 55vh; overflow: auto; padding: 12px; background: #0f172a; color: #e2e8f0; border-radius: var(--radius-sm); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--font-xs); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------------ users / account */
@@ -361,8 +404,6 @@ h1, h2, h3, p { margin: 0; }
 .settings-form { display: grid; gap: var(--space-3); max-width: 640px; }
 .settings-block { display: grid; gap: var(--space-2); border-top: 1px solid var(--border); padding-top: var(--space-4); }
 .settings-block__title { font-size: var(--font-sm); font-weight: 600; }
-.settings-toggle label { display: flex; gap: 8px; align-items: center; font-weight: 500; }
-.settings-toggle input[type="checkbox"] { width: auto; min-height: 0; margin: 0; }
 
 /* Alert rules (Task 013.2): one card, groups divided by a rule; every row is "title + explanation | controls" on the
    same grid; a pair of controls always shares one line and both inputs have one height and width. */

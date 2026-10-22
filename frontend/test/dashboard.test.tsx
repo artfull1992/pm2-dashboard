@@ -106,6 +106,27 @@ describe('dashboard', () => {
     expect(document.body.textContent).not.toMatch(/усе працює|все працює/i);
   });
 
+  it('attention shows only non-empty categories: no empty half, and one calm line when nothing needs attention', async () => {
+    backend('admin', () => json(200, { ...full(false), attentionServers: { items: [], total: 0, limit: 20 } }));
+    const { unmount } = renderApp('/');
+    expect(await screen.findByRole('heading', { name: /Сервіси з проблемним статусом/ })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /^Сервери \(/ })).toBeNull();
+    unmount();
+    backend('admin', () => json(200, { ...full(false), attentionServers: { items: [], total: 0, limit: 20 }, attentionProcesses: { items: [], total: 0, limit: 20 } }));
+    renderApp('/');
+    expect(await screen.findByText('Проблем немає')).toBeTruthy();
+    expect(screen.getByText(/4 процесів мають неактуальний стан/)).toBeTruthy(); // stale data is not counted as healthy
+    expect(screen.queryByRole('heading', { name: /Сервіси з проблемним статусом/ })).toBeNull();
+  });
+
+  it('hostname is shown under the name only when it differs', async () => {
+    backend('admin', () => json(200, { ...full(false), serverList: { ...full(false).serverList, items: full(false).serverList.items.map((i) => (i.id === A ? { ...i, metrics: { hostname: 'alpha', loadAverage: [1, 1, 1] } } : i)) } }));
+    renderApp('/');
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('rowheader', { name: 'alpha' }).querySelector('.cell-meta')).toBeNull();
+    expect(within(table).getByText('gamma.local')).toBeTruthy();
+  });
+
   it('viewer: no recent actions block; operator sees them with "ви" and an honest overdue label', async () => {
     backend('viewer');
     const { unmount } = renderApp('/');

@@ -157,7 +157,7 @@ function ApplicationsView() {
       onAction: (target, action) => { ask({ serverId: app.serverId, serverName: app.serverName, target, action }); },
       // In this list logs open inline, in the application's panel.
       onLogs: () => { open(app, 'logs'); },
-    }) : { items: [], reasons: [] };
+    }) : { items: [], reasons: [] as string[], rowReasons: [] as string[] };
     if (loaded?.failed) menu.reasons.unshift('Не вдалося перевірити можливості — відкрийте меню ще раз');
     return { loaded, ...menu };
   };

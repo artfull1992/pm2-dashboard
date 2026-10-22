@@ -169,7 +169,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       // Users: no regression of the shared menu.
       await page.goto('/users');
       await openAndCheck(page, page.getByRole('button', { name: 'Дії: user13@example.com' }));
-      expect(await page.getByRole('menuitem').allTextContents()).toEqual(['Змінити роль', 'Деактивувати']);
+      expect(await page.getByRole('menuitem').allTextContents()).toEqual(['Доступи', 'Змінити роль', 'Деактивувати']);
       if (shots) await page.screenshot({ path: `${shots}/users-menu-${tag}.png` });
       await page.keyboard.press('Escape');
 

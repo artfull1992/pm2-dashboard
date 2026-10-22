@@ -5,7 +5,7 @@ import { useAuth } from '../auth/AuthContext';
 import { formatDate } from '../pages/ServersPage';
 import { ActionMenu } from './ActionMenu';
 import { LogViewer } from './LogViewer';
-import { ACTION_LABELS, COMMAND_HINTS, CommandStatusList, commandStatusText, rowMenu, useProcessCommands } from './processActions';
+import { ACTION_LABELS, COMMAND_HINTS, CommandStatusList, commandStatusText, controlBlocker, logsBlocker, rowMenu, useProcessCommands } from './processActions';
 import { ErrorState, formatRetry, LoadingState } from './StatusMessage';
 import { usePolledResource } from './usePolledResource';
 
@@ -53,15 +53,18 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
 
   const renderActions: RowActions = (app) => {
     const target = control?.targets.find((t) => t.name === app.name && t.pmId === app.pmId);
-    const { items, reasons } = rowMenu({
+    const { items, reasons, rowReasons } = rowMenu({
       app, canControl, canLogs, control, logs, busy: target ? isBusy(serverId, target.targetKey) : false, limitReached,
       onAction: (t, action) => { ask({ serverId, serverName, target: t, action }); },
       onLogs: (t) => { setLogView({ targetKey: t.targetKey, name: app.name }); },
     });
     const last = target ? tracked.find((t) => t.command.serverId === serverId && t.command.targetKey === target.targetKey) : undefined;
+    // One compact control per row: the "Дії" menu (with the reasons inside), or — with nothing to offer for a reason of
+    // THIS process — one keyboard-reachable "Недоступно" that explains it. Server-wide causes are shown once above.
     return <div className="service-actions">
-      {items.length > 0 ? <ActionMenu name={app.name} items={items} note={reasons.join('. ') || null} /> : null}
-      {reasons.map((r) => <span key={r} className="hint">{r}</span>)}
+      {/* With a reason the trigger stays usable even if every item is disabled: the explanation must be reachable. */}
+      {items.length > 0 ? <ActionMenu name={app.name} items={items} note={reasons.join('. ') || null} {...(reasons.length > 0 ? { disabled: false } : {})} />
+        : rowReasons.length > 0 ? <ActionMenu name={app.name} items={[]} note={reasons.join('. ')} disabled={false} label="Недоступно" ariaLabel={`Чому недоступно: ${app.name}`} subtle /> : null}
       {last && FINAL_COMMAND_STATUSES.includes(last.command.status) ? <span className="hint">{COMMAND_HINTS[last.command.status]}</span> : null}
     </div>;
   };
@@ -71,25 +74,21 @@ export function ProcessControl({ serverId, serverName, onFinished, children }: {
       {children(canControl || canLogs ? renderActions : undefined)}
       {view.state.status === 'loading' ? <LoadingState /> : null}
       {view.state.status === 'error' ? <ErrorState title="Не вдалося оновити стан керування" onRetry={view.reload}>{`Сервіс тимчасово недоступний.${formatRetry(view.state.retryAfterSeconds)}`}</ErrorState> : null}
-      {current ? (
-        <>
-          {!current.enabled ? <p className="notice" role="status">Керування процесами вимкнене на сервері API (дії недоступні).</p> : null}
-          {current.enabled && !current.broker ? <p className="notice notice--warning" role="status">Локальний broker керування на цьому сервері не налаштований.</p> : null}
-          {current.broker && (current.broker.state !== 'ok' || !current.broker.fresh) ? (
-            <p className="notice notice--warning" role="status">{`Broker ${current.broker.state === 'ok' ? 'давно не звітував' : 'недоступний'} (останній звіт ${formatDate(current.broker.reportedAt)}).`}</p>
-          ) : null}
-          {current.broker?.allowlist === 'invalid' ? <p className="notice notice--warning" role="status">
-            {current.broker.mode === 'auto' ? 'Broker у режимі auto відхиляє застарілий протокол — оновіть Agent.' : 'Локальний allowlist некоректний — усі дії відхиляються.'}
-          </p> : null}
+      {/* Server-wide causes, once, and only for roles that have these actions (a viewer's read-only view is normal). */}
+      {current && canControl ? (() => {
+        const blocker = controlBlocker(current);
+        const when = current.broker && (current.broker.state !== 'ok' || !current.broker.fresh) ? ` (останній звіт ${formatDate(current.broker.reportedAt)})` : '';
+        return <>
+          {blocker ? <p className={`notice${current.enabled ? ' notice--warning' : ''}`} role="status">{`${blocker}${when}.`}</p> : null}
           {current.broker?.total !== null && current.broker?.total !== undefined && current.broker.total > CONTROL_TARGETS_MAX ? (
             <p className="notice notice--warning" role="status">{`На сервері ${String(current.broker.total)} процесів PM2 — керування доступне лише для перших ${String(CONTROL_TARGETS_MAX)} за іменем.`}</p>
           ) : null}
-          {current.broker ? <p className="hint">{current.broker.mode === 'auto'
-            ? 'Broker: режим auto — доступні всі процеси власника PM2; що саме вам дозволено, визначають роль і надані доступи.'
-            : 'Broker: режим allowlist — доступні лише процеси з локального allowlist сервера.'}</p> : null}
-          {current.enabled && current.serverStatus !== 'online' ? <p className="notice notice--warning" role="status">Сервер не онлайн — дії недоступні.</p> : null}
-        </>
-      ) : null}
+          {current.broker && !blocker ? <p className="hint">{current.broker.mode === 'auto'
+            ? 'Broker у режимі auto: доступні всі процеси власника PM2; що саме вам дозволено, визначають роль і надані доступи.'
+            : 'Broker у режимі allowlist: керувати можна лише процесами з локального allowlist сервера.'}</p> : null}
+        </>;
+      })() : null}
+      {canLogs && logsBlocker(logs) ? <p className="notice" role="status">{`${logsBlocker(logs) ?? ''}.`}</p> : null}
 
       <CommandStatusList tracked={tracked} showServer={false} />
 

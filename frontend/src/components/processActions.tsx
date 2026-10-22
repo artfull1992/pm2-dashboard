@@ -95,7 +95,33 @@ export interface RowMenuInput {
   onLogs: (target: LogTarget) => void;
 }
 
-export interface RowMenu { items: MenuItem[]; reasons: string[] }
+/** Why control is unavailable for the whole server (null: available or not known yet). One precise cause, not "no rights". */
+export function controlBlocker(view: ControlView | null): string | null {
+  if (!view) return null;
+  if (!view.enabled) return 'Керування вимкнено на сервері API (аварійний вимикач)';
+  if (view.serverStatus !== 'online') return 'Сервер не онлайн — керування недоступне';
+  if (!view.broker) return 'Broker керування на цьому сервері не налаштований';
+  if (view.broker.state !== 'ok') return 'Broker недоступний';
+  if (!view.broker.fresh) return 'Broker давно не звітував';
+  if (view.broker.allowlist !== 'ok') return view.broker.mode === 'auto' ? 'Agent застарів для broker у режимі auto — оновіть Agent' : 'Локальний allowlist некоректний — усі дії відхиляються';
+  if (view.broker.daemon !== 'ok') return 'PM2 daemon недоступний';
+  return null;
+}
+
+/** Why log viewing is unavailable for the whole server (null: supported or not known yet). */
+export function logsBlocker(logs: LogTargetsView | null): string | null {
+  if (!logs) return null;
+  if (logs.state === 'unsupported') return 'Перегляд логів не підтримується: потрібні оновлені Agent і broker';
+  if (logs.state === 'not_connected') return 'Логи: агент не на зв’язку';
+  if (logs.state === 'broker_unavailable') return 'Логи тимчасово недоступні: broker недоступний';
+  return null;
+}
+
+/**
+ * `reasons`: everything that limits this row (for the row menu); `rowReasons`: only what is specific to this process —
+ * server-wide causes (`controlBlocker`/`logsBlocker`) are shown once next to the table, not repeated on every row.
+ */
+export interface RowMenu { items: MenuItem[]; reasons: string[]; rowReasons: string[] }
 
 /**
  * Items of a row's "Дії" menu in a fixed order (start, stop, restart, logs) with the reasons why something is not
@@ -104,28 +130,33 @@ export interface RowMenu { items: MenuItem[]; reasons: string[] }
  */
 export function rowMenu({ app, canControl, canLogs, control, logs, busy, limitReached = false, onAction, onLogs }: RowMenuInput): RowMenu {
   const items: MenuItem[] = [];
-  const reasons: string[] = [];
+  const shared: string[] = [];
+  const row: string[] = [];
+  const view = control && control.serverId === app.serverId ? control : null;
   if (canControl) {
-    const view = control && control.serverId === app.serverId ? control : null;
     const ready = controlReady(view);
+    const blocker = controlBlocker(view);
     const target = controlTargetFor(app, view);
     const named = view?.targets.find((t) => t.name === app.name);
     const live = app.inventoryState === 'current' && app.serverStatus === 'online';
+    if (!ready) shared.push(blocker ?? 'Стан керування ще невідомий');
     if (target) {
       const blocked = !live || !ready || target.matchStatus !== 'ok' || busy || limitReached;
       for (const action of CONTROL_ACTIONS) {
         if (!target.actions.includes(action)) continue;
         items.push({ key: action, label: ACTION_LABELS[action], danger: action === 'stop', disabled: blocked, onSelect: () => { onAction(target, action); } });
       }
-      if (!ready) reasons.push('Керування зараз недоступне');
-      else if (target.matchStatus !== 'ok') reasons.push(MATCH_LABELS[target.matchStatus]);
-      else if (!live) reasons.push('Потрібні актуальні дані');
-      if (busy) reasons.push('Команда для цього процесу ще виконується');
-      else if (limitReached) reasons.push(LIMIT_TEXT);
-    } else {
-      // Without a ready broker report the targets are unknown: say so instead of claiming the process is not allowed.
-      reasons.push(!ready ? 'Керування зараз недоступне'
-        : named && named.matchStatus !== 'ok' ? MATCH_LABELS[named.matchStatus] : named ? 'Ідентичність процесу не підтверджена' : 'Не дозволено керування');
+      if (ready && target.matchStatus !== 'ok') row.push(MATCH_LABELS[target.matchStatus]);
+      else if (ready && !live) row.push('Дані inventory неактуальні');
+      if (busy) row.push('Команда для цього процесу ще виконується');
+      else if (limitReached) row.push(LIMIT_TEXT);
+    } else if (ready) {
+      // Ready broker, but this process is not a target: say exactly why (never "no rights" — the role allows control).
+      const sameProcess = view?.targets.filter((t) => t.name === app.name && t.pmId === app.pmId).length ?? 0;
+      row.push(sameProcess > 1 ? 'Кілька цілей broker для цього процесу — керування заблоковано'
+        : named && named.matchStatus !== 'ok' ? MATCH_LABELS[named.matchStatus]
+        : named ? 'Ідентичність процесу не підтверджена (інший PM2 id)'
+          : view?.broker?.mode === 'auto' ? 'Broker не повідомив про цей процес' : 'Процесу немає в allowlist сервера');
     }
   }
   if (canLogs) {
@@ -133,12 +164,12 @@ export function rowMenu({ app, canControl, canLogs, control, logs, busy, limitRe
     const logTarget = logTargetFor(app, lv);
     if (logTarget) items.push({ key: 'logs', label: 'Переглянути логи', disabled: false, onSelect: () => { onLogs(logTarget); } });
     else if (lv) {
-      reasons.push(lv.state === 'unsupported' ? 'Перегляд логів не підтримується: потрібні оновлені Agent і broker'
-        : lv.state === 'not_connected' ? 'Логи: агент не на зв’язку'
-          : lv.state === 'broker_unavailable' ? 'Логи тимчасово недоступні' : 'Логи не дозволені');
+      const blocker = logsBlocker(lv);
+      if (blocker) shared.push(blocker);
+      else row.push(view?.broker?.mode === 'auto' ? 'Логи цього процесу недоступні' : 'Логи не дозволені allowlist сервера');
     }
   }
-  return { items, reasons };
+  return { items, reasons: [...shared, ...row], rowReasons: row };
 }
 
 export interface CommandRequest { serverId: string; serverName: string; target: ControlTarget; action: ControlAction }

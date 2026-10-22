@@ -134,7 +134,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       await expect(panel).toHaveCount(0);
       await other.getByRole('tab', { name: 'Логи' }).click();
       await expect(other.getByText('Агент не на зв’язку — логи недоступні.')).toBeVisible();
-      await expect(other.getByText(/Керування зараз недоступне/)).toBeVisible();
+      await expect(other.getByText(/Сервер не онлайн — керування недоступне/)).toBeVisible();
       await noOverflow(page);
 
       expect(state.mutations).toEqual([]);

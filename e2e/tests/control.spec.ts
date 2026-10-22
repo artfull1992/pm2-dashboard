@@ -136,7 +136,10 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
       'process.command_requested', 'process.command_dispatched', 'process.command_succeeded']);
 
     // Logs (ADR-018): the allowed process from its row menu; the secret arrives masked; the other process has none.
-    await expect(control.getByText('Логи не дозволені')).toBeVisible({ timeout: 30_000 });
+    // e2e-other has neither control nor logs: one compact "Недоступно" in its row explains this process's cause.
+    await control.getByRole('button', { name: 'Чому недоступно: e2e-other' }).click({ timeout: 30_000 });
+    await expect(op.getByText(/Логи не дозволені allowlist сервера/)).toBeVisible();
+    await op.keyboard.press('Escape');
     await expect(async () => {
       await control.getByRole('button', { name: 'Дії: e2e-allowed' }).click();
       await expect(op.getByRole('menuitem', { name: 'Переглянути логи' })).toBeVisible({ timeout: 2_000 });
@@ -161,7 +164,7 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     await op.goto('/applications');
     await expect(op.getByRole('button', { name: 'Дії: e2e-other на e2e-control' })).toBeVisible({ timeout: 15_000 });
     await op.getByRole('button', { name: 'Дії: e2e-other на e2e-control' }).click();
-    await expect(op.getByText(/Не дозволено керування/)).toBeVisible();
+    await expect(op.getByText(/Процесу немає в allowlist сервера/)).toBeVisible();
     await expect(op.getByRole('menuitem')).toHaveCount(0);
     await op.keyboard.press('Escape');
     await op.getByRole('button', { name: 'Дії: e2e-allowed на e2e-control' }).click();
@@ -217,9 +220,9 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
       await page.reload();
       await expect(page.getByRole('region', { name: 'Сервіси сервера' }).getByText(/Broker недоступний/)).toBeVisible({ timeout: 3_000 });
     }).toPass({ timeout: 60_000 });
-    // No broker report → no targets: the row offers no actions and says why (not "not allowed").
+    // No broker report → no targets: rows offer no actions; the server-wide cause is said once (not "not allowed").
     await expect(page.getByRole('button', { name: 'Дії: e2e-allowed' })).toHaveCount(0);
-    await expect(page.getByRole('row', { name: /e2e-allowed/ }).getByText('Керування зараз недоступне')).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Сервіси сервера' }).getByText(/Broker недоступний/)).toHaveCount(1);
   } finally {
     if (agent) { const code = await agent.stop(); expect(code).toBe(0); }
     if (broker) { broker.kill('SIGTERM'); await new Promise((r) => { broker?.once('exit', r); }); }
@@ -298,7 +301,7 @@ test('auto broker: operator controls and reads logs only of the granted service;
       await control.getByRole('button', { name: 'Дії: e2e-granted' }).click();
       await expect(op.getByRole('menuitem', { name: 'Зупинити' })).toBeEnabled({ timeout: 3_000 });
     }).toPass({ timeout: 60_000 });
-    await expect(op.getByText(/режим auto/)).toBeVisible();
+    await expect(op.getByText(/Broker у режимі auto/)).toBeVisible();
     await expect(op.getByText('e2e-hidden')).toHaveCount(0);
     await op.getByRole('menuitem', { name: 'Зупинити' }).click();
     await op.getByRole('dialog', { name: 'Зупинити процес?' }).getByRole('button', { name: 'Зупинити' }).click();
