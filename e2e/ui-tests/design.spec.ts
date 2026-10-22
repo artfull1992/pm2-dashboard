@@ -157,9 +157,10 @@ for (const width of [1440, 390]) {
         await p.ready(page);
         await noOverflow(page);
         const regular = await controlHeights(page, REGULAR);
-        expect(regular, `${p.name}: regular control heights`).toEqual([width < 761 ? 44 : 40]);
+        // Redesign tokens (2026-10-22): controls 36 px on desktop, 44 px touch targets on narrow layouts.
+        expect(regular, `${p.name}: regular control heights`).toEqual([width < 761 ? 44 : 36]);
         const compact = await controlHeights(page, COMPACT);
-        if (compact.length > 0) expect(compact, `${p.name}: compact control heights`).toEqual([width < 761 ? 40 : 32]);
+        if (compact.length > 0) expect(compact, `${p.name}: compact control heights`).toEqual([width < 761 ? 44 : 32]);
         // Switches keep their own fixed geometry (a generic form rule must never resize them).
         const switches = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('.switch input[type="checkbox"]')]
           .filter((el) => el.offsetParent !== null).map((el) => `${String(Math.round(el.getBoundingClientRect().width))}x${String(Math.round(el.getBoundingClientRect().height))}`));

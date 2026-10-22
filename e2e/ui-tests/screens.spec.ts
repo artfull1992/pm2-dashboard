@@ -172,7 +172,8 @@ for (const theme of THEMES) {
         const heights = await region.locator('tbody tr').evaluateAll((rows, long) => rows.filter((r) => !r.textContent.includes(long)).map((r) => Math.round(r.getBoundingClientRect().height)), LONG);
         if (shots) console.log(`[metrics] ${theme} ${String(width)} row heights`, JSON.stringify([...new Set(heights)]));
         expect(new Set(heights).size).toBe(1);
-        expect(heights[0] ?? 999).toBeLessThanOrEqual(width <= 720 ? 64 : 56);
+        // ≤ 760 px rows hold a 44 px touch trigger.
+        expect(heights[0] ?? 999).toBeLessThanOrEqual(width <= 720 ? 68 : 56);
         // The server-wide log limitation is said once, not on every row.
         await expect(page.getByText(/потрібні оновлені Agent і broker/)).toHaveCount(1);
         await expect(region.locator('tbody').getByText('Не дозволено керування')).toHaveCount(0);

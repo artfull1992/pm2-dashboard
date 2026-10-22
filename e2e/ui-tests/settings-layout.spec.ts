@@ -71,7 +71,7 @@ for (const width of [1440, 390]) {
       }
       expect([...heights]).toHaveLength(1);
       const h = [...heights][0] ?? 0;
-      expect(h).toBeGreaterThanOrEqual(40);
+      expect(h).toBeGreaterThanOrEqual(36); // one control height token: 36 px desktop, 44 px touch
       expect(h).toBeLessThanOrEqual(46);
       expect([...widths]).toHaveLength(1); // one control width everywhere, single or paired
 
