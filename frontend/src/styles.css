@@ -499,10 +499,11 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
   .app-col--cpu, .app-col--uptime { display: none; }
 }
 
-/* Flat statuses inside the workspace (DS-01): dot + coloured text, 12 px. */
-:where(.app-list, .app-detail) .status { font-size: var(--font-xs); font-weight: 400; padding: 0; background: none; border-radius: 0; }
-:where(.app-list, .app-detail) .status--ok { color: var(--success); }
-:where(.app-list, .app-detail) .status::before { width: 6px; height: 6px; }
+/* Flat statuses (DS-01): dot + coloured text, 12 px — the Applications workspace and the stage 3.1 pages (.ds:
+   overview, servers, server detail). Pages not yet moved keep the stage-1 chips. */
+:where(.app-list, .app-detail, .ds) .status { font-size: var(--font-xs); font-weight: 400; padding: 0; background: none; border-radius: 0; }
+:where(.app-list, .app-detail, .ds) .status--ok { color: var(--success); }
+:where(.app-list, .app-detail, .ds) .status::before { width: 6px; height: 6px; }
 
 /* Centred message inside a panel (empty, nothing selected, loading). */
 .panel-message { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: var(--space-5); text-align: center; }
@@ -668,4 +669,31 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation: none; }
   .switch input, .switch input[type="checkbox"]::after { transition: none; }
+}
+
+/* ------------------------------------------------------------------ stage 3.1: overview, servers, server detail */
+/* Shared DS-01 primitives on pages without exact mockups (ТЗ §11): dense tables with a sunken head, sans names 14 px,
+   secondary 12 px, tabular numbers, flat statuses (above), compact summaries. Table semantics are kept (row headers,
+   floating row menus that never change the row height). */
+.table--dense { font-variant-numeric: tabular-nums; }
+.table--dense thead th { height: 36px; padding-top: 0; padding-bottom: 0; background: var(--surface-sunken); color: var(--text-muted); font-size: var(--font-xs); font-weight: 400; }
+.table--dense th, .table--dense td { padding-top: 8px; padding-bottom: 8px; }
+.table--dense tbody tr { height: 52px; }
+.table--dense .table__name { min-width: 10rem; font-size: var(--text-md); font-weight: 500; overflow-wrap: anywhere; }
+.table--dense .table__name a { color: var(--text); text-decoration: none; }
+.table--dense .table__name a:hover { color: var(--primary); text-decoration: underline; }
+.table--dense .date { white-space: nowrap; }
+.table--dense .secondary { color: var(--text-muted); }
+.dash-stats { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.dash-stats .metric { flex: 1 1 180px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.dash-stats .metric__value { font-size: 20px; line-height: 28px; font-weight: 500; }
+.ds .list > li { font-size: var(--text-md); }
+.list__name { font-size: var(--text-md); font-weight: 500; overflow-wrap: anywhere; }
+.ds .split__title { font-size: var(--font-xs); font-weight: 600; color: var(--text-muted); text-transform: none; }
+.server-context { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.server-context dd { display: grid; gap: 2px; }
+.server-context__meta { color: var(--text-muted); font-size: var(--font-xs); line-height: 18px; font-weight: 400; }
+@media (max-width: 760px) {
+  .server-context { grid-template-columns: minmax(0, 1fr); }
+  .dash-stats .metric { flex-basis: 140px; }
 }

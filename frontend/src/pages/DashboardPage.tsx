@@ -8,6 +8,7 @@ import { ProcessStatusBadge } from '../components/Inventory';
 import { ACTION_LABELS } from '../components/processActions';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { PageHeader, Section, StatusIndicator } from '../components/ui';
+import { formatAgo } from '../components/time';
 import { usePolledResource } from '../components/usePolledResource';
 import { formatDate, StatusBadge } from './ServersPage';
 
@@ -64,7 +65,7 @@ function Overview({ d, outdated, scoped }: { d: DashboardView; outdated: boolean
   return (
     <>
       {/* Exact numbers always (zeros included) — never an implied "everything is fine". */}
-      <div className={`metrics dash-stats${outdated ? ' dash--outdated' : ''}`} role="group" aria-label="Підсумки">
+      <div className={`dash-stats${outdated ? ' dash--outdated' : ''}`} role="group" aria-label="Підсумки">
           <Stat label="Сервери онлайн" value={`${n(s.online)} з ${n(s.active)}`} tone={s.active === 0 ? 'neutral' : s.online === s.active ? 'ok' : 'warn'}
             detail={s.inactive > 0 ? `активних; ще ${n(s.inactive)} неактивних не враховано` : 'активних серверів'} />
           <Stat label="Не звітують" value={n(s.offline + s.neverConnected)} tone={s.offline + s.neverConnected > 0 ? 'bad' : 'neutral'}
@@ -109,7 +110,7 @@ function Overview({ d, outdated, scoped }: { d: DashboardView; outdated: boolean
                   <ul className="list">
                     {d.attentionProcesses.items.map((a) => (
                       <li key={`${a.serverId}:${String(a.pmId)}`}>
-                        <span className="mono">{a.name}</span> <ProcessStatusBadge status={a.status} />
+                        <span className="list__name">{a.name}</span> <ProcessStatusBadge status={a.status} />
                         <span className="list__meta">
                           <Link to={`/servers/${a.serverId}`}>{a.serverName}</Link> · PM2 id {a.pmId}
                           {a.restarts === null ? '' : ` · рестартів усього ${n(a.restarts)}`}
@@ -129,7 +130,7 @@ function Overview({ d, outdated, scoped }: { d: DashboardView; outdated: boolean
         <Section title="Сервери" titleId="dash-servers-title" meta="Стан агента й поточне навантаження; системний моніторинг серверів — у Zabbix"
           actions={<><Link to="/servers">Усі сервери →</Link> <Link to="/applications">Усі застосунки →</Link></>}>
           <div className="table-wrap">
-            <table className={`table${outdated ? ' table--outdated dash--outdated' : ''}`}>
+            <table className={`table table--dense${outdated ? ' table--outdated dash--outdated' : ''}`}>
               <caption className="visually-hidden">Активні сервери: стан агента, останній сигнал, поточний load average і дані PM2</caption>
               <thead>
                 <tr>
@@ -140,9 +141,9 @@ function Overview({ d, outdated, scoped }: { d: DashboardView; outdated: boolean
               <tbody>
                 {d.serverList.items.map((srv) => (
                   <tr key={srv.id}>
-                    <th scope="row"><Link to={`/servers/${srv.id}`}>{srv.name}</Link>{extraHostname(srv.name, srv.metrics?.hostname) ? <span className="cell-meta">{srv.metrics?.hostname}</span> : null}</th>
+                    <th scope="row" className="table__name"><Link to={`/servers/${srv.id}`}>{srv.name}</Link>{extraHostname(srv.name, srv.metrics?.hostname) ? <span className="cell-meta">{srv.metrics?.hostname}</span> : null}</th>
                     <td><StatusBadge status={srv.status} /></td>
-                    <td className="date secondary">{srv.lastSeenAt ? formatDate(srv.lastSeenAt) : '—'}</td>
+                    <td className="date">{srv.lastSeenAt ? <><span>{formatAgo(srv.lastSeenAt)}</span><span className="cell-meta">{formatDate(srv.lastSeenAt)}</span></> : '—'}</td>
                     <td className="num">{srv.metrics ? srv.metrics.loadAverage.map(load).join(' / ') : '—'}</td>
                     <td>
                       {srv.inventory.state === 'current' && srv.status === 'online'
@@ -166,7 +167,7 @@ function Overview({ d, outdated, scoped }: { d: DashboardView; outdated: boolean
             <ul className="list">
               {d.recentActions.items.map((a) => (
                 <li key={a.id}>
-                  <span>{ACTION_LABELS[a.action]}</span> <span className="mono">{a.serviceName ?? a.targetKey}</span> на <Link to={`/servers/${a.serverId}`}>{a.serverName}</Link>
+                  <span>{ACTION_LABELS[a.action]}</span> <span className="list__name">{a.serviceName ?? a.targetKey}</span> на <Link to={`/servers/${a.serverId}`}>{a.serverName}</Link>
                   <span className="list__meta">
                     {a.overdue ? 'Дедлайн минув, остаточний статус ще не зафіксовано' : COMMAND_TEXT[a.status]} · {formatDate(a.requestedAt)}{a.requestedByMe ? ' · ви' : ''}
                   </span>
@@ -198,7 +199,7 @@ export function DashboardPage() {
 
   const refreshing = state.status === 'ready' && state.refreshing;
   return (
-    <section className="page dash" aria-labelledby="dashboard-title">
+    <section className="page dash ds" aria-labelledby="dashboard-title">
       <PageHeader title="Огляд" titleId="dashboard-title"
         meta={<span>{received ? `Стан на ${timeFormat.format(new Date(received.at))} (${ago(age)}) · оновлюється кожні 15 с, поки вкладка відкрита` : `Вітаємо, ${email}.`}</span>}
         actions={<button type="button" className="button" onClick={reload} disabled={refreshing}>{refreshing ? 'Оновлення…' : 'Оновити'}</button>} />

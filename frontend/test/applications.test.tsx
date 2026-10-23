@@ -175,7 +175,10 @@ describe('server detail: applications section', () => {
     serverBackend((id) => apps(id, {}, [app(A, 'api', { serverStatus: 'offline' })], 'offline'));
     renderApp(`/servers/${A}`);
     expect(await screen.findByText(/Сервер зараз не онлайн/)).toBeTruthy();
-    expect(screen.getByText('Сервер офлайн')).toBeTruthy();
+    // Stage 3.1 projection: an offline server's process has an unknown current state; the last PM2 status is named apart.
+    expect(screen.getByText('Невідомо')).toBeTruthy();
+    expect(screen.getByText('останній відомий: працює')).toBeTruthy();
+    expect(within(screen.getByRole('table', { name: 'PM2-процеси сервера' })).getAllByText('—')).toHaveLength(3);
   });
 
   it('A → B: A’s applications are gone while B loads and when B fails', async () => {

@@ -7,6 +7,7 @@ import { Forbidden } from '../auth/guards';
 import { FormDialog } from '../components/Dialog';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { PageHeader, StatusIndicator, type Tone } from '../components/ui';
+import { formatAgo } from '../components/time';
 import { usePolledResource } from '../components/usePolledResource';
 
 export const STATUS_LABELS: Record<ServerStatus, string> = { online: 'Онлайн', offline: 'Офлайн', never_connected: 'Ще не підключався' };
@@ -106,7 +107,7 @@ export function ServersPage() {
   const online = data ? data.items.filter((s) => s.status === 'online').length : 0;
 
   return (
-    <section className="page" aria-labelledby="servers-title">
+    <section className="page ds" aria-labelledby="servers-title">
       <PageHeader title="Сервери" titleId="servers-title"
         meta={data ? <span>{`${String(data.items.length)} серверів · онлайн ${String(online)} · онлайн = сигнал агента за останні ${String(data.onlineWindowSeconds)} с`}</span> : null}
         actions={manage ? <button type="button" className="button button--primary" onClick={() => { setCreated(null); setCreating(true); }}>Додати сервер</button> : null} />
@@ -127,15 +128,19 @@ export function ServersPage() {
       ) : null}
       {data && data.items.length > 0 ? (
         <div className="table-wrap">
-          <table className="table">
+          {/* Only what the list API carries: no per-server inventory/control requests for extra columns (no N+1). */}
+          <table className="table table--dense">
             <caption className="visually-hidden">{`Сервери; онлайн — останній сигнал за ${String(data.onlineWindowSeconds)} с`}</caption>
-            <thead><tr><th scope="col">Назва</th><th scope="col">Стан</th><th scope="col">Останній сигнал</th><th scope="col">Ключ агента</th></tr></thead>
+            <thead><tr><th scope="col">Назва</th><th scope="col">Стан агента</th><th scope="col">Останній сигнал</th><th scope="col">Ключ агента</th></tr></thead>
             <tbody>
               {data.items.map((server) => (
                 <tr key={server.id}>
-                  <td><Link to={`/servers/${server.id}`}>{server.name}</Link>{server.isActive ? null : <span className="tag">неактивний</span>}</td>
+                  <th scope="row" className="table__name"><Link to={`/servers/${server.id}`}>{server.name}</Link>{server.isActive ? null : <span className="tag">неактивний</span>}</th>
                   <td><StatusBadge status={server.status} /></td>
-                  <td className="date secondary">{formatDate(server.lastSeenAt)}</td>
+                  <td className="date">
+                    <span>{server.lastSeenAt ? formatAgo(server.lastSeenAt) : '—'}</span>
+                    {server.lastSeenAt ? <span className="cell-meta">{formatDate(server.lastSeenAt)}</span> : <span className="cell-meta">агент ще не звітував</span>}
+                  </td>
                   <td className="secondary">{server.hasActiveCredential ? 'Видано' : 'Немає'}</td>
                 </tr>
               ))}

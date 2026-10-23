@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
-import { Link } from 'react-router';
 import type { ApplicationItem, InventoryInfo, ProcessStatus, ServerStatus } from '../api/types';
-import { formatDate, StatusBadge } from '../pages/ServersPage';
+import { formatDate } from '../pages/ServersPage';
+import { currentState, lastKnown, listMetrics } from './appState';
+import { formatUptimeShort } from './ApplicationList';
 import { StatusIndicator, type Tone } from './ui';
 
 // Read-only PM2 inventory views (ADR-016). All values are rendered as React text (never as HTML). Freshness is
@@ -61,61 +62,57 @@ export function formatMemory(bytes: number | null): string {
 export const formatCpu = (cpu: number | null) => (cpu === null ? '—' : `${cpu.toFixed(1)} %`);
 export const formatCount = (n: number | null) => (n === null ? '—' : String(n));
 
-export function ApplicationsTable({ items, showServer, caption, renderActions }: {
-  items: ApplicationItem[]; showServer: boolean; caption: string;
+/**
+ * PM2 processes of one server (server page, stage 3.1). Compact rows: name, PM2 id · mode, the CURRENT state through
+ * the shared UI projection (appState: offline → «Невідомо», stale → «Застаріло»; never the last PM2 status as if it
+ * were live), CPU / RAM / uptime only when they describe a running process with current data («—» otherwise, never
+ * 0), restarts (cumulative) and the row's action menu. Freshness and collection time are said once above the table
+ * (InventorySummary), not repeated on every row.
+ */
+export function ApplicationsTable({ items, caption, renderActions }: {
+  items: ApplicationItem[]; caption: string;
   renderActions?: ((app: ApplicationItem) => ReactNode) | undefined;
 }) {
-  // Every row live and collected at the same moment: that moment is shown once above the table, rows show only the
-  // state. Any difference (another time, stale data, offline server) keeps the time in each row.
-  const uniform = items.every((a) => a.inventoryState === 'current' && a.serverStatus === 'online')
-    && new Set(items.map((a) => a.collectedAt)).size === 1;
   return (
     <div className="table-wrap">
-      <table className="table">
+      <table className="table table--dense">
         <caption className="visually-hidden">{caption}</caption>
         <thead>
           <tr>
             <th scope="col">Назва</th>
-            {showServer ? <th scope="col">Сервер</th> : null}
-            <th scope="col">PM2 id</th>
-            <th scope="col">Статус</th>
-            <th scope="col" className="num">Аптайм*</th>
-            <th scope="col" className="num">Рестарти</th>
-            <th scope="col" className="num">CPU*</th>
-            <th scope="col" className="num">Пам'ять*</th>
-            <th scope="col">Дані</th>
+            <th scope="col">PM2 id · режим</th>
+            <th scope="col">Стан</th>
+            <th scope="col" className="num">CPU</th>
+            <th scope="col" className="num">RAM</th>
+            <th scope="col" className="num">Час роботи</th>
+            <th scope="col" className="num">Рестарти, усього</th>
             {renderActions ? <th scope="col">Дії</th> : null}
           </tr>
         </thead>
         <tbody>
           {items.map((app) => {
-            const live = app.inventoryState === 'current' && app.serverStatus === 'online';
+            const state = currentState(app);
+            const known = lastKnown(app);
+            const metrics = listMetrics(app);
             return (
               <tr key={app.key}>
-                <th scope="row" className="mono">{app.name}</th>
-                {showServer ? (
-                  <td>
-                    <Link to={`/servers/${app.serverId}`}>{app.serverName}</Link>
-                    {app.serverStatus === 'online' ? null : <span className="cell-meta"><StatusBadge status={app.serverStatus} /></span>}
-                  </td>
-                ) : null}
-                <td className="secondary nowrap">{app.pmId}{app.execMode ? ` · ${app.execMode}` : ''}</td>
-                <td><ProcessStatusBadge status={app.status} /></td>
-                <td className="num">{formatUptime(app.uptimeSeconds)}</td>
-                <td className="num">{formatCount(app.restarts)}</td>
-                <td className="num">{formatCpu(app.cpuPercent)}</td>
-                <td className="num">{formatMemory(app.memoryBytes)}</td>
-                <td>
-                  <FreshnessBadge state={app.inventoryState} serverStatus={app.serverStatus} />
-                  {uniform ? null : <span className={`cell-meta${live ? '' : ' cell-meta--strong'}`}>зібрано {formatDate(app.collectedAt)}</span>}
+                <th scope="row" className="table__name">{app.name}</th>
+                <td className="secondary nowrap num">{app.pmId}{app.execMode ? ` · ${app.execMode}` : ''}</td>
+                <td className="nowrap">
+                  <StatusIndicator tone={state.tone}>{state.label}</StatusIndicator>
+                  {known ? <span className="cell-meta">{`останній відомий: ${known}`}</span> : null}
                 </td>
+                <td className="num">{metrics ? formatCpu(app.cpuPercent) : '—'}</td>
+                <td className="num">{metrics ? formatMemory(app.memoryBytes) : '—'}</td>
+                <td className="num">{metrics ? formatUptimeShort(app.uptimeSeconds) : '—'}</td>
+                <td className="num">{formatCount(app.restarts)}</td>
                 {renderActions ? <td>{renderActions(app)}</td> : null}
               </tr>
             );
           })}
         </tbody>
       </table>
-      <p className="table-note">* значення на момент збору; «—» — метрика невідома (не нуль). CPU за PM2 на кількох ядрах може перевищувати 100 %.</p>
+      <p className="table-note">CPU, RAM і час роботи — лише для процесу, що працює, з актуальними даними; «—» — значення невідоме (не нуль). CPU за PM2 на кількох ядрах може перевищувати 100 %.</p>
     </div>
   );
 }

@@ -111,7 +111,10 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
       await page.reload();
       await expect(page.getByText(/Inventory недоступний: PM2 daemon не запущено/)).toBeVisible({ timeout: 2_000 });
     }).toPass({ timeout: 30_000 });
-    await expect(page.getByRole('table', { name: 'PM2-процеси сервера' }).getByText('Exporter недоступний').first()).toBeVisible();
+    // Stage 3.1 projection: with the exporter unavailable the current state is unknown; the last PM2 status is named apart.
+    const serverTable = page.getByRole('table', { name: 'PM2-процеси сервера' });
+    await expect(serverTable.getByText('Невідомо', { exact: true }).first()).toBeVisible();
+    await expect(serverTable.getByText(/^останній відомий: /).first()).toBeVisible();
 
     const state = await inRunSchema(async (q) => (await q(
       `SELECT i.state, i.reason, i.process_count, (SELECT count(*)::int FROM server_applications a WHERE a.server_id = i.server_id) AS apps

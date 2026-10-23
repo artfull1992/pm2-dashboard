@@ -1,35 +1,46 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { ApiError, applicationsApi, serversApi } from '../api/client';
-import type { IssuedCredential, ServerDetail } from '../api/types';
+import type { ApplicationItem, IssuedCredential, ServerDetail } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { Dialog } from '../components/Dialog';
+import { freshness } from '../components/appState';
 import { ApplicationsTable, InventorySummary } from '../components/Inventory';
 import { ProcessControl, type RowActions } from '../components/ProcessControl';
 import { ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { PageHeader } from '../components/ui';
+import { formatAgo } from '../components/time';
 import { usePolledResource } from '../components/usePolledResource';
 import { formatDate, mutationErrorMessage, StatusBadge } from './ServersPage';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * The only host metric Node Control keeps (ADR-023; host monitoring is Zabbix's job): the current load average.
- * An offline server's last value is not shown as current — the value is simply not shown.
+ * Server context (stage 3.1): agent signal, the only host metric Node Control keeps (ADR-023; host monitoring is
+ * Zabbix's job) — the current load average — and the agent version. An offline server's last load is not shown as
+ * current: the value is «—» and the reason is said once. The applications below are the main part of the page.
  */
-function CurrentLoad({ server }: { server: ServerDetail }) {
+function ServerContext({ server }: { server: ServerDetail }) {
   const s = server.snapshot;
-  if (!s) return <p className="hint">Агент ще не надсилав даних.</p>;
-  if (server.status !== 'online') {
-    return <p className="notice notice--warning" role="status">{`Поточне навантаження невідоме: сервер не онлайн (останній сигнал ${formatDate(server.lastSeenAt)}).`}</p>;
-  }
+  const online = server.status === 'online';
   return (
-    <p className="load-line" role="group" aria-label="Поточне навантаження">
-      <span className="load-line__label">Load average 1 / 5 / 15 хв</span>
-      <strong className="load-line__value">{s.loadAverage.map((n) => n.toFixed(2)).join(' / ')}</strong>
-      <span className="hint">черга процесів, не відсоток CPU · системний моніторинг сервера — у Zabbix</span>
-    </p>
+    <>
+      <dl className="app-metrics server-context">
+        <div><dt>Сигнал агента</dt><dd><span className="num">{server.lastSeenAt ? formatAgo(server.lastSeenAt) : '—'}</span>
+          <span className="server-context__meta">{server.lastSeenAt ? formatDate(server.lastSeenAt) : 'агент ще не звітував'}</span></dd></div>
+        {s && online ? (
+          <div role="group" aria-label="Поточне навантаження"><dt>Load average 1 / 5 / 15 хв</dt>
+            <dd><span className="num">{s.loadAverage.map((n) => n.toFixed(2)).join(' / ')}</span><span className="server-context__meta">черга процесів, не відсоток CPU</span></dd></div>
+        ) : (
+          <div><dt>Load average 1 / 5 / 15 хв</dt><dd><span className="num">—</span><span className="server-context__meta">{s ? 'сервер не онлайн' : 'даних ще немає'}</span></dd></div>
+        )}
+        <div><dt>Агент</dt><dd><span className="num">{s ? s.agentVersion : '—'}</span><span className="server-context__meta">{s ? `${s.platform} / ${s.arch}` : 'даних ще немає'}</span></dd></div>
+      </dl>
+      {!s ? <p className="hint">Агент ще не надсилав даних.</p> : null}
+      {s && !online ? <p className="notice notice--warning" role="status">{`Поточне навантаження невідоме: сервер не онлайн (останній сигнал ${formatDate(server.lastSeenAt)}).`}</p> : null}
+      <p className="hint">Системний моніторинг сервера (CPU, пам'ять, диски) — у Zabbix.</p>
+    </>
   );
 }
 
@@ -41,8 +52,6 @@ function SystemDetails({ server }: { server: ServerDetail }) {
       <dl className="facts">
         {s ? <>
           <dt>Хост</dt><dd>{s.hostname}</dd>
-          <dt>Платформа</dt><dd>{`${s.platform} / ${s.arch}`}</dd>
-          <dt>Версія агента</dt><dd>{s.agentVersion}</dd>
         </> : null}
         <dt>Додано</dt><dd>{formatDate(server.createdAt)}</dd>
         <dt>Активність</dt><dd>{server.isActive ? 'активний' : 'неактивний — виключений з моніторингу'}</dd>
@@ -53,10 +62,19 @@ function SystemDetails({ server }: { server: ServerDetail }) {
 
 type Confirm = null | 'issue' | 'revoke';
 
-const summary = (items: { status: string }[]) => {
-  const online = items.filter((app) => app.status === 'online').length;
-  const other = items.length - online;
-  return `${String(items.length)} сервісів · працюють ${String(online)}${other > 0 ? ` · потребують уваги ${String(other)}` : ''} (за останнім збором)`;
+/** The hostname only when it says something the server name does not (no duplicate). */
+const extraHostname = (server: ServerDetail) => {
+  const h = server.snapshot?.hostname;
+  return h && h.trim().toLowerCase() !== server.name.trim().toLowerCase() ? h : null;
+};
+
+// Counts only what the projection may call current: stale or offline rows are not counted as working.
+const summary = (items: ApplicationItem[]) => {
+  const live = items.filter((app) => freshness(app) === 'live');
+  const online = live.filter((app) => app.status === 'online').length;
+  const other = live.length - online;
+  const unknown = items.length - live.length;
+  return `${String(items.length)} сервісів · працюють ${String(online)}${other > 0 ? ` · потребують уваги ${String(other)}` : ''}${unknown > 0 ? ` · стан невідомий ${String(unknown)}` : ''}`;
 };
 
 /**
@@ -86,7 +104,7 @@ function ServerApplications({ serverId, refresh, renderActions }: { serverId: st
       {current ? (
         <>
           <InventorySummary inventory={current.inventory} serverStatus={current.serverStatus} />
-          {current.items.length > 0 ? <ApplicationsTable items={current.items} showServer={false} caption="PM2-процеси сервера" renderActions={renderActions} /> : <p className="hint">Немає зібраних процесів PM2.</p>}
+          {current.items.length > 0 ? <ApplicationsTable items={current.items} caption="PM2-процеси сервера" renderActions={renderActions} /> : <p className="hint">Немає зібраних процесів PM2.</p>}
         </>
       ) : null}
     </>
@@ -229,16 +247,16 @@ export function ServerDetailPage() {
   const server = loaded && loaded.id === id ? loaded : null;
 
   return (
-    <section className="page" aria-labelledby="sd-title">
+    <section className="page ds" aria-labelledby="sd-title">
       <PageHeader title={server ? server.name : 'Сервер'} titleId="sd-title" crumbs={<Link to="/servers">← Сервери</Link>}
         status={server ? <>{<StatusBadge status={server.status} />}{server.isActive ? null : <span className="tag">неактивний</span>}</> : null}
-        meta={server ? <span>{`Останній сигнал: ${formatDate(server.lastSeenAt)}`}</span> : null} />
+        meta={server ? <span>{`Останній сигнал: ${formatDate(server.lastSeenAt)}`}{extraHostname(server) ? ` · хост ${extraHostname(server) ?? ''}` : ''}</span> : null} />
       {state.status === 'error' ? (
         <ErrorState title="Не вдалося оновити дані" onRetry={reload}>{`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}`}</ErrorState>
       ) : null}
       {server ? (
         <>
-          <CurrentLoad server={server} />
+          <ServerContext server={server} />
           <ProcessControl key={`${server.id}:${sessionKey}`} serverId={server.id} serverName={server.name} onFinished={bumpRefresh}>
             {(renderActions) => <ServerApplications serverId={server.id} refresh={refresh} renderActions={renderActions} />}
           </ProcessControl>

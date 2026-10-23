@@ -102,7 +102,8 @@ export function ActionMenu({ name, items, note, loading = false, onOpen, disable
       const height = Math.max(Math.min(natural, up ? above : below), 0);
       const width = p.offsetWidth;
       p.style.maxHeight = `${String(Math.floor(up ? above : below))}px`;
-      p.style.top = `${String(Math.round(up ? r.top - GAP - height : r.bottom + GAP))}px`;
+      // Not rounded: a trigger on a fractional y (dense rows) keeps exactly GAP to its menu.
+      p.style.top = `${String(up ? r.top - GAP - height : r.bottom + GAP)}px`;
       p.style.left = `${String(Math.round(Math.min(Math.max(r.right - width, MARGIN), Math.max(vw - width - MARGIN, MARGIN))))}px`;
       p.dataset.placement = up ? 'top' : 'bottom';
     };
