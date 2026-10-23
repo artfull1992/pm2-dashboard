@@ -1,0 +1,14 @@
+{
+  "status": "proposal",
+  "navigation": "#FFFFFF",
+  "background": "#F4F6F9",
+  "panel": "#FFFFFF",
+  "decorativeBorder": "#D5DCE6",
+  "text": "#182332",
+  "mutedText": "#506078",
+  "accentAndFocus": "#3157B7",
+  "success": "#176B46",
+  "warning": "#805600",
+  "error": "#A72D40",
+  "controlBorder": "#697B94"
+}

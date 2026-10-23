@@ -1,0 +1,34 @@
+[
+  {
+    "theme": "dark",
+    "width": 1440,
+    "dialogFocusTrap": true,
+    "escapeAndReturnFocus": true,
+    "noExternalRequests": true,
+    "mobileExit": "desktop-visible"
+  },
+  {
+    "theme": "dark",
+    "width": 390,
+    "dialogFocusTrap": true,
+    "escapeAndReturnFocus": true,
+    "noExternalRequests": true,
+    "mobileExit": "verified"
+  },
+  {
+    "theme": "light",
+    "width": 1440,
+    "dialogFocusTrap": true,
+    "escapeAndReturnFocus": true,
+    "noExternalRequests": true,
+    "mobileExit": "desktop-visible"
+  },
+  {
+    "theme": "light",
+    "width": 390,
+    "dialogFocusTrap": true,
+    "escapeAndReturnFocus": true,
+    "noExternalRequests": true,
+    "mobileExit": "verified"
+  }
+]

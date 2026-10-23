@@ -134,7 +134,7 @@ const COMPACT = '.button--small, .action-menu__trigger';
 const PAGES = [
   { name: 'overview', path: '/', heading: 'Огляд', ready: (p: Page) => expect(p.getByRole('region', { name: 'Потребують уваги' })).toBeVisible() },
   { name: 'server-services', path: `/servers/${SERVER}`, heading: 'app-server', ready: (p: Page) => expect(p.getByRole('rowheader', { name: LONG })).toBeVisible() },
-  { name: 'alerts', path: '/alerts', heading: 'Сповіщення', ready: (p: Page) => expect(p.getByRole('region', { name: /Активні проблеми/ }).getByRole('row')).toHaveCount(3) },
+  { name: 'alerts', path: '/alerts', heading: 'Сповіщення', ready: (p: Page) => expect(p.getByRole('tabpanel').getByRole('button', { name: /^(PM2-процес не працює|Сервер не звітує)$/ })).toHaveCount(2) },
   { name: 'users-create', path: '/users', heading: 'Користувачі', ready: async (p: Page) => {
     await expect(p.getByRole('rowheader', { name: /admin@example.com/ })).toBeVisible();
     await p.getByRole('button', { name: 'Новий користувач' }).click();

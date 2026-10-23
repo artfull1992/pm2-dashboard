@@ -215,18 +215,20 @@ for (const theme of THEMES) {
       test('alerts: application first, delivery result per incident vs Slack switched off now', async ({ page }) => {
         await api(page, { role: 'admin' });
         await page.goto('/alerts');
-        const active = page.getByRole('region', { name: /Активні проблеми/ });
-        await expect(active.getByRole('row')).toHaveCount(4);
+        // NTF-01: a table on wide windows, records from 760 px down (incl. 720 = 200 % zoom of 1440).
+        const active = page.getByRole('tabpanel');
+        const records = width <= 760;
+        await expect(records ? active.getByRole('article') : active.locator('tbody tr')).toHaveCount(3);
         await shot(page, `alerts-${theme}-${String(width)}`);
         await expect(page.getByText(/Надсилання в Slack зараз вимкнено/)).toBeVisible();
-        await expect(active.getByRole('columnheader', { name: /Сповіщення/ })).toBeVisible();
+        if (!records) await expect(active.getByRole('columnheader', { name: 'Доставка' })).toBeVisible();
         // queued is never shown as delivered; unknown is said as unknown.
-        const row = (name: string) => active.getByRole('row').filter({ hasText: name });
+        const row = (name: string) => (records ? active.getByRole('article') : active.getByRole('row')).filter({ hasText: name });
         await expect(row('mailer')).toContainText('У черзі');
         await expect(row('mailer')).not.toContainText('Надіслано');
         await expect(row('backup-server')).toContainText('невідомий');
         const heights = await active.locator('tbody tr').evaluateAll((rows) => rows.map((r) => Math.round(r.getBoundingClientRect().height)));
-        for (const h of heights) expect(h).toBeLessThanOrEqual(width === 1440 ? 90 : width === 1024 ? 110 : 120);
+        for (const h of heights) expect(h).toBeLessThanOrEqual(width === 1440 ? 90 : 110);
         await noPageOverflow(page);
       });
     });

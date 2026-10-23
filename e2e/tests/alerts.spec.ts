@@ -47,15 +47,23 @@ test('the evaluator opens an incident for a server that stopped reporting; opera
   await page.getByRole('button', { name: 'Меню' }).click();
   await page.getByRole('link', { name: 'Сповіщення' }).click();
   await expect(page.getByText('Надсилання в Slack зараз вимкнено: нові інциденти лише записуються.')).toBeVisible();
-  const active = page.getByRole('region', { name: /Активні проблеми/ });
+  // 390 px: records (NTF-01 mobile), not a table.
+  const active = page.getByRole('tabpanel');
   await expect(async () => {
     await page.reload();
-    await expect(active.getByRole('row').filter({ hasText: DOWN })).toBeVisible({ timeout: 2_000 });
+    await expect(active.getByRole('article').filter({ hasText: DOWN })).toBeVisible({ timeout: 2_000 });
   }).toPass({ timeout: 40_000 });
-  const row = active.getByRole('row').filter({ hasText: DOWN });
+  const row = active.getByRole('article').filter({ hasText: DOWN });
   await expect(row).toContainText('Сервер не звітує');
   await expect(row).toContainText('Критично');
-  await expect(active.getByRole('columnheader', { name: 'Сповіщення' })).toHaveCount(0);
+  await expect(row.locator('.status')).toHaveCount(0); // no delivery state for a non-admin
+  // Details from the row only (no extra request), closed by keyboard.
+  await row.getByRole('button', { name: 'Сервер не звітує' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Сервер не звітує' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Доставка повідомлення' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
   const api = await page.evaluate(async () => (await fetch('/api/alerts/status', { credentials: 'same-origin' })).json() as Promise<{ engine: { enabled: boolean }; admin: unknown }>);
   expect(api.engine.enabled).toBe(true);
   expect(api.admin).toBeNull();

@@ -542,7 +542,8 @@ export function parseDashboard(value: unknown): DashboardView {
 
 export const ALERT_RULES = ['server_offline', 'inventory_stale', 'process_down', 'process_cpu', 'server_memory', 'process_restarts'] as const;
 export type AlertRule = (typeof ALERT_RULES)[number];
-export const OUTBOX_STATES = ['none', 'queued', 'sending', 'sent', 'failed', 'unknown', 'dropped'] as const;
+// The API also reports 'cancelled' (ADR-022: a pending item cancelled by a webhook change or a resolved reminder).
+export const OUTBOX_STATES = ['none', 'queued', 'sending', 'sent', 'failed', 'unknown', 'dropped', 'cancelled'] as const;
 export interface Incident {
   /** retired: the rule was taken out of service (ADR-023) — not a recovery. */
   id: string; rule: AlertRule; severity: 'critical' | 'warning'; status: 'firing' | 'resolved'; resolution: 'recovered' | 'process_gone' | 'excluded' | 'retired' | null;

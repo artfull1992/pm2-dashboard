@@ -351,9 +351,6 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 .table .nowrap { white-space: nowrap; }
 .cell-meta { display: block; margin-top: 2px; color: var(--text-muted); font-size: var(--font-xs); font-weight: 400; }
 .cell-meta--strong { color: var(--warning); }
-.incidents__app { font-weight: 600; font-size: var(--font-sm); }
-.incidents td:nth-child(2) { min-width: 200px; }
-.incidents td:last-child { min-width: 170px; }
 .severity { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: var(--font-xs); color: var(--text-muted); }
 .severity::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .severity--critical { color: var(--danger); }
@@ -536,11 +533,11 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
   .app-col--cpu, .app-col--uptime { display: none; }
 }
 
-/* Flat statuses (DS-01): dot + coloured text, 12 px — the Applications workspace and the stage 3.1 pages (.ds:
-   overview, servers, server detail). Pages not yet moved keep the stage-1 chips. */
-:where(.app-list, .app-detail, .ds) .status { font-size: var(--font-xs); font-weight: 400; padding: 0; background: none; border-radius: 0; }
-:where(.app-list, .app-detail, .ds) .status--ok { color: var(--success); }
-:where(.app-list, .app-detail, .ds) .status::before { width: 6px; height: 6px; }
+/* Flat statuses (DS-01): dot + coloured text, 12 px — the Applications workspace, the stage 3.1 pages (.ds:
+   overview, servers, server detail) and alerts with their drawer (stage 3.2). Pages not yet moved keep the stage-1 chips. */
+:where(.app-list, .app-detail, .ds, .alerts, .dialog--drawer) .status { font-size: var(--font-xs); font-weight: 400; padding: 0; background: none; border-radius: 0; }
+:where(.app-list, .app-detail, .ds, .alerts, .dialog--drawer) .status--ok { color: var(--success); }
+:where(.app-list, .app-detail, .ds, .alerts, .dialog--drawer) .status::before { width: 6px; height: 6px; }
 
 /* Centred message inside a panel (empty, nothing selected, loading). */
 .panel-message { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: var(--space-5); text-align: center; }
@@ -745,4 +742,55 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 .action-menu__item--checked::before { content: "✓"; }
 @media (min-width: 601px) and (max-width: 1279px) {
   .profile .theme-switcher { position: relative; margin-top: 0; }
+}
+
+/* Alerts (NTF-01…07, docs/design/part-01): tabs, page-local filters, a table of 72 px rows (64 px in the compact
+   1280–1400 range) or records on narrow windows, details in a modal drawer. Existing tokens only. */
+.alerts { gap: var(--space-3); }
+.alerts .page-header { align-items: center; }
+.alerts__tabs { padding: 0; }
+.alerts__hint { font-size: var(--font-xs); line-height: 18px; }
+.incidents-card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.incidents-card > .state, .incidents-card > .state--loading { border: 0; border-radius: 0; }
+.incidents__scroll { overflow-x: auto; }
+.incidents { table-layout: auto; }
+.incidents tbody tr { height: 72px; }
+@media (min-width: 1280px) and (max-width: 1400px) { .incidents tbody tr { height: 64px; } }
+.incidents tbody th { min-width: 11rem; }
+.incidents .severity { margin-top: 0; }
+/* Times stay on one line; their explanations (closing reason, delivery notes) wrap instead of widening the table. */
+.incidents .date .cell-meta, .incidents .status + .cell-meta { white-space: normal; max-width: 16rem; }
+.incidents .status { white-space: normal; }
+.incidents__open { display: inline-flex; align-items: center; min-height: var(--control-sm); text-align: left; font-weight: 500; overflow-wrap: anywhere; }
+.incidents__server { display: block; overflow-wrap: anywhere; }
+.incidents__app { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.incidents__pager { padding: 10px 14px; border-top: 1px solid var(--border); justify-content: flex-end; }
+.incidents__pager .pager__page { margin-right: auto; }
+.incident-records { list-style: none; margin: 0; padding: 0; }
+.incident-records > li + li { border-top: 1px solid var(--border); }
+.incident-record { display: grid; gap: 6px; padding: 12px 14px; min-width: 0; }
+.incident-record__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px var(--space-3); }
+.incident-record__line { font-size: var(--font-sm); line-height: 18px; overflow-wrap: anywhere; }
+.incident-record__line.secondary, .incident-record__times { color: var(--text-muted); }
+.incident-record__times { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px var(--space-3); font-size: var(--font-xs); line-height: 18px; }
+
+/* Modal drawer (NTF-03): 540 px on wide windows, 520 px on the rail range, the whole screen on phones. Header and
+   footer stay in view; only the middle scrolls. The backdrop does nothing on click. */
+.dialog__head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); min-width: 0; }
+.dialog__heading { display: grid; gap: var(--space-1); min-width: 0; }
+.dialog__eyebrow { font-size: 11px; line-height: 16px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-muted); }
+.dialog-backdrop:has(> .dialog--drawer) { place-items: stretch end; padding: 0; overflow: hidden; }
+.dialog.dialog--drawer { width: min(100%, 540px); height: 100dvh; max-height: 100dvh; display: flex; flex-direction: column; gap: 0; padding: 0;
+  border-width: 0 0 0 1px; border-radius: 0; }
+.dialog--drawer > .dialog__head { flex: none; padding: var(--space-5) var(--space-5) var(--space-4); border-bottom: 1px solid var(--border); }
+.dialog--drawer > .dialog__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-4) var(--space-5); gap: var(--space-5); }
+.dialog--drawer > .dialog__actions { flex: none; padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); }
+.drawer-section { display: grid; gap: var(--space-2); min-width: 0; }
+.drawer-section__title { font-size: 11px; line-height: 16px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+@media (min-width: 601px) and (max-width: 1279px) { .dialog.dialog--drawer { width: min(100%, 520px); } }
+@media (max-width: 600px) {
+  .dialog.dialog--drawer { width: 100%; max-height: 100dvh; border-width: 0; }
+  .dialog--drawer > .dialog__head, .dialog--drawer > .dialog__body, .dialog--drawer > .dialog__actions { padding-left: var(--space-4); padding-right: var(--space-4); }
+  .dialog--drawer .facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .dialog--drawer .facts dd { margin-bottom: var(--space-2); }
 }

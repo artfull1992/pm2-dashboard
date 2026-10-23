@@ -5,24 +5,29 @@ import { createPortal } from 'react-dom';
 // application root (#root) is `inert`, so the background is neither clickable nor focusable nor read by assistive
 // technology. Focus moves inside on open and returns to the previously focused element on close; Tab stays inside.
 // Escape closes only when `dismissible` (callers pass false while a request is pending). Opening or closing a dialog
-// never sends anything.
+// never sends anything. The backdrop has no click action (nothing happens implicitly). Optional: `eyebrow` above the
+// title, `headerAction` beside it (e.g. a close button, then the first focus target) and `fallbackFocus` for when the
+// element that opened the dialog is gone by the time it closes (never the document body).
 
 let openDialogs = 0;
 const appRoot = () => document.getElementById('root');
 
-export function Dialog({ title, children, onClose, actions, className, dismissible = true }: {
+export function Dialog({ title, children, onClose, actions, className, dismissible = true, eyebrow, headerAction, fallbackFocus }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   actions?: ReactNode;
   className?: string;
   dismissible?: boolean;
+  eyebrow?: string;
+  headerAction?: ReactNode;
+  fallbackFocus?: () => HTMLElement | null;
 }) {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
   // Latest props for the key handler without re-running the mount effect (that would move focus again).
-  const latest = useRef({ onClose, dismissible });
-  useEffect(() => { latest.current = { onClose, dismissible }; });
+  const latest = useRef({ onClose, dismissible, fallbackFocus });
+  useEffect(() => { latest.current = { onClose, dismissible, fallbackFocus }; });
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -53,14 +58,23 @@ export function Dialog({ title, children, onClose, actions, className, dismissib
       document.removeEventListener('keydown', onKey);
       openDialogs -= 1;
       if (openDialogs === 0) appRoot()?.removeAttribute('inert');
-      previous?.focus();
+      if (previous?.isConnected) previous.focus();
+      else latest.current.fallbackFocus?.()?.focus();
     };
   }, []);
 
   return createPortal(
     <div className="dialog-backdrop">
       <div className={`dialog ${className ?? ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={panel}>
-        <h2 id={titleId} className="dialog__title">{title}</h2>
+        {headerAction || eyebrow ? (
+          <div className="dialog__head">
+            <div className="dialog__heading">
+              {eyebrow ? <p className="dialog__eyebrow">{eyebrow}</p> : null}
+              <h2 id={titleId} className="dialog__title">{title}</h2>
+            </div>
+            {headerAction}
+          </div>
+        ) : <h2 id={titleId} className="dialog__title">{title}</h2>}
         <div className="dialog__body">{children}</div>
         {actions ? <div className="dialog__actions">{actions}</div> : null}
       </div>
