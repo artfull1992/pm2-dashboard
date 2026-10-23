@@ -2,30 +2,35 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import type { Permission, Role } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { Icon, type IconName } from './icons';
 
 export const ROLE_LABELS: Record<Role, string> = { admin: 'Адміністратор', operator: 'Оператор', viewer: 'Спостерігач' };
 
-interface NavItem { to: string; label: string; permission?: Permission }
+interface NavItem { to: string; label: string; icon: IconName; permission?: Permission }
 interface NavGroup { title: string; items: readonly NavItem[] }
 
 // Sections a user may not open are not shown; a group without visible items is not shown either. The API enforces
 // every permission independently — hiding is only about not offering what would be refused.
+//
+// Widths (design reference 1.0, APP-15): ≥ 1280 px a 184 px column with icons and labels; 601–1279 px a compact
+// 68 px rail with icons only — every link keeps its text as the accessible name and shows it as a tooltip on hover and
+// keyboard focus; ≤ 600 px a top bar with the «Меню» button.
 export const NAV_GROUPS: readonly NavGroup[] = [
   {
     title: 'Моніторинг',
     items: [
-      { to: '/', label: 'Огляд' },
-      { to: '/servers', label: 'Сервери', permission: 'monitoring:read' },
-      { to: '/applications', label: 'Застосунки', permission: 'monitoring:read' },
-      { to: '/alerts', label: 'Сповіщення', permission: 'monitoring:read' },
+      { to: '/', label: 'Огляд', icon: 'overview' },
+      { to: '/servers', label: 'Сервери', icon: 'servers', permission: 'monitoring:read' },
+      { to: '/applications', label: 'Застосунки', icon: 'applications', permission: 'monitoring:read' },
+      { to: '/alerts', label: 'Сповіщення', icon: 'alerts', permission: 'monitoring:read' },
     ],
   },
   {
     title: 'Адміністрування',
     items: [
-      { to: '/users', label: 'Користувачі', permission: 'users:manage' },
-      { to: '/audit', label: 'Журнал аудиту', permission: 'audit:read' },
-      { to: '/settings', label: 'Налаштування', permission: 'alerts:manage' },
+      { to: '/users', label: 'Користувачі', icon: 'users', permission: 'users:manage' },
+      { to: '/audit', label: 'Журнал аудиту', icon: 'audit', permission: 'audit:read' },
+      { to: '/settings', label: 'Налаштування', icon: 'settings', permission: 'alerts:manage' },
     ],
   },
 ];
@@ -72,7 +77,7 @@ export function Layout() {
         </button>
       </header>
       <aside id={navId} className={`sidebar${menuOpen ? ' sidebar--open' : ''}`}>
-        <div className="sidebar__brand brand">Node Control</div>
+        <div className="sidebar__brand brand"><span className="brand__full">Node Control</span><abbr className="brand__short" title="Node Control">NC</abbr></div>
         <nav aria-label="Основна навігація">
           {groups.map((group, index) => (
             <div key={group.title} className="nav-group">
@@ -81,8 +86,9 @@ export function Layout() {
                 {group.items.map((item) => (
                   <li key={item.to}>
                     <NavLink to={item.to} end={item.to === '/'} onClick={close}
-                      className={({ isActive }) => `nav__link${isActive ? ' nav__link--active' : ''}`}>
-                      {item.label}
+                      className={({ isActive }) => `nav__link${isActive ? ' nav__link--active' : ''}`} data-tip={item.label}>
+                      <Icon name={item.icon} />
+                      <span className="nav__label">{item.label}</span>
                     </NavLink>
                   </li>
                 ))}
@@ -91,12 +97,15 @@ export function Layout() {
           ))}
         </nav>
         <div className="profile" role="group" aria-label="Обліковий запис користувача">
-          <p className="profile__email">{user.email}</p>
+          <p className="profile__email" title={user.email}>{user.email}</p>
           <p className="profile__role">{ROLE_LABELS[user.role]}</p>
           <div className="profile__actions">
-            <NavLink to="/account" onClick={close} className={({ isActive }) => `profile__link${isActive ? ' nav__link--active' : ''}`}>Обліковий запис</NavLink>
-            <button type="button" className="button button--small" onClick={() => { void onLogout(); }} disabled={logoutState === 'pending'}>
-              {logoutState === 'pending' ? 'Вихід…' : 'Вийти'}
+            <NavLink to="/account" onClick={close} className={({ isActive }) => `profile__link${isActive ? ' nav__link--active' : ''}`} data-tip="Обліковий запис">
+              <Icon name="account" /><span className="nav__label">Обліковий запис</span>
+            </NavLink>
+            <button type="button" className="button button--small profile__logout" onClick={() => { void onLogout(); }} disabled={logoutState === 'pending'}
+              data-tip={logoutState === 'pending' ? 'Вихід…' : 'Вийти'}>
+              <Icon name="logout" /><span className="nav__label">{logoutState === 'pending' ? 'Вихід…' : 'Вийти'}</span>
             </button>
           </div>
           {logoutState === 'failed' ? <p className="account__error" role="alert">Не вдалося вийти: сервіс недоступний. Спробуйте ще раз.</p> : null}

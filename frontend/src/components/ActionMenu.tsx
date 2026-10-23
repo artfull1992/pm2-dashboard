@@ -19,7 +19,7 @@ const GAP = 4;
 const MARGIN = 8;
 let closeOpenMenu: (() => void) | null = null;
 
-export function ActionMenu({ name, items, note, loading = false, onOpen, disabled, label = 'Дії', ariaLabel, subtle = false }: {
+export function ActionMenu({ name, items, note, loading = false, onOpen, disabled, label = 'Дії', ariaLabel, subtle = false, iconOnly = false }: {
   name: string;
   /** Visible trigger text (default "Дії"); e.g. "Недоступно" for a row whose menu only explains why. */
   label?: string;
@@ -27,6 +27,8 @@ export function ActionMenu({ name, items, note, loading = false, onOpen, disable
   ariaLabel?: string;
   /** Secondary look for a trigger that only explains (no actions). */
   subtle?: boolean;
+  /** A square icon trigger (e.g. «⋯»): `label` is the glyph, `ariaLabel` the name; no chevron. */
+  iconOnly?: boolean;
   items: MenuItem[];
   /** Why items are missing or disabled — shown inside the menu. */
   note?: string | null | undefined;
@@ -143,7 +145,7 @@ export function ActionMenu({ name, items, note, loading = false, onOpen, disable
 
   return (
     <div className="action-menu">
-      <button ref={trigger} type="button" className={`button action-menu__trigger${subtle ? ' action-menu__trigger--subtle' : ''}`} disabled={triggerDisabled}
+      <button ref={trigger} type="button" className={`button action-menu__trigger${subtle ? ' action-menu__trigger--subtle' : ''}${iconOnly ? ' icon-button action-menu__trigger--icon' : ''}`} disabled={triggerDisabled}
         aria-label={ariaLabel ?? `Дії: ${name}`} aria-haspopup="menu" aria-expanded={shown} aria-controls={shown ? id : undefined}
         onClick={() => { if (shown) close(false); else show('first'); }}
         onKeyDown={(event) => {
@@ -151,7 +153,7 @@ export function ActionMenu({ name, items, note, loading = false, onOpen, disable
           else if (event.key === 'Escape' && shown) { event.preventDefault(); close(true); }
         }}
         onBlur={(event) => { if (shown && leaves(event.relatedTarget)) setOpen(false); }}>
-        {label} <span aria-hidden="true">⌄</span>
+        {iconOnly ? <span aria-hidden="true">{label}</span> : <>{label} <span aria-hidden="true">⌄</span></>}
       </button>
       {shown ? createPortal(
         <div ref={popup} id={id} className="action-menu__popup" tabIndex={-1} data-placement="bottom"

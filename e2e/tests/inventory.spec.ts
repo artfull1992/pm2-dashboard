@@ -64,10 +64,10 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
     await expect(table.getByText(XSS)).toBeVisible();
     expect(await page.locator('img').count()).toBe(0);
     expect(await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
-    // Other tests' servers may share this DB: only this server's rows are checked (live = no "last known" label).
+    // Other tests' servers may share this DB: only this server's rows are checked (live = no "last known state" in the row's name).
     await expect(page.getByText(/^На цій сторінці: \d+$/)).toBeVisible();
     for (const name of ['e2e-api', 'e2e-worker']) {
-      await expect(page.getByRole('button', { name: new RegExp(`^${name} на `) })).not.toHaveAttribute('aria-label', /останні відомі дані/);
+      await expect(page.getByRole('button', { name: new RegExp(`^${name} на `) })).not.toHaveAttribute('aria-label', /останній відомий стан/);
     }
     await expect(page.getByRole('button', { name: /^(Перезапустити|Зупинити|Запустити|restart|stop)$/i })).toHaveCount(0);
 
@@ -79,13 +79,13 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
     const panel = page.getByRole('region', { name: /^Деталі: e2e-worker на / });
     await expect(panel.getByRole('tab', { name: 'Огляд' })).toHaveAttribute('aria-selected', 'true');
     await expect(panel.getByText('PM2 id')).toBeVisible();
-    await expect(panel.getByText('Актуально').first()).toBeVisible();
+    await expect(panel.getByText('Актуальні', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Очистити' }).click();
     await expect(table.getByText('e2e-api')).toBeVisible();
     await expect(page.getByRole('button', { name: /^e2e-worker на / })).toHaveAttribute('aria-current', 'true'); // selection kept
 
     // Filter by status keeps only the stopped process.
-    await page.getByLabel('Статус процесу').selectOption('stopped');
+    await page.getByLabel('Статус', { exact: true }).selectOption('stopped');
     await expect(table.getByText('e2e-worker')).toBeVisible();
     await expect(table.getByText('e2e-api')).toHaveCount(0);
 

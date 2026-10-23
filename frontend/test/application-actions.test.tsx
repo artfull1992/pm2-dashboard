@@ -101,13 +101,15 @@ async function restart(user: User, server: 'alpha' | 'beta') {
 }
 
 describe('applications workspace: actions', () => {
-  it('viewer: no actions, no capability requests (also with a process selected)', async () => {
+  // APP-10: without the permission the command and the menu are visible but disabled, with «Немає дозволу».
+  it('viewer: commands disabled with the reason, no capability requests (also with a process selected)', async () => {
     const calls = backend('viewer');
     renderAt();
     const user = userEvent.setup();
     const panel = await select(user, 'alpha');
-    expect(within(panel).queryByRole('button', { name: /^Дії:/ })).toBeNull();
-    expect(within(panel).queryByRole('button', { name: /Запустити|Зупинити|Перезапустити/ })).toBeNull();
+    expect(within(panel).getByRole<HTMLButtonElement>('button', { name: /^Дії:/ }).disabled).toBe(true);
+    expect(within(panel).getByRole('button', { name: 'Перезапустити' }).getAttribute('aria-disabled')).toBe('true');
+    expect(within(panel).getByText('Немає дозволу')).toBeTruthy();
     expect(capReads(calls)).toEqual([]);
   });
 
@@ -299,14 +301,15 @@ describe('applications workspace: actions', () => {
     ['not allowlisted', []],
     ['another PM2 id under the same name', [{ targetKey: 'api-alpha', name: 'api', pmId: 9, actions: ['restart'], matchStatus: 'ok' }]],
     ['ambiguous mapping', [{ targetKey: 'one', name: 'api', pmId: 3, actions: ['restart'], matchStatus: 'ok' }, { targetKey: 'two', name: 'api', pmId: 3, actions: ['restart'], matchStatus: 'ok' }]],
-  ])('%s → no commands at all, only the reason', async (_n, targets) => {
+  ])('%s → no command items, only the reason (the visible «Перезапустити» stays disabled)', async (_n, targets) => {
     backend('operator', { controlFor: (id) => control(id, { targets }), logsFor: (id) => logTargets(id, { targets: [] }) });
     renderAt();
     const user = userEvent.setup();
     const panel = await openMenu(user, 'alpha');
     expect((await screen.findAllByText(/Процесу немає в allowlist сервера|Ідентичність процесу не підтверджена|Кілька цілей broker/)).length).toBeGreaterThan(0);
     expect(screen.queryByRole('menuitem')).toBeNull();
-    expect(within(panel).queryByRole('button', { name: 'Перезапустити' })).toBeNull();
+    expect(within(panel).getByRole('button', { name: 'Перезапустити' }).getAttribute('aria-disabled')).toBe('true');
+    expect(within(panel).getAllByText('Керування недоступне').length).toBeGreaterThan(0);
   });
 
   it('control and logs permissions are independent', async () => {
@@ -314,7 +317,7 @@ describe('applications workspace: actions', () => {
     const view = renderAt();
     const user = userEvent.setup();
     let panel = await select(user, 'alpha');
-    expect(within(panel).queryByRole('button', { name: /^Дії:/ })).toBeNull();
+    expect(within(panel).getByRole<HTMLButtonElement>('button', { name: /^Дії:/ }).disabled).toBe(true);
     await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
     expect(await within(panel).findByRole('button', { name: 'Оновити' })).toBeTruthy();
     expect(capReads(onlyLogs)).toEqual(['A/log-targets']);
@@ -341,10 +344,9 @@ describe('applications workspace: actions', () => {
     expect(create?.url).toBe(`/api/servers/${B}/log-requests`);
     expect(JSON.parse(create?.body ?? '{}')).toEqual({ targetKey: 'api-beta' });
     expect(create?.headers.get('x-csrf-token')).toBe(CSRF);
-    await user.click(within(panel).getByRole('button', { name: 'Закрити деталі' }));
+    // Another selection unmounts this log tail (its read cycle stops).
+    await select(user, 'alpha');
     expect(screen.queryByRole('region', { name: 'Деталі: api на beta' })).toBeNull();
-    expect(screen.getByText('Оберіть застосунок, щоб переглянути деталі.')).toBeTruthy();
-    expect(document.activeElement).toBe(await rowOf('beta'));
   });
 
   it('a filter change while a POST is pending keeps it addressed to the confirmed target; its status names that server', async () => {

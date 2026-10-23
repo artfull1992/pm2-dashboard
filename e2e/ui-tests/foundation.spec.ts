@@ -121,12 +121,29 @@ for (const theme of ['dark', 'light'] as const) {
         await expect(h1).toBeVisible();
         expect(await h1.evaluate((e) => [getComputedStyle(e).fontSize, getComputedStyle(e).lineHeight])).toEqual(['26px', '32px']);
         expect(await page.evaluate(() => [getComputedStyle(document.body).fontSize, getComputedStyle(document.body).lineHeight])).toEqual(['14px', '20px']);
-        if (width > 760) {
+        const navLinks = page.getByRole('navigation', { name: 'Основна навігація' }).getByRole('link');
+        if (width >= 1280) {
           const nav = await page.locator('.sidebar').boundingBox();
           expect(nav?.width ?? 0).toBeGreaterThanOrEqual(184);
           expect(nav?.width ?? 999).toBeLessThanOrEqual(208);
           // Every route of the navigation is reachable (admin sees all seven).
-          await expect(page.getByRole('navigation', { name: 'Основна навігація' }).getByRole('link')).toHaveCount(7);
+          await expect(navLinks).toHaveCount(7);
+        } else if (width > 600) {
+          // Design reference 1.0 (APP-15): a 68 px icon rail. Every link keeps its text as the accessible name, is at
+          // least 44 px tall and shows its label as a tooltip on keyboard focus (never an unnamed icon).
+          expect((await page.locator('.sidebar').boundingBox())?.width).toBe(68);
+          await expect(navLinks).toHaveCount(7);
+          for (const name of ['Огляд', 'Сервери', 'Застосунки', 'Сповіщення', 'Користувачі', 'Журнал аудиту', 'Налаштування']) {
+            const link = navLinks.filter({ hasText: name });
+            await expect(link).toHaveAccessibleName(name);
+            expect((await link.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+          }
+          await navLinks.first().focus();
+          await page.keyboard.press('Tab');
+          const tip = await page.evaluate(() => getComputedStyle(document.activeElement as Element, '::after').content);
+          expect(tip).toBe('"Сервери"');
+          await expect(page.getByRole('button', { name: 'Вийти' })).toBeVisible();
+          await expect(page.getByRole('link', { name: 'Обліковий запис' })).toBeVisible();
         } else {
           const toggle = page.getByRole('button', { name: 'Меню' });
           expect((await toggle.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44); // touch target

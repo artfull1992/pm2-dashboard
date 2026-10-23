@@ -71,7 +71,8 @@ test('five running commands: the sixth waits with an explanation; a finished one
   // The sixth: the command is disabled, the reason is shown, nothing is sent.
   const sixth = await details('p5');
   await expect(sixth.getByRole('button', { name: 'Перезапустити' })).toHaveAttribute('aria-disabled', 'true');
-  await expect(sixth.locator('.app-detail__reasons')).toContainText('Уже виконується 5 команд');
+  await expect(sixth.getByText('Керування недоступне', { exact: true }).first()).toBeVisible();
+  await expect(sixth.getByRole('tabpanel')).toContainText('Уже виконується 5 команд');
   await sixth.getByRole('button', { name: 'Перезапустити' }).click({ force: true }); // a disabled (aria-disabled) button does nothing
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(posts).toHaveLength(5);

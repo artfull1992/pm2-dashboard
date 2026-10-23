@@ -109,11 +109,12 @@ async function select(user: User, server: 'alpha' | 'beta', name = 'api') {
 }
 
 describe('workspace: list and details side by side (≥1280 px)', () => {
-  it('no selection → placeholder; one selection marked on its row (aria-current + marker); another row replaces it; close returns focus', async () => {
+  // Design reference 1.0 (APP-01/11): no close control in the split view — a selection is replaced by another one.
+  it('no selection → placeholder; one selection marked on its row (aria-current + accent bar); another row replaces it', async () => {
     backend('operator');
     renderAt();
     const user = userEvent.setup();
-    expect(await screen.findByText('Оберіть застосунок, щоб переглянути деталі.')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeTruthy();
     expect(anyPanel()).toBeNull();
     expect(await screen.findByText('На цій сторінці: 2')).toBeTruthy();
     expect(screen.queryByText(/ із /)).toBeNull(); // no totals the API does not give
@@ -122,18 +123,16 @@ describe('workspace: list and details side by side (≥1280 px)', () => {
     await select(user, 'alpha');
     expect(a.getAttribute('aria-current')).toBe('true');
     expect(a.className).toContain('app-row--selected');
-    expect(a.querySelector('.app-row__marker')?.textContent).toBe('▸');
     expect(document.activeElement).toBe(a); // focus stays in the list in the split view
     await select(user, 'beta');
     expect(screen.getAllByRole('region', { name: /^Деталі:/ })).toHaveLength(1);
     expect(a.getAttribute('aria-current')).toBeNull();
     expect((await rowOf('beta')).getAttribute('aria-current')).toBe('true');
-    await user.click(screen.getByRole('button', { name: 'Закрити деталі' }));
-    expect(anyPanel()).toBeNull();
-    expect(document.activeElement).toBe(await rowOf('beta'));
+    expect(screen.queryByRole('button', { name: 'Закрити деталі' })).toBeNull();
   });
 
-  it('rows: compact name + server, status, CPU, memory, short uptime; unknown metric is «—»; offline/stale rows warn with the time', async () => {
+  // Addendum §2: stopped/errored and offline/stale rows show «—» metrics; offline/stale is an unknown CURRENT state.
+  it('rows: name + server, state, CPU, RAM, short uptime; «—» for stopped/errored and offline/stale; offline/stale is not «Працює»', async () => {
     backend('viewer', { items: () => [
       app(A, { uptimeSeconds: 90_061, cpuPercent: 12.5, memoryBytes: 150 * 1024 ** 2 }),
       app(B, { status: 'stopped', serverStatus: 'offline', cpuPercent: null, memoryBytes: null, uptimeSeconds: null }),
@@ -141,17 +140,16 @@ describe('workspace: list and details side by side (≥1280 px)', () => {
     ] });
     renderAt();
     const a = await rowOf('alpha');
-    expect(a.getAttribute('aria-label')).toBe("api на alpha: Працює, CPU 12.5 %, пам'ять 150 МіБ, аптайм 1 д 1 год");
+    expect(a.getAttribute('aria-label')).toBe('api на alpha: Працює, CPU 12.5 %, RAM 150 МіБ, час роботи 1 д 1 год');
     expect(within(a).getByText('Працює')).toBeTruthy();
     const b = await rowOf('beta');
-    expect(b.getAttribute('aria-label')).toContain('Зупинено (останні відомі дані, сервер офлайн)');
-    expect(within(b).getByText(/⚠ сервер офлайн ·/)).toBeTruthy();
-    expect(within(b).getAllByText('—').length).toBeGreaterThanOrEqual(3);
+    expect(b.getAttribute('aria-label')).toBe('api на beta: Невідомо (останній відомий стан: зупинено), CPU —, RAM —, час роботи —');
+    expect(within(b).getByText('Невідомо').className).toContain('status--muted');
+    expect(within(b).getAllByText('—')).toHaveLength(3);
     const w = await rowOf('alpha', 'worker');
-    expect(within(w).getByText('Помилка').className).toContain('status--bad');
-    expect(within(w).getByText(/⚠ дані застарілі ·/)).toBeTruthy();
-    expect(within(b).getByText('Зупинено').className).toContain('status--warn');
-    expect(screen.getByText('неактуальні дані: 2')).toBeTruthy();
+    expect(within(w).getByText('Застаріло').className).toContain('status--muted');
+    expect(within(w).queryByText('Помилка')).toBeNull();
+    expect(screen.getByText('Є неактуальні дані: 2')).toBeTruthy();
     // No interactive content nested inside a row.
     expect(a.querySelector('a, button, input, select')).toBeNull();
   });
@@ -163,7 +161,9 @@ describe('workspace: list and details side by side (≥1280 px)', () => {
     const panel = await select(user, 'alpha');
     expect(within(panel).getByRole('tab', { name: 'Огляд' }).getAttribute('aria-selected')).toBe('true');
     expect(within(panel).getByText('PM2 id')).toBeTruthy();
-    expect(within(panel).getByText('Рестарти (усього)')).toBeTruthy();
+    expect(within(panel).getByText('Рестарти, усього')).toBeTruthy();
+    // Metrics are in the header only (addendum §7), not repeated in the overview.
+    expect(within(within(panel).getByRole('tabpanel')).queryByText('CPU')).toBeNull();
     expect(within(panel).getByText('Режим')).toBeTruthy();
     expect(within(panel).getByText('Зібрано')).toBeTruthy();
     expect(await within(panel).findByText(/Доступно: Запустити, Зупинити, Перезапустити/)).toBeTruthy();
@@ -276,13 +276,20 @@ describe('workspace: list and details side by side (≥1280 px)', () => {
     }
   });
 
-  it('viewer: overview only; logs and history explain why, and nothing is requested', async () => {
+  // APP-10: viewing without control — the command is shown disabled with «Немає дозволу»; logs:read is separate.
+  it('viewer: commands disabled with the reason; logs and history explain why, and nothing is requested', async () => {
     const calls = backend('viewer');
     renderAt();
     const user = userEvent.setup();
     const panel = await select(user, 'alpha');
-    expect(within(panel).getByText('Немає права керування процесами.')).toBeTruthy();
-    expect(within(panel).queryByRole('button', { name: /Запустити|Зупинити|Перезапустити/ })).toBeNull();
+    expect(within(panel).getByText('Режим перегляду')).toBeTruthy();
+    expect(within(panel).getByText('Немає дозволу')).toBeTruthy();
+    const restart = within(panel).getByRole('button', { name: 'Перезапустити' });
+    expect(restart.getAttribute('aria-disabled')).toBe('true');
+    await user.click(restart);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(within(panel).getByRole<HTMLButtonElement>('button', { name: 'Дії: api на alpha' }).disabled).toBe(true);
+    expect(within(panel).queryByRole('button', { name: /^(Запустити|Зупинити)$/ })).toBeNull();
     await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
     expect(within(panel).getByText('Немає права на перегляд логів.')).toBeTruthy();
     await user.click(within(panel).getByRole('tab', { name: 'Історія дій' }));
@@ -292,7 +299,7 @@ describe('workspace: list and details side by side (≥1280 px)', () => {
     expect(capReads(calls)).toEqual([]);
   });
 
-  it('a command started from the details keeps being tracked after they are closed', async () => {
+  it('a command started from the details keeps being tracked after another process is selected', async () => {
     let status = 'queued';
     backend('operator', { route: (req) => (req.url === `/api/control-commands/${CMD}` ? json(200, command(A, { status, ...(status === 'succeeded' ? { after: { status: 'online' }, completedAt: new Date().toISOString() } : {}) })) : undefined) });
     renderAt();
@@ -301,7 +308,8 @@ describe('workspace: list and details side by side (≥1280 px)', () => {
     await user.click(await within(panel).findByRole('button', { name: 'Перезапустити' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     expect(await screen.findByText(/«api-alpha» на сервері «alpha»: У черзі/)).toBeTruthy();
-    await user.click(within(panel).getByRole('button', { name: 'Закрити деталі' }));
+    await select(user, 'beta');
+    expect(screen.queryByRole('region', { name: 'Деталі: api на alpha' })).toBeNull();
     status = 'succeeded';
     expect(await screen.findByText(/«api-alpha» на сервері «alpha»: Виконано й підтверджено/, undefined, { timeout: 4000 })).toBeTruthy();
   });
@@ -316,14 +324,14 @@ describe('selection beyond the rows on screen', () => {
     await user.selectOptions(screen.getByLabelText('Сервер'), B);
     await waitFor(() => { expect(nav.search).toBe(`?serverId=${B}`); });
     await waitFor(() => { expect(queryRow('alpha')).toBeNull(); });
-    expect(await within(panel).findByText(/не відповідає поточним фільтрам/)).toBeTruthy();
+    expect(await within(panel).findByText('Вибраний застосунок поза поточним фільтром')).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Деталі: api на alpha' })).toBe(panel);
     expect(checks(calls).map((c) => c.url)).toEqual([`/api/servers/${A}/applications`]);
     expect((await within(panel).findByRole('button', { name: 'Перезапустити' })).getAttribute('aria-disabled')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Скинути фільтри' }));
     await waitFor(() => { expect(nav.search).toBe(''); });
     expect((await rowOf('alpha')).getAttribute('aria-current')).toBe('true');
-    expect(within(panel).queryByText(/не відповідає поточним фільтрам/)).toBeNull();
+    expect(within(panel).queryByText('Вибраний застосунок поза поточним фільтром')).toBeNull();
   });
 
   it('on another page: said so; the selection survives page changes', async () => {
@@ -377,11 +385,11 @@ describe('selection beyond the rows on screen', () => {
     const user = userEvent.setup();
     const panel = await select(user, 'alpha');
     await within(panel).findByRole('button', { name: 'Перезапустити' });
-    await user.selectOptions(screen.getByLabelText('Статус процесу'), 'errored');
+    await user.selectOptions(screen.getByLabelText('Статус'), 'errored');
     expect(await within(panel).findByText(why)).toBeTruthy();
     expect(within(panel).getByText(/Не вдалося підтвердити, що процес ще існує/)).toBeTruthy();
     expect(within(panel).getByRole('button', { name: 'Перезапустити' }).getAttribute('aria-disabled')).toBe('true');
-    expect(within(panel).getByText('Заблоковано: наявність процесу не підтверджено.')).toBeTruthy();
+    expect(within(panel).getByText('Наявність процесу не підтверджено.')).toBeTruthy();
     await user.click(within(panel).getByRole('button', { name: 'Перезапустити' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(posts(calls)).toEqual([]);
@@ -392,7 +400,7 @@ describe('selection beyond the rows on screen', () => {
     renderAt();
     const user = userEvent.setup();
     const panel = await select(user, 'alpha');
-    await user.selectOptions(screen.getByLabelText('Статус процесу'), 'errored');
+    await user.selectOptions(screen.getByLabelText('Статус'), 'errored');
     expect(await within(panel).findByText(/Не вдалося перевірити поточний inventory сервера/)).toBeTruthy();
     expect((await within(panel).findByRole('button', { name: 'Перезапустити' })).getAttribute('aria-disabled')).toBe('true');
   });
@@ -443,26 +451,33 @@ describe('selection beyond the rows on screen', () => {
     renderAt();
     await rowOf('alpha');
     expect(anyPanel()).toBeNull();
-    expect(screen.getByText('Оберіть застосунок, щоб переглянути деталі.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeTruthy();
   });
 });
 
 describe('below 1280 px: separate views', () => {
-  it.each([1279, 1024, 390])('%i px: list full width; selection opens the details view; «Назад до списку» keeps filters and focuses the row', async (width) => {
+  // APP-14 / APP-15: the tablet details keep the page header and filters above the panel; the phone details hide both
+  // (they come back with the same values through «До списку застосунків»).
+  it.each([1279, 1024, 390])('%i px: list full width; selection opens the details view; «До списку застосунків» keeps filters and focuses the row', async (width) => {
     setViewportWidth(width);
     backend('operator');
     renderAt('/applications?status=online');
     const user = userEvent.setup();
-    expect(screen.queryByText('Оберіть застосунок, щоб переглянути деталі.')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeNull();
     const panel = await select(user, 'beta');
     expect(document.activeElement).toBe(within(panel).getByRole('heading', { name: 'api' }));
     expect(queryRow('alpha')).toBeNull(); // the list is replaced by the details view
-    expect(screen.queryByLabelText('Пошук за назвою')).toBeNull();
+    if (width <= 600) {
+      expect(screen.queryByLabelText('Пошук за назвою')).toBeNull();
+      expect(screen.queryByText('Робочий простір')).toBeNull();
+    } else {
+      expect(screen.getByLabelText<HTMLSelectElement>('Статус').value).toBe('online');
+    }
     expect(screen.queryByRole('button', { name: 'Закрити деталі' })).toBeNull();
-    await user.click(within(panel).getByRole('button', { name: '← Назад до списку' }));
+    await user.click(within(panel).getByRole('button', { name: '← До списку застосунків' }));
     expect(anyPanel()).toBeNull();
     expect(nav.search).toBe('?status=online');
-    expect(screen.getByLabelText<HTMLSelectElement>('Статус процесу').value).toBe('online');
+    expect(screen.getByLabelText<HTMLSelectElement>('Статус').value).toBe('online');
     expect(document.activeElement).toBe(await rowOf('beta'));
     expect((await rowOf('beta')).getAttribute('aria-current')).toBe('true');
   });
@@ -471,7 +486,7 @@ describe('below 1280 px: separate views', () => {
     setViewportWidth(1280);
     backend('operator');
     renderAt();
-    expect(await screen.findByText('Оберіть застосунок, щоб переглянути деталі.')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeTruthy();
   });
 });
 
@@ -482,13 +497,23 @@ describe('log tail in the details', () => {
     return panel;
   }
 
-  it('shows the read time, the file time and the PM2 collection time', async () => {
+  // APP-01: the log shows its read time and the file time; the PM2 collection time is in the header («Зібрано …»).
+  it('shows the read time and the file time; the PM2 collection time is in the header; limits behind «Подробиці»', async () => {
     backend('operator');
     renderAt();
     const user = userEvent.setup();
     const panel = await openLogs(user);
     await within(panel).findByText('beta line');
-    expect(within(panel).getByText(/Отримано .* · файл змінено .* · PM2 зібрано /)).toBeTruthy();
+    expect(within(panel).getByText(/^Отримано .* · файл змінено /)).toBeTruthy();
+    expect(within(panel).getByText(/^Зібрано /)).toBeTruthy();
+    const more = within(panel).getByRole('button', { name: 'Подробиці' });
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    const details = document.getElementById(more.getAttribute('aria-controls') ?? '');
+    expect(details?.hidden).toBe(true);
+    await user.click(more);
+    expect(details?.hidden).toBe(false);
+    expect(details?.textContent).toMatch(/до 100 рядків на джерело, до 8 КіБ разом.*не повний архів/);
+    expect(details?.textContent).toMatch(/не гарантія/);
   });
 
   it('transient failure: the previous text of the same process stays, explicitly labelled as not refreshed', async () => {
@@ -500,7 +525,7 @@ describe('log tail in the details', () => {
     expect(await within(panel).findByText('first text')).toBeTruthy();
     fail = true;
     await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
-    expect(await within(panel).findByText(/Показано попередній результат .* — його не оновлено/)).toBeTruthy();
+    expect(await within(panel).findByText(/^Останній успішний результат: .* · нові дані не отримано$/)).toBeTruthy();
     expect(within(panel).getByText('first text')).toBeTruthy();
   });
 
@@ -599,7 +624,7 @@ describe('log tail: an ambiguous 404 fails closed (review P1)', () => {
     textGone('secret old text');
     expect(alert.textContent).toMatch(NOT_AVAILABLE);
     expect(alert.textContent).not.toMatch(/^Запит протерміновано або сервер API перезапускався/);
-    expect(within(panel).queryByText(/Показано попередній результат/)).toBeNull();
+    expect(within(panel).queryByText(/Останній успішний результат/)).toBeNull();
     expect(within(panel).getByRole<HTMLInputElement>('checkbox').checked).toBe(false);
     const before = logReads(calls).length;
     await new Promise((r) => setTimeout(r, 300));
@@ -671,7 +696,7 @@ describe('log tail: an ambiguous 404 fails closed (review P1)', () => {
     expect(await within(panel).findByText('kept text')).toBeTruthy();
     fail = true;
     await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
-    expect(await within(panel).findByText(/Показано попередній результат .* — його не оновлено/)).toBeTruthy();
+    expect(await within(panel).findByText(/^Останній успішний результат: .* · нові дані не отримано$/)).toBeTruthy();
     expect(within(panel).getByText('kept text')).toBeTruthy();
     expect(within(panel).getByRole('alert').textContent).not.toMatch(NOT_AVAILABLE);
   });
@@ -699,6 +724,135 @@ describe('log tail: an ambiguous 404 fails closed (review P1)', () => {
     renderAt();
     await rowOf('beta');
     textGone('secret old text');
+  });
+});
+
+describe('design reference 1.0: states of the selected process (APP-04…APP-10)', () => {
+  const recent = (seconds: number) => new Date(Date.now() - seconds * 1000).toISOString();
+
+  it('APP-04 stopped: «Запустити» is the visible command, CPU/RAM/uptime «—», the stop is not called an incident', async () => {
+    backend('operator', { items: () => [app(A, { status: 'stopped', cpuPercent: 0, memoryBytes: 1024, uptimeSeconds: 0, collectedAt: recent(18) })] });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    expect(await within(panel).findByRole('button', { name: 'Запустити' })).toBeTruthy();
+    expect(within(panel).queryByRole('button', { name: 'Перезапустити' })).toBeNull(); // in the «⋯» menu
+    expect(within(panel).getByText('Процес зупинено')).toBeTruthy();
+    expect(within(panel).getByText(/Це не обов’язково інцидент/)).toBeTruthy();
+    const metrics = panel.querySelector('.app-metrics');
+    expect([...(metrics?.querySelectorAll('dd') ?? [])].map((d) => d.textContent)).toEqual(['—', '—', '—']); // not 0
+    expect(within(panel).getByText(/^Зібрано 18 с тому · /)).toBeTruthy();
+  });
+
+  it('APP-05 errored: an error notice and «—» metrics; restart stays the visible command', async () => {
+    backend('operator', { items: () => [app(A, { status: 'errored', collectedAt: recent(18) })] });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    expect(within(panel).getByText('Помилка').className).toContain('status--bad');
+    expect(within(panel).getByText('PM2 повідомляє про помилку').closest('.notice')?.className).toContain('notice--error');
+    expect(await within(panel).findByRole('button', { name: 'Перезапустити' })).toBeTruthy();
+  });
+
+  it('APP-06 agent offline: unknown current state, last signal, last known values labelled stale, commands blocked', async () => {
+    const offline = { ...serverPage, items: serverPage.items.map((s) => (s.id === A ? { ...s, status: 'offline', lastSeenAt: recent(240) } : s)) };
+    const calls = backend('operator', {
+      route: (req) => (req.url.startsWith('/api/servers?') ? json(200, offline) : undefined),
+      items: () => [app(A, { serverStatus: 'offline', cpuPercent: 2.1, collectedAt: recent(240) }), app(B)],
+      controlFor: (id) => control(id, id === A ? { serverStatus: 'offline', broker: { state: 'ok', daemon: 'ok', allowlist: 'ok', reportedAt: recent(240), fresh: false } } : {}),
+    });
+    renderAt();
+    const user = userEvent.setup();
+    const row = await rowOf('alpha');
+    expect(within(row).getByText('Невідомо')).toBeTruthy();
+    expect(within(row).getAllByText('—')).toHaveLength(3);
+    const panel = await select(user, 'alpha');
+    expect(within(panel).queryByText('Працює')).toBeNull(); // the current state is not confirmed
+    expect(await within(panel).findByText('Агент не звітує · останній сигнал 4 хв тому')).toBeTruthy();
+    expect(within(panel).getByText('Останній відомий стан: працює. Поточний стан невідомий.')).toBeTruthy();
+    expect(within(panel).getByText('2.1 %')).toBeTruthy(); // the actually received last value…
+    expect(within(panel).getByText(/^Останні відомі значення · дані застарілі · зібрано /)).toBeTruthy(); // …labelled
+    expect((await within(panel).findByRole('button', { name: 'Перезапустити' })).getAttribute('aria-disabled')).toBe('true');
+    expect(within(panel).getByText('Керування недоступне', { selector: '.app-detail__hint' })).toBeTruthy();
+    expect(posts(calls)).toEqual([]);
+  });
+
+  it('APP-07 PM2 data stale with the agent online: «Застаріло», separate agent signal, commands blocked', async () => {
+    backend('operator', { items: () => [app(A, { inventoryState: 'stale', collectedAt: recent(240) })] });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    expect(within(panel).getByText('Застаріло')).toBeTruthy();
+    expect(within(panel).getByText('Дані PM2 застарілі · останній збір 4 хв тому')).toBeTruthy();
+    expect(within(panel).getByText(/^Агент онлайн · сигнал .* тому\. Поточний стан процесу невідомий \(останній відомий: працює\)\.$/)).toBeTruthy();
+    expect((await within(panel).findByRole('button', { name: 'Перезапустити' })).getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('every process of an offline server is projected the same way (not only the selected one)', async () => {
+    backend('viewer', { items: () => [
+      app(A, { serverStatus: 'offline' }), app(A, { key: `${A}:pm2:4`, pmId: 4, name: 'worker', serverStatus: 'offline', status: 'stopped' }), app(B),
+    ] });
+    renderAt();
+    expect(within(await rowOf('alpha')).getByText('Невідомо')).toBeTruthy();
+    expect(within(await rowOf('alpha', 'worker')).getByText('Невідомо')).toBeTruthy();
+    expect(within(await rowOf('beta')).getByText('Працює')).toBeTruthy();
+  });
+
+  it('APP-08 loading: skeleton rows and a loading pane; no process is invented', async () => {
+    const slow = deferred<Response>();
+    backend('operator', { route: (req) => (req.url.startsWith('/api/applications?') ? slow.promise : undefined) });
+    renderAt();
+    expect(await screen.findByRole('heading', { name: 'Завантаження застосунків' })).toBeTruthy();
+    expect(anyPanel()).toBeNull();
+    expect(queryRow('alpha')).toBeNull();
+    expect(document.querySelectorAll('.app-row--skeleton').length).toBeGreaterThan(0);
+    await act(async () => { slow.resolve(json(200, { items: [app(A)], nextCursor: null, freshWindowSeconds: 180 })); await Promise.resolve(); });
+    expect(await rowOf('alpha')).toBeTruthy();
+  });
+
+  it('APP-09 empty result: the reset is inside the empty list; a selection outside the filter is kept', async () => {
+    backend('operator', { items: (q) => (q.get('q') ? [] : [app(A), app(B)]) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    await user.type(screen.getByLabelText('Пошук за назвою'), 'payment-archive');
+    expect(await screen.findByRole('heading', { name: 'Нічого не знайдено' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Деталі: api на alpha' })).toBe(panel); // the selection stays
+    expect(screen.getAllByRole('button', { name: 'Скинути фільтри' })).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: 'Скинути фільтри' }));
+    await waitFor(() => { expect(nav.search).toBe(''); });
+    expect((await rowOf('alpha')).getAttribute('aria-current')).toBe('true');
+  });
+
+  it('APP-10 metrics without control and without logs:read: no log is requested through the visible tab', async () => {
+    const calls = backend('viewer');
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+    expect(within(panel).getByText('Немає права на перегляд логів.')).toBeTruthy();
+    expect(logReads(calls)).toEqual([]);
+  });
+
+  it('log refusal (403) is «Логи недоступні» without the request-error note; a transient error says it is not a process failure', async () => {
+    let mode: 'ok' | 'denied' | 'down' = 'ok';
+    backend('operator', { route: (req) => (mode !== 'ok' && req.method === 'POST' && req.url.endsWith('/log-requests') ? json(mode === 'denied' ? 403 : 503, {}) : undefined) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'beta');
+    await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+    expect(await within(panel).findByText('beta line')).toBeTruthy();
+    mode = 'down';
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    const transient = await within(panel).findByRole('alert');
+    expect(transient.textContent).toMatch(/^Не вдалося отримати логи.*Помилка запиту не означає зупинку процесу\.$/);
+    expect(within(panel).getByText('beta line')).toBeTruthy();
+    mode = 'denied';
+    await user.click(within(panel).getByRole('button', { name: 'Повторити запит' }));
+    await waitFor(() => { expect(within(panel).queryByText('beta line')).toBeNull(); });
+    const denied = within(panel).getByRole('alert');
+    expect(denied.textContent).toMatch(/^Логи недоступні/);
+    expect(denied.textContent).not.toMatch(/не означає зупинку/);
   });
 });
 

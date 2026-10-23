@@ -166,7 +166,8 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     await op.getByRole('button', { name: /^e2e-other на e2e-control:/ }).click({ timeout: 15_000 });
     const otherDetails = op.getByRole('region', { name: 'Деталі: e2e-other на e2e-control' });
     await expect(otherDetails.getByText(/Процесу немає в allowlist сервера/).first()).toBeVisible();
-    await expect(otherDetails.getByRole('button', { name: 'Перезапустити' })).toHaveCount(0);
+    // The visible command stays, disabled with the reason (design reference 1.0); nothing can be sent for it.
+    await expect(otherDetails.getByRole('button', { name: 'Перезапустити' })).toHaveAttribute('aria-disabled', 'true');
     await op.getByRole('button', { name: /^e2e-allowed на e2e-control:/ }).click();
     await op.getByRole('region', { name: 'Деталі: e2e-allowed на e2e-control' }).getByRole('button', { name: 'Перезапустити' }).click();
     const restartDialog = op.getByRole('dialog', { name: 'Перезапустити процес?' });

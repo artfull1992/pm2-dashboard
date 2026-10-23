@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { ApiError, logsApi } from '../api/client';
 import type { LogResult, LogStream } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
-import { formatDate } from '../pages/ServersPage';
+import { formatClock } from './time';
 import { Dialog } from './Dialog';
 
 // Bounded log tail (ADR-018). `LogTail` holds the one read cycle and the content; `LogViewer` wraps it in a dialog
@@ -55,7 +55,7 @@ function errorText(error: unknown): string {
     if (error.kind === 'not_found') return 'Запит або ресурс логів недоступний: доступ могли відкликати, запит міг завершитися або API перезапускався. Текст логів не показано. Оновіть вручну.';
     if (error.kind === 'rate_limited') return 'Забагато запитів. Зачекайте й оновіть вручну.';
   }
-  return 'Не вдалося отримати логи. Оновіть вручну.';
+  return 'Сервіс тимчасово недоступний або зв’язок перервано. Оновіть вручну.';
 }
 
 export function LogViewer({ serverId, serverName, targetKey, name, onClose }: {
@@ -69,10 +69,8 @@ export function LogViewer({ serverId, serverName, targetKey, name, onClose }: {
   );
 }
 
-export function LogTail({ serverId, serverName, targetKey, name, collectedAt }: {
+export function LogTail({ serverId, serverName, targetKey, name }: {
   serverId: string; serverName: string; targetKey: string; name: string;
-  /** When PM2 inventory of this process was collected (shown next to the read time; omitted when unknown). */
-  collectedAt?: string | null;
 }) {
   const { state: auth, sessionExpired } = useAuth();
   const [tab, setTab] = useState<'stdout' | 'stderr'>('stdout');
@@ -86,7 +84,11 @@ export function LogTail({ serverId, serverName, targetKey, name, collectedAt }: 
   // A newer result that waits while text in the log is selected.
   const [incoming, setIncoming] = useState<LogResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A transient failure (the previous text of this process may stay, labelled) or a refusal (no text at all).
+  const [errorKind, setErrorKind] = useState<'transient' | 'denied'>('transient');
+  const [details, setDetails] = useState(false);
   const tabsId = useId();
+  const detailsId = useId();
   const csrf = auth.status === 'authenticated' ? auth.session.csrfToken : null;
   const autoRef = useRef(auto);
   useEffect(() => { autoRef.current = auto; }, [auto]);
@@ -127,6 +129,7 @@ export function LogTail({ serverId, serverName, targetKey, name, collectedAt }: 
         if (controller.signal.aborted) return;
         if (view.status === 'expired' || !view.result) {
           setError('Сервер не відповів вчасно (агент офлайн або зайнятий). Оновіть вручну.');
+          setErrorKind('transient');
           setStale(true);
           setPhase('error');
           setAuto(false);
@@ -142,8 +145,8 @@ export function LogTail({ serverId, serverName, targetKey, name, collectedAt }: 
           return;
         }
         setError(`Логи недоступні: ${REASONS[outcome.reason ?? ''] ?? 'невідома причина'}.`);
-        if (TRANSIENT_REASONS.has(outcome.reason ?? '')) setStale(true);
-        else { setResult(null); setIncoming(null); }
+        if (TRANSIENT_REASONS.has(outcome.reason ?? '')) { setErrorKind('transient'); setStale(true); }
+        else { setErrorKind('denied'); setResult(null); setIncoming(null); }
         setPhase('error');
         setAuto(false);
       } catch (e) {
@@ -151,7 +154,7 @@ export function LogTail({ serverId, serverName, targetKey, name, collectedAt }: 
         if (e instanceof ApiError && e.kind === 'unauthorized') { sessionExpired(); return; }
         // No automatic retries after an error: the user refreshes explicitly.
         setError(errorText(e));
-        if (hidesText(e)) { setResult(null); setIncoming(null); } else setStale(true);
+        if (hidesText(e)) { setErrorKind('denied'); setResult(null); setIncoming(null); } else { setErrorKind('transient'); setStale(true); }
         setPhase('error');
         setAuto(false);
       } finally {
@@ -192,22 +195,46 @@ export function LogTail({ serverId, serverName, targetKey, name, collectedAt }: 
     const el = pre.current;
     if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
   };
+  const refresh = () => { setError(null); setNonce((n) => n + 1); };
   return (
     <div className="log-tail">
-      <p className="hint">{`Сервер «${serverName}», сервіс «${name}» (${targetKey}). Показано лише останній фрагмент (до 100 рядків на джерело, до 8 КіБ разом), не повний архів; відомі формати секретів замасковано, але це не гарантія.`}</p>
-      <div className="log-toolbar">
-        <div role="tablist" aria-label="Джерело логу" id={tabsId} className="log-tabs">
+      <div className="log-bar">
+        <div role="tablist" aria-label="Джерело логу" id={tabsId} className="seg">
           {(['stdout', 'stderr'] as const).map((t) => (
-            <button key={t} type="button" role="tab" aria-selected={tab === t} className={`log-tab ${tab === t ? 'log-tab--active' : ''}`}
+            <button key={t} type="button" role="tab" aria-selected={tab === t} className={`seg__item${tab === t ? ' seg__item--on' : ''}`}
               onClick={() => { switchTab(t); }}>{t}</button>
           ))}
         </div>
-        <label className="log-auto"><input type="checkbox" checked={auto} onChange={(e) => { toggleAuto(e.target.checked); }} /> Оновлювати кожні 5 с</label>
-        <button type="button" className="button" disabled={busy} onClick={() => { setError(null); setNonce((n) => n + 1); }}>{busy ? 'Оновлення…' : 'Оновити'}</button>
+        <button type="button" className="button log-bar__refresh" disabled={busy} onClick={refresh}>{busy ? 'Оновлення…' : 'Оновити'}</button>
+        <label className="log-auto" title="Оновлювати кожні 5 с"><input type="checkbox" checked={auto} onChange={(e) => { toggleAuto(e.target.checked); }} /> Кожні 5 с</label>
       </div>
-      {phase === 'loading' && !result ? <p role="status">Завантаження логів…</p> : null}
-      {error ? <p className="notice notice--warning" role="alert">{error}</p> : null}
-      {result && stale ? <p className="notice notice--warning log-stale">{`Показано попередній результат (отримано ${formatDate(result.readAt)}) — його не оновлено.`}</p> : null}
+      <div className="log-meta">
+        {result && stream ? (
+          <span>{stale
+            ? `Останній успішний результат: ${formatClock(result.readAt)} · нові дані не отримано`
+            : `Отримано ${formatClock(result.readAt)}${stream.modifiedAt ? ` · файл змінено ${formatClock(stream.modifiedAt)}` : ''}`}</span>
+        ) : null}
+        <span>
+          {`Останній фрагмент · до 100 рядків${stream?.truncated ? ' · старіші рядки не показано' : ''} · `}
+          <button type="button" className="link-button" aria-expanded={details} aria-controls={detailsId} onClick={() => { setDetails((d) => !d); }}>Подробиці</button>
+        </span>
+      </div>
+      <div id={detailsId} className="log-details" hidden={!details}>
+        <p>{`Сервер «${serverName}», сервіс «${name}» (${targetKey}).`}</p>
+        <p>Показано лише останній фрагмент (до 100 рядків на джерело, до 8 КіБ разом), не повний архів; автооновлення кожні 5 с, лише поки вкладка відкрита.</p>
+        <p>Відомі формати секретів замасковано, але це не гарантія: невідомі формати можуть лишитися у тексті. Текст ніде не зберігається.</p>
+      </div>
+      {phase === 'loading' && !result ? <p role="status" className="hint">Завантаження логів…</p> : null}
+      {error ? (
+        <>
+          <div className="notice notice--error" role="alert">
+            <p className="notice__title">{errorKind === 'denied' ? 'Логи недоступні' : 'Не вдалося отримати логи'}</p>
+            <p className="notice__text">{error}</p>
+            {errorKind === 'transient' ? <p className="notice__text">Помилка запиту не означає зупинку процесу.</p> : null}
+          </div>
+          <button type="button" className="button button--block" disabled={busy} onClick={refresh}>Повторити запит</button>
+        </>
+      ) : null}
       {incoming ? (
         <p className="hint log-pending">
           Отримано новіший фрагмент — його буде показано, щойно ви знімете виділення.{' '}
@@ -216,16 +243,10 @@ export function LogTail({ serverId, serverName, targetKey, name, collectedAt }: 
       ) : null}
       {result && stream ? (
         <div role="tabpanel" aria-label={tab} className="log-panel">
-          <p className="hint">
-            {`Отримано ${formatDate(result.readAt)}`}
-            {stream.modifiedAt ? ` · файл змінено ${formatDate(stream.modifiedAt)}` : ''}
-            {collectedAt ? ` · PM2 зібрано ${formatDate(collectedAt)}` : ''}
-            {stream.state === 'ok' ? ` · рядків: ${String(stream.lines)}` : ''}
-            {stream.truncated ? ' · старіші рядки не показано' : ''}
-          </p>
-          {stream.state === 'ok' ? <pre ref={pre} className="log-text" tabIndex={0} aria-label={`${tab} ${name}`} onScroll={onScroll}>{stream.text}</pre> : <p>{STATE_TEXT[stream.state]}</p>}
+          {stream.state === 'ok' ? <pre ref={pre} className="log-text" tabIndex={0} aria-label={`${tab} ${name}`} onScroll={onScroll}>{stream.text}</pre> : <p className="hint">{STATE_TEXT[stream.state]}</p>}
         </div>
       ) : null}
+      <p className="hint">{stale ? 'Збережений фрагмент цього процесу. Нові рядки не отримано.' : 'Відомі формати секретів маскуються; повного захисту це не гарантує.'}</p>
     </div>
   );
 }

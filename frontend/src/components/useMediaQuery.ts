@@ -18,3 +18,6 @@ export function useMediaQuery(query: string): boolean {
 
 /** Applications: list and details side by side from this width; below it they are separate views. */
 export const SPLIT_VIEW_QUERY = '(min-width: 1280px)';
+
+/** Phone layout (design reference 1.0, ≤ 600 px): no navigation column; the details view hides the page header. */
+export const PHONE_QUERY = '(max-width: 600px)';

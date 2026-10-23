@@ -91,7 +91,7 @@ describe('log viewer', () => {
     const { user, dialog } = await openLogs();
     await within(dialog).findByText(/first/);
     await waitFor(() => { expect(creates(calls)).toHaveLength(2); }, { timeout: 6_500 });
-    await user.click(within(dialog).getByRole('checkbox', { name: /Оновлювати кожні 5 с/ }));
+    await user.click(within(dialog).getByRole('checkbox', { name: /Кожні 5 с/ }));
     const after = creates(calls).length;
     await new Promise((r) => setTimeout(r, 5_600));
     expect(creates(calls)).toHaveLength(after);

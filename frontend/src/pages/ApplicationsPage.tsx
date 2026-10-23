@@ -5,13 +5,12 @@ import { type ApplicationItem, PROCESS_STATUSES, type ProcessStatus, type Server
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { ApplicationDetail, confirmedPresence, DetailPlaceholder, type DetailTab, type Presence } from '../components/ApplicationDetail';
-import { ApplicationList, appIdentity, isLive } from '../components/ApplicationList';
+import { ApplicationList, appIdentity, isLive, ListHead, ListSkeleton, PanelMessage } from '../components/ApplicationList';
 import { PROCESS_STATUS_LABELS } from '../components/Inventory';
 import { CommandStatusList, type CommandRequest, controlReady, rowMenu, useProcessCommands } from '../components/processActions';
-import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
-import { PageHeader } from '../components/ui';
+import { ErrorState, formatRetry } from '../components/StatusMessage';
 import { usePolledResource } from '../components/usePolledResource';
-import { SPLIT_VIEW_QUERY, useMediaQuery } from '../components/useMediaQuery';
+import { PHONE_QUERY, SPLIT_VIEW_QUERY, useMediaQuery } from '../components/useMediaQuery';
 import { useServerCapabilities } from '../components/useServerCapabilities';
 import { formatDate } from './ServersPage';
 
@@ -99,6 +98,7 @@ function ApplicationsView() {
   const caps = useServerCapabilities({ canControl, canLogs });
   const { ensure, invalidate, retain } = caps;
   const split = useMediaQuery(SPLIT_VIEW_QUERY);
+  const phone = useMediaQuery(PHONE_QUERY);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [tab, setTab] = useState<DetailTab>('overview');
   // Below 1280 px: the list or the details of the selection (a separate view).
@@ -202,11 +202,6 @@ function ApplicationsView() {
       setView('detail');
     }
   }, [ensure, split]);
-  const closeDetail = () => {
-    const id = selection?.id ?? null;
-    setSelection(null);
-    if (id) [...document.querySelectorAll<HTMLElement>('[data-app-row]')].find((el) => el.dataset.appRow === id)?.focus();
-  };
   const backToList = () => { restoreList.current = true; setView('list'); };
 
   const showDetail = !split && view === 'detail' && selection !== null;
@@ -229,6 +224,7 @@ function ApplicationsView() {
 
   if (state.status === 'forbidden') return <Forbidden />;
   const serverOptions = servers.status === 'ready' ? servers.data.items : [];
+  const lastSeenOf = (id: string) => serverOptions.find((s) => s.id === id)?.lastSeenAt ?? null;
 
   const loadedCaps = (app: ApplicationItem) => {
     const entry = caps.entries.get(app.serverId);
@@ -262,95 +258,101 @@ function ApplicationsView() {
     const { loaded, items, reasons } = menuFor(selected, confirmed);
     detail = (
       <ApplicationDetail key={selection.id} app={selected} presence={presence} tab={tab} onTab={setTab} caps={loaded} items={items} reasons={reasons}
-        canControl={canControl} canLogs={canLogs} historyVersion={historyVersion} onMenuOpen={() => { void ensure(selected.serverId); }}
-        onClose={split ? closeDetail : undefined} onBack={split ? undefined : backToList} headingRef={heading} />
+        canControl={canControl} canLogs={canLogs} historyVersion={historyVersion} lastSeenAt={lastSeenOf(selected.serverId)}
+        onMenuOpen={() => { void ensure(selected.serverId); }} onBack={split ? undefined : backToList} headingRef={heading} />
     );
   }
 
+  const filtersActive = filtered || Boolean(cursor) || draft !== '';
+  const empty = data !== null && data.items.length === 0;
+  const pager = data && (cursor || data.nextCursor) ? (
+    <div className="pager app-list__footer" role="group" aria-label="Сторінки списку">
+      {cursor ? <button type="button" className="button button--small" aria-label="На першу сторінку" onClick={() => { goTo(null); }}>« Перша</button> : null}
+      {data.nextCursor ? <button type="button" className="button button--small" aria-label="Наступна сторінка" onClick={() => { goTo(data.nextCursor); }}>Наступна »</button> : null}
+    </div>
+  ) : null;
+  const emptyText = q ? `Немає застосунків, у назві яких є «${q}»${serverId || status ? ' (з урахуванням фільтрів)' : ''}.`
+    : filtered ? 'Немає застосунків за поточним пошуком і фільтрами.'
+      : can('servers:manage') ? 'Процеси з’являться, коли на сервері буде налаштовано PM2 exporter і агент передасть inventory.'
+        : 'Ви бачите лише сервіси, до яких адміністратор надав доступ. Наданих сервісів немає або їхній inventory ще не надійшов.';
+  // Phone details (APP-14): the global header and the list filters give their height to the log; «До списку
+  // застосунків» brings them back with the same values. Tablet details (APP-15) keep both above the panel.
+  const chrome = !(showDetail && phone);
+
   return (
     <section className={`page page--workspace${split ? ' page--split' : ''}`} aria-labelledby="apps-title">
-      <PageHeader title="Застосунки" titleId="apps-title"
-        meta={<>
-          <span>PM2-процеси всіх серверів.</span>
-          {state.status === 'ready' && state.refreshing ? <span role="status">Оновлення…</span>
-            : refreshed ? <span>{`Оновлено ${timeFormat.format(refreshed)}`}</span> : null}
-        </>}
-        actions={showDetail ? null : <button type="button" className="button button--small" onClick={reload}>Оновити</button>} />
+      {chrome ? (
+        <header className="workspace-header">
+          <p className="workspace-header__eyebrow">Робочий простір</p>
+          <h1 id="apps-title" className="page__title">Застосунки</h1>
+        </header>
+      ) : <h1 id="apps-title" className="visually-hidden">Застосунки</h1>}
 
       <CommandStatusList tracked={tracked} showServer />
 
-      {showDetail ? detail : (
-        <>
-          <div className="toolbar" role="group" aria-label="Фільтри">
-            <div className="field field--search">
-              <label htmlFor={searchFieldId}>Пошук за назвою</label>
-              <div className="search-box">
-                <input id={searchFieldId} type="search" value={draft} maxLength={SEARCH_MAX_LENGTH} autoComplete="off" spellCheck={false}
-                  onChange={(e) => { setDraft(e.target.value); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') commitSearch(draft); }} />
-                {draft ? <button type="button" className="button button--small" onClick={() => { setDraft(''); commitSearch(''); }}>Очистити</button> : null}
-              </div>
+      {chrome ? (
+        <div className="toolbar workspace-filters" role="group" aria-label="Фільтри">
+          <div className="field field--search">
+            <label htmlFor={searchFieldId}>Пошук за назвою</label>
+            <div className="search-box">
+              <input id={searchFieldId} type="search" value={draft} maxLength={SEARCH_MAX_LENGTH} autoComplete="off" spellCheck={false} placeholder="Наприклад, app-api"
+                onChange={(e) => { setDraft(e.target.value); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') commitSearch(draft); }} />
+              {draft ? <button type="button" className="button button--small" onClick={() => { setDraft(''); commitSearch(''); }}>Очистити</button> : null}
             </div>
-            <div className="field">
-              <label htmlFor={serverFieldId}>Сервер</label>
-              <select id={serverFieldId} value={serverId ?? ''} onChange={(e) => { setFilter('serverId', e.target.value); }}>
-                <option value="">Усі сервери</option>
-                {serverOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                {serverId && !serverOptions.some((s) => s.id === serverId) ? <option value={serverId}>Обраний сервер</option> : null}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor={statusFieldId}>Статус процесу</label>
-              <select id={statusFieldId} value={status ?? ''} onChange={(e) => { setFilter('status', e.target.value); }}>
-                <option value="">Усі статуси</option>
-                {PROCESS_STATUSES.map((s) => <option key={s} value={s}>{PROCESS_STATUS_LABELS[s]}</option>)}
-              </select>
-            </div>
-            {filtered || cursor || draft ? <button type="button" className="button toolbar__reset" onClick={resetFilters}>Скинути фільтри</button> : null}
           </div>
+          <div className="field field--select">
+            <label htmlFor={serverFieldId}>Сервер</label>
+            <select id={serverFieldId} value={serverId ?? ''} onChange={(e) => { setFilter('serverId', e.target.value); }}>
+              <option value="">Усі сервери</option>
+              {serverOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {serverId && !serverOptions.some((s) => s.id === serverId) ? <option value={serverId}>Обраний сервер</option> : null}
+            </select>
+          </div>
+          <div className="field field--select">
+            <label htmlFor={statusFieldId}>Статус</label>
+            <select id={statusFieldId} value={status ?? ''} onChange={(e) => { setFilter('status', e.target.value); }}>
+              <option value="">Усі статуси</option>
+              {PROCESS_STATUSES.map((s) => <option key={s} value={s}>{PROCESS_STATUS_LABELS[s]}</option>)}
+            </select>
+          </div>
+          {filtersActive && !empty ? <button type="button" className="button toolbar__reset" onClick={resetFilters}>Скинути фільтри</button> : null}
+        </div>
+      ) : null}
 
-          <div className="workspace">
-            <div className="workspace__list">
-              {state.status === 'loading' ? <LoadingState /> : null}
-              {state.status === 'not_found' ? <EmptyState title="Не знайдено">Перевірте фільтр.</EmptyState> : null}
-              {state.status === 'error' ? (
+      {showDetail ? detail : (
+        <div className="workspace">
+          <section className="app-list" aria-label="Список застосунків">
+            <div className="app-list__caption">
+              <span className="num">{data ? `На цій сторінці: ${String(data.items.length)}` : state.status === 'loading' ? 'Завантаження…' : 'Список недоступний'}</span>
+              <span title={refreshed ? `Оновлено ${timeFormat.format(refreshed)}` : undefined}>
+                {state.status === 'ready' && state.refreshing ? 'Оновлення…'
+                  : data && data.items.length > 0 ? (notCurrent > 0 ? `Є неактуальні дані: ${String(notCurrent)}` : collected ? `Усі дані актуальні · ${collected.time}` : 'Усі дані актуальні') : null}
+              </span>
+            </div>
+            {state.status === 'error' ? (
+              <div className="app-list__error">
                 <ErrorState title={data ? 'Не вдалося оновити дані' : 'Не вдалося завантажити застосунки'} onRetry={reload}>
                   {`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}${data ? ' Показано попередні дані.' : ''}`}
                 </ErrorState>
-              ) : null}
-              {data && data.items.length === 0 ? (
-                <EmptyState title={filtered ? 'Нічого не знайдено' : 'Ще немає даних про процеси'}>
-                  {q ? `Немає застосунків, у назві яких є «${q}»${serverId || status ? ' (з урахуванням фільтрів)' : ''}.`
-                    : filtered ? 'За цим фільтром процесів немає.'
-                      : can('servers:manage') ? 'Процеси з’являться, коли на сервері буде налаштовано PM2 exporter і агент передасть inventory.'
-                        : 'Ви бачите лише сервіси, до яких адміністратор надав доступ. Наданих сервісів немає або їхній inventory ще не надійшов.'}
-                </EmptyState>
-              ) : null}
-              {data && (data.items.length > 0 || cursor || data.nextCursor) ? (
-                <div className="workspace__bar">
-                  {data.items.length > 0 ? (
-                    <p className="workspace__summary">
-                      <span className="num">{`На цій сторінці: ${String(data.items.length)}`}</span>
-                      {notCurrent > 0 ? <span className="status status--warn">{`неактуальні дані: ${String(notCurrent)}`}</span>
-                        : collected ? <span title={`Зібрано ${collected.full}`}>{`усі актуальні · ${collected.time}`}</span> : null}
-                    </p>
-                  ) : null}
-                  {cursor || data.nextCursor ? (
-                    <div className="pager" role="group" aria-label="Сторінки списку">
-                      {cursor ? <button type="button" className="button button--small" aria-label="На першу сторінку" onClick={() => { goTo(null); }}>« Перша</button> : null}
-                      {data.nextCursor ? <button type="button" className="button button--small" aria-label="Наступна сторінка" onClick={() => { goTo(data.nextCursor); }}>Наступна »</button> : null}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {data && data.items.length > 0 ? (
-                <ApplicationList items={data.items} selected={selection?.id ?? null} onSelect={select} label="PM2-процеси"
-                  note="* значення на момент збору; «—» — метрика невідома (не нуль). CPU за PM2 на кількох ядрах може перевищувати 100 %." />
-              ) : null}
-            </div>
-            {split ? <div className="workspace__detail">{detail ?? <DetailPlaceholder />}</div> : null}
-          </div>
-        </>
+              </div>
+            ) : null}
+            {state.status === 'loading' ? <><ListHead /><ListSkeleton /><p role="status" className="visually-hidden">Завантаження застосунків…</p></> : null}
+            {state.status === 'not_found' ? <PanelMessage symbol="⌕" title="Не знайдено"><p className="hint">Перевірте фільтр.</p></PanelMessage> : null}
+            {empty ? (
+              <>
+                <ListHead />
+                <PanelMessage symbol="⌕" title={filtered ? 'Нічого не знайдено' : 'Ще немає даних про процеси'}>
+                  <p className="hint">{emptyText}</p>
+                  {filtersActive ? <button type="button" className="button" onClick={resetFilters}>Скинути фільтри</button> : null}
+                </PanelMessage>
+              </>
+            ) : null}
+            {data && data.items.length > 0 ? <ApplicationList items={data.items} selected={selection?.id ?? null} onSelect={select} label="PM2-процеси" /> : null}
+            {pager}
+          </section>
+          {split ? <div className="workspace__detail">{detail ?? <DetailPlaceholder loading={state.status === 'loading'} />}</div> : null}
+        </div>
       )}
       {dialog}
     </section>

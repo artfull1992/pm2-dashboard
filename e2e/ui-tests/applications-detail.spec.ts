@@ -4,7 +4,7 @@ import { type Browser, expect, type Page, test } from '@playwright/test';
 // credentials or PM2). Covers the split view from 1280 px (≥9 full rows at 1440×900 and 1366×768, independent scroll,
 // one log scroll), separate views below 1280 px (back keeps filters and scroll), compact rows at 390 px, 23 and 120
 // processes (keyset pages of 50), the same PM2 id on two servers, a selection outside the filter, logs read only on
-// their tab, keyboard, touch targets, contrast and both themes. Screenshots are written only when NC_UI_SHOTS is set.
+// their tab, keyboard, touch targets, contrast and both themes. Geometry follows design reference 1.0 (docs/design). Screenshots are written only when NC_UI_SHOTS is set.
 
 const shots = process.env.NC_UI_SHOTS;
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -112,14 +112,23 @@ const rowOf = (page: Page, name: string, server = 'app-server') => page.getByRol
 const panelOf = (page: Page, name: string, server = 'app-server') => page.getByRole('region', { name: `Деталі: ${name} на ${server}` });
 const noOverflow = async (page: Page) => { expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true); };
 
-/** Heights of the rendered rows and how many are fully visible inside the list's scroll area. */
+/**
+ * Real row geometry: `pitch` is the distance between consecutive rows (row + divider, what the design calls the row
+ * height: 56 px at 1440, 48 px on a 1280–1400 px desktop); `heights` are the row buttons; `visible` counts the rows
+ * fully inside the list's own scroll area and the viewport.
+ */
 const listGeometry = (page: Page) => page.evaluate(() => {
   const list = document.querySelector<HTMLElement>('.app-list__rows');
   if (!list) return null;
   const box = list.getBoundingClientRect();
+  const items = [...list.querySelectorAll<HTMLElement>(':scope > li')];
   const rows = [...list.querySelectorAll<HTMLElement>('.app-row')];
-  const visible = rows.filter((r) => { const b = r.getBoundingClientRect(); return b.top >= box.top - 0.5 && b.bottom <= Math.min(box.bottom, window.innerHeight) + 0.5; }).length;
-  return { heights: [...new Set(rows.map((r) => Math.round(r.getBoundingClientRect().height)))], visible, scrollable: list.scrollHeight > list.clientHeight };
+  const tops = items.map((li) => li.getBoundingClientRect().top);
+  const visible = items.filter((r) => { const b = r.getBoundingClientRect(); return b.top >= box.top - 0.5 && b.bottom <= Math.min(box.bottom, window.innerHeight) + 0.5; }).length;
+  return {
+    pitch: [...new Set(tops.slice(1).map((t, i) => Math.round(t - (tops[i] ?? 0))))],
+    heights: [...new Set(rows.map((r) => Math.round(r.getBoundingClientRect().height)))], visible, scrollable: list.scrollHeight > list.clientHeight,
+  };
 });
 
 /** Computed font sizes (px) of the list's main text (names, metrics) and of its secondary lines; name line count. */
@@ -128,10 +137,9 @@ const listTypography = (page: Page) => page.evaluate(() => {
     .map((el) => parseFloat(getComputedStyle(el).fontSize)))];
   const names = [...document.querySelectorAll<HTMLElement>('.app-row__name')];
   return {
-    name: px('.app-row__name'), metric: [...px('.app-row__metric'), ...px('.app-row__compact')], sub: px('.app-row__server'),
-    // Compact rows: the metrics are never cut off by the row (only the server name may be shortened).
-    compactFits: [...document.querySelectorAll<HTMLElement>('.app-row__compact')].filter((el) => el.offsetParent !== null)
-      .every((el) => { const sub = el.parentElement?.getBoundingClientRect(); return !sub || el.getBoundingClientRect().right <= sub.right + 0.5; }),
+    name: px('.app-row__name'), metric: px('.app-row__metric'), sub: px('.app-row__sub'),
+    // Visible metric columns of the first row (phone: RAM only; desktop: CPU, RAM, uptime).
+    metricsShown: [...(document.querySelector('.app-row')?.querySelectorAll<HTMLElement>('.app-row__metric') ?? [])].filter((el) => el.offsetParent !== null).length,
     // One text line per name: long names are cut with an ellipsis, never wrapped character by character.
     nameLines: Math.max(...names.map((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)))),
     nameEllipsis: names.every((el) => getComputedStyle(el).textOverflow === 'ellipsis' && getComputedStyle(el).whiteSpace === 'nowrap'),
@@ -173,7 +181,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768
       const state = await api(page, count);
       await page.goto('/applications');
       await expect(rowOf(page, 'billing-api')).toBeVisible();
-      await expect(page.getByText('Оберіть застосунок, щоб переглянути деталі.')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeVisible();
       await expect(page.getByText(`На цій сторінці: ${String(Math.min(count, PAGE))}`)).toBeVisible();
       if (count > PAGE) await expect(page.getByRole('button', { name: 'Наступна сторінка' })).toBeVisible();
 
@@ -183,12 +191,13 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768
       const type = await listTypography(page);
       expect(type.name.length).toBeGreaterThan(0);
       for (const size of [...type.name, ...type.metric]) expect(size).toBeGreaterThanOrEqual(14);
-      for (const size of type.sub) expect(size).toBeGreaterThanOrEqual(12);
+      for (const size of type.sub) { expect(size).toBeGreaterThanOrEqual(12); expect(size).toBeLessThanOrEqual(13); }
       expect(type.nameLines).toBe(1);
       expect(type.nameEllipsis).toBe(true);
       // Every column, including the short uptime, is shown in the split list.
-      await expect(rowOf(page, 'billing-api').locator('.app-list__uptime')).toBeVisible();
-      for (const h of geo?.heights ?? []) { expect(h).toBeGreaterThanOrEqual(48); expect(h).toBeLessThanOrEqual(56); }
+      expect(type.metricsShown).toBe(3);
+      // Design reference 1.0 (addendum §5): 56 px rows at 1440, 48 px on a 1280–1400 px desktop (divider included).
+      expect(geo?.pitch).toEqual([viewport.width > 1400 ? 56 : 48]);
       // The page itself does not scroll: list and details each scroll inside the viewport height.
       expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight + 1)).toBe(true);
       await noOverflow(page);
@@ -198,7 +207,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768
       const panel = panelOf(page, 'orders-api');
       await expect(panel).toBeVisible();
       expect((await listGeometry(page))?.heights).toEqual(geo?.heights);
-      const [listBox, panelBox] = await Promise.all([page.locator('.workspace__list').boundingBox(), page.locator('.workspace__detail').boundingBox()]);
+      const [listBox, panelBox] = await Promise.all([page.locator('.app-list').boundingBox(), page.locator('.workspace__detail').boundingBox()]);
       expect(listBox && panelBox && panelBox.x > listBox.x + listBox.width - 1).toBe(true);
       const ratio = listBox && panelBox ? listBox.width / (listBox.width + panelBox.width) : 0;
       expect(ratio).toBeGreaterThan(0.53);
@@ -213,11 +222,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768
         // Next page keeps the selection (now on another page).
         await page.getByRole('button', { name: 'Наступна сторінка' }).click();
         await expect(rowOf(page, 'svc-050')).toBeVisible();
-        // Pager and summary keep their own space (never covered by the list).
-        const [bar, head] = await Promise.all([page.locator('.workspace__bar').boundingBox(), page.locator('.app-list').boundingBox()]);
-        expect(bar && head && bar.y + bar.height <= head.y + 0.5).toBe(true);
+        // The pager is the list card's own footer, below the rows (never covered by them).
+        const [rows, footer] = await Promise.all([page.locator('.app-list__rows').boundingBox(), page.locator('.app-list__footer').boundingBox()]);
+        expect(rows && footer && rows.y + rows.height <= footer.y + 0.5).toBe(true);
         expect((await listGeometry(page))?.visible ?? 0).toBeGreaterThanOrEqual(9);
-        await expect(panel.getByText(/не на поточній сторінці списку/)).toBeVisible();
+        await expect(panel.getByText('Вибраний застосунок не на поточній сторінці списку')).toBeVisible();
         await page.getByRole('button', { name: 'На першу сторінку' }).click();
         await expect(rowOf(page, 'orders-api')).toHaveAttribute('aria-current', 'true');
       }
@@ -228,13 +237,14 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768
       const log = panel.locator('.log-text');
       await expect(log).toContainText('GET /api/orders/99 200');
       const scroll = await page.evaluate(() => {
-        const pane = document.querySelector<HTMLElement>('.workspace__detail .app-detail');
+        const pane = document.querySelector<HTMLElement>('.workspace__detail .app-detail__content');
         const pre = document.querySelector<HTMLElement>('.log-text');
         return { pane: pane ? pane.scrollHeight - pane.clientHeight : -1, pre: pre ? pre.scrollHeight - pre.clientHeight : -1, preH: pre?.clientHeight ?? 0 };
       });
       expect(scroll.pane).toBeLessThanOrEqual(1);
       expect(scroll.pre).toBeGreaterThan(0);
-      expect(scroll.preH).toBeGreaterThan(150);
+      // The log takes the rest of the pane: ~7 lines at 1440×900, at least ~4 at 1366×768 (APP-16).
+      expect(scroll.preH).toBeGreaterThan(viewport.height > 800 ? 150 : 90);
       // The log starts at its end (newest lines).
       expect(await log.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThanOrEqual(2);
       await noOverflow(page);
@@ -254,13 +264,16 @@ for (const scheme of ['light', 'dark'] as const) {
     await expect(rowOf(page, 'billing-api').getByText('Працює')).toBeVisible();
     await expect(rowOf(page, 'export-worker').getByText('Зупинено')).toHaveClass(/status--warn/);
     await expect(rowOf(page, 'reports-worker').getByText('Помилка')).toHaveClass(/status--bad/);
-    await expect(rowOf(page, 'orders-api', 'backup-server').getByText(/⚠ сервер офлайн/)).toBeVisible();
-    await expect(rowOf(page, 'export-worker').locator('.app-row__metric').first()).toHaveText('—');
+    // Addendum §2: the offline server's processes show an unknown current state and «—» metrics in the list.
+    await expect(rowOf(page, 'orders-api', 'backup-server').getByText('Невідомо')).toHaveClass(/status--muted/);
+    await expect(rowOf(page, 'orders-api', 'backup-server').locator('.app-row__metric')).toHaveText(['—', '—', '—']);
+    await expect(rowOf(page, 'export-worker').locator('.app-row__metric')).toHaveText(['—', '—', '—']);
     await rowOf(page, 'export-worker').click();
     const stopped = panelOf(page, 'export-worker');
-    await expect(stopped.getByText('Зупинено')).toBeVisible();
+    await expect(stopped.getByText('Зупинено', { exact: true })).toBeVisible();
     for (const sel of ['.app-row--selected .app-row__name', '.app-row--selected .app-row__sub', '.app-row:not(.app-row--selected) .app-row__name',
-      '.app-row .status--warn', '.app-row .status--bad', '.app-row__stale', '.app-detail__name', '.app-metrics dt']) {
+      '.app-row .status--warn', '.app-row .status--bad', '.app-row .status--muted', '.app-row__sub', '.app-list__head', '.app-detail__name',
+      '.app-metrics dt', '.app-detail__hint', '.notice__title', '.notice__text', '.app-tab--active', '.app-tab:not(.app-tab--active)']) {
       const ratio = await contrastOf(page, sel);
       expect(ratio, `${sel} contrast`).not.toBeNull();
       expect(ratio ?? 0, `${sel} contrast`).toBeGreaterThanOrEqual(4.5);
@@ -268,8 +281,10 @@ for (const scheme of ['light', 'dark'] as const) {
     if (shots) await page.screenshot({ path: `${shots}/apps-stopped-1440-${scheme}.png` });
     await rowOf(page, 'orders-api', 'backup-server').click();
     const offline = panelOf(page, 'orders-api', 'backup-server');
-    await expect(offline.getByText(/⚠ Останні відомі значення \(сервер офлайн\), зібрано/)).toBeVisible();
-    await expect(offline.getByText(/Сервер не онлайн — керування недоступне/).first()).toBeVisible();
+    await expect(offline.getByText('Невідомо')).toBeVisible();
+    await expect(offline.getByText(/^Агент не звітує/)).toBeVisible();
+    await expect(offline.getByText(/^Останні відомі значення · дані застарілі · зібрано/)).toBeVisible();
+    await expect(offline.locator('.app-detail__hint')).toHaveText('Керування недоступне');
     await offline.getByRole('tab', { name: 'Логи' }).click();
     await expect(offline.getByText('Агент не на зв’язку — логи недоступні.')).toBeVisible();
     if (shots) await page.screenshot({ path: `${shots}/apps-offline-1440-${scheme}.png` });
@@ -283,7 +298,7 @@ test('same name and PM2 id on two servers; selection outside the filter stays; r
   await page.goto('/applications');
   await rowOf(page, 'orders-api').click();
   const panel = panelOf(page, 'orders-api');
-  await expect(panel.locator('.app-detail__meta')).toContainText('app-server');
+  await expect(panel.locator('.app-detail__context')).toContainText('app-server');
   await rowOf(page, 'orders-api', 'backup-server').click();
   await expect(panel).toHaveCount(0);
   await expect(panelOf(page, 'orders-api', 'backup-server')).toBeVisible();
@@ -291,7 +306,7 @@ test('same name and PM2 id on two servers; selection outside the filter stays; r
 
   await page.getByLabel('Сервер', { exact: true }).selectOption(B);
   await expect(rowOf(page, 'billing-api')).toHaveCount(0);
-  await expect(panel.getByText(/не відповідає поточним фільтрам/)).toBeVisible();
+  await expect(panel.getByText('Вибраний застосунок поза поточним фільтром')).toBeVisible();
   expect(state.reads).toContain(`GET /api/servers/${A}/applications`);
   expect(state.reads).not.toContain(`GET /api/servers/${B}/applications`);
   await page.getByRole('button', { name: 'Скинути фільтри' }).click();
@@ -307,12 +322,12 @@ test('same name and PM2 id on two servers; selection outside the filter stays; r
   expect(state.mutations[0]).toMatch(new RegExp(`^POST /api/servers/${A}/control-commands \\{"targetKey":"orders-api","action":"restart","idempotencyKey":"[0-9a-f-]{36}"\\}$`));
 });
 
-test('keyboard: Tab to a row, Enter selects (focus stays), tabs with arrows, Escape runs nothing, close returns focus', async ({ page }) => {
+test('keyboard: Tab to a row, Enter selects (focus stays), tabs with arrows, Escape runs nothing, Space selects another row', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const state = await api(page);
   await page.goto('/applications');
   const row = rowOf(page, LONG);
-  await page.getByLabel('Статус процесу').focus();
+  await page.getByLabel('Статус', { exact: true }).focus();
   // Tab from the filters reaches the rows (reset button only appears with filters).
   while (!(await row.evaluate((el) => el === document.activeElement))) await page.keyboard.press('Tab');
   await expect(row).toBeFocused();
@@ -322,7 +337,7 @@ test('keyboard: Tab to a row, Enter selects (focus stays), tabs with arrows, Esc
   await expect(panel).toBeVisible();
   await expect(row).toBeFocused();
   // The truncated name is complete in the accessible name, the tooltip and the details heading.
-  await expect(row).toHaveAttribute('title', LONG);
+  await expect(row).toHaveAttribute('title', `${LONG} · app-server`);
   await expect(panel.getByRole('heading', { name: LONG })).toBeVisible();
   await panel.getByRole('tab', { name: 'Огляд' }).focus();
   await page.keyboard.press('ArrowLeft');
@@ -332,11 +347,13 @@ test('keyboard: Tab to a row, Enter selects (focus stays), tabs with arrows, Esc
   await panel.getByRole('button', { name: 'Перезапустити' }).focus();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Закрити деталі' }).click();
-  await expect(panel).toHaveCount(0);
-  await expect(row).toBeFocused();
+  // No close control in the split view (APP-01): the keyboard moves to another row and selects it with Space; the tab is kept.
+  await row.focus();
+  await page.keyboard.press('Shift+Tab'); // the previous row (the long name is the last one alphabetically)
   await page.keyboard.press('Space');
-  await expect(panel).toBeVisible();
+  await expect(panel).toHaveCount(0);
+  await expect(page.getByRole('region', { name: /^Деталі: / })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Історія дій' })).toHaveAttribute('aria-selected', 'true');
   expect(state.mutations).toEqual([]);
 });
 
@@ -353,20 +370,25 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1279, height: 800
       await expect(rowOf(page, 'billing-api')).toBeVisible();
       await noOverflow(page);
       if (viewport.width >= 1280) {
-        await expect(page.getByText('Оберіть застосунок, щоб переглянути деталі.')).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeVisible();
+        expect((await listGeometry(page))?.pitch).toEqual([48]);
         return;
       }
-      await expect(page.getByText('Оберіть застосунок, щоб переглянути деталі.')).toHaveCount(0);
+      await expect(page.getByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toHaveCount(0);
       const geo = await listGeometry(page);
-      for (const h of geo?.heights ?? []) { expect(h).toBeGreaterThanOrEqual(48); expect(h).toBeLessThanOrEqual(56); }
+      expect(geo?.pitch).toEqual([56]);
+      // 601–1279 px: the compact navigation rail (APP-15); every link keeps its name.
+      if (viewport.width > 600) {
+        expect((await page.locator('.sidebar').boundingBox())?.width).toBe(68);
+        await expect(page.getByRole('navigation', { name: 'Основна навігація' }).getByRole('link', { name: 'Застосунки' })).toBeVisible();
+      }
       // Full-width list.
       const [list, content] = await Promise.all([page.locator('.app-list').boundingBox(), page.locator('.page').boundingBox()]);
       expect(list && content && Math.abs(list.width - content.width) <= 1).toBe(true);
-      if (viewport.width <= 470) await expect(page.locator('.app-list__head')).toBeHidden(); // compact rows, no table head
       const type = await listTypography(page);
       for (const size of [...type.name, ...type.metric]) expect(size).toBeGreaterThanOrEqual(14);
-      expect(type.metric.length).toBeGreaterThan(0);
-      expect(type.compactFits).toBe(true);
+      // APP-13: on a phone the list shows name/server, state and RAM; CPU and uptime are in the details.
+      expect(type.metricsShown).toBe(viewport.width <= 600 ? 1 : 3);
       expect(type.nameLines).toBe(1);
       if (shots) await page.screenshot({ path: `${shots}/apps-list-${String(viewport.width)}-${scheme}.png` });
 
@@ -379,15 +401,18 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1279, height: 800
       await expect(panel).toBeVisible();
       await expect(panel.getByRole('heading', { name: 'svc-030' })).toBeFocused();
       await expect(rowOf(page, 'billing-api')).toHaveCount(0);
+      // APP-14: the phone details hide the page header and the filters; APP-15: the tablet keeps them.
+      await expect(page.getByLabel('Пошук за назвою')).toHaveCount(viewport.width <= 600 ? 0 : 1);
+      await expect(page.getByText('Робочий простір')).toHaveCount(viewport.width <= 600 ? 0 : 1);
       await noOverflow(page);
       await panel.getByRole('tab', { name: 'Логи' }).click();
       await expect(panel.getByText(/Логи цього процесу не дозволені|allowlist|Оновити/).first()).toBeVisible();
       await noOverflow(page);
       if (shots) await page.screenshot({ path: `${shots}/apps-detail-${String(viewport.width)}-${scheme}.png`, fullPage: true });
-      await panel.getByRole('button', { name: '← Назад до списку' }).click();
+      await panel.getByRole('button', { name: '← До списку застосунків' }).click();
       await expect(panel).toHaveCount(0);
       await expect(page).toHaveURL(/\?status=online$/);
-      await expect(page.getByLabel('Статус процесу')).toHaveValue('online');
+      await expect(page.getByLabel('Статус', { exact: true })).toHaveValue('online');
       await expect(target).toBeFocused();
       await expect(target).toHaveAttribute('aria-current', 'true');
       expect(Math.abs(await page.evaluate(() => window.scrollY) - scrolled)).toBeLessThanOrEqual(2);
@@ -411,7 +436,7 @@ for (const width of [1440, 390]) {
       await expect(row).toBeVisible();
       expect(await page.evaluate(() => matchMedia('(any-pointer: coarse)').matches || window.innerWidth <= 760)).toBe(true);
       const geo = await listGeometry(page);
-      for (const h of geo?.heights ?? []) { expect(h).toBeGreaterThanOrEqual(48); expect(h).toBeLessThanOrEqual(56); }
+      expect(geo?.pitch).toEqual([56]);
       await row.tap();
       const panel = panelOf(page, 'orders-api');
       await expect(panel).toBeVisible();
@@ -441,11 +466,44 @@ test('logs: after a successful read, an ambiguous 404 removes the old text from 
   await expect(page.locator('.log-text')).toHaveCount(0);
   expect(await page.evaluate(() => document.body.innerText.includes('/api/orders/'))).toBe(false);
   await expect(panel.getByRole('alert')).toContainText('Запит або ресурс логів недоступний');
-  await expect(panel.getByRole('checkbox', { name: /Оновлювати кожні 5 с/ })).not.toBeChecked();
-  await expect(panel.getByText(/Показано попередній результат/)).toHaveCount(0);
+  await expect(panel.getByRole('checkbox', { name: /Кожні 5 с/ })).not.toBeChecked();
+  await expect(panel.getByText(/Останній успішний результат/)).toHaveCount(0);
   if (shots) await page.screenshot({ path: `${shots}/apps-logs-404.png` });
   await panel.getByRole('button', { name: 'Оновити' }).click();
   await expect(panel.getByRole('alert')).toContainText('Запит або ресурс логів недоступний');
   expect(await page.evaluate(() => document.body.innerText.includes('/api/orders/'))).toBe(false);
   expect(state.mutations).toEqual([]);
+});
+
+test('200 % zoom of a 1440×900 window (DPR 2 at 720×450 CSS px): separate views, nothing overlaps, no page overflow', async ({ browser }) => {
+  // Playwright cannot press the browser's zoom; a DPR 2 page of 720×450 CSS px gets the same CSS layout as a
+  // 1440×900 window zoomed to 200 % (CSS px = window px / zoom, media queries alike). A manual zoom check is
+  // described in PROJECT_STATUS.
+  const context = await browser.newContext({ viewport: { width: 720, height: 450 }, deviceScaleFactor: 2, locale: 'uk-UA', baseURL: 'http://127.0.0.1:4175' });
+  const page = await context.newPage();
+  try {
+    await api(page);
+    await page.goto('/applications');
+    const row = rowOf(page, 'orders-api');
+    await expect(row).toBeVisible();
+    expect(await page.evaluate(() => window.devicePixelRatio)).toBe(2);
+    await noOverflow(page);
+    // Header, filters and the list follow each other without overlapping.
+    const boxes = await page.evaluate(() => ['.workspace-header', '.workspace-filters', '.app-list'].map((sel) => {
+      const r = document.querySelector(sel)?.getBoundingClientRect();
+      return r ? [r.top, r.bottom] : null;
+    }));
+    for (let i = 1; i < boxes.length; i += 1) expect((boxes[i] ?? [0])[0]).toBeGreaterThanOrEqual((boxes[i - 1] ?? [0, 0])[1] ?? 0);
+    await row.click();
+    const panel = panelOf(page, 'orders-api');
+    await expect(panel.getByRole('heading', { name: 'orders-api' })).toBeFocused();
+    await panel.getByRole('tab', { name: 'Логи' }).click();
+    await expect(panel.locator('.log-text')).toContainText('GET /api/orders/99 200');
+    await noOverflow(page);
+    if (shots) await page.screenshot({ path: `${shots}/apps-zoom200.png`, fullPage: true });
+    await panel.getByRole('button', { name: '← До списку застосунків' }).click();
+    await expect(row).toBeFocused();
+  } finally {
+    await context.close();
+  }
 });
