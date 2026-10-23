@@ -1,5 +1,35 @@
 # Поточний стан проєкту
 
+## Production: деплой `6c741ec` — тема й панель деталей за вибором (2026-10-23, після APPROVED Codex і за прямим дозволом користувача)
+
+`6c741ec` — це review-commit Codex поверх `5274822`; він змінює лише `docs/`. Відносно попереднього production `879fa34` змінено тільки `frontend/`, `e2e/` і документацію: тут також етап 3.1, схвалений у `a073ecc`. Backend, міграції, Agent, broker, installer, `scripts/`, `deploy/` і `package*.json` ідентичні, тому агентів не оновлювали.
+
+**До деплою.**
+- current `879fa34`, previous `590e36d`; служба active, `NRestarts=0`.
+- `/health/live` і `/health/ready` — 200; через HTTPS — 200.
+- Попереджень у журналі API за годину — 0. Nginx і PostgreSQL active.
+
+**Процедура (штатна, DEPLOYMENT).**
+- Артефакт: `git archive 6c741ec` → `build-release.js --from-tree` на одноразовій VM (Node 22.22.1). API `sha256 ce9f2df472796ebce29e01c01eaa023340e142d38e3f63c6833f8476f7f99554`, 87 файлів. Checksum на сервері збігся.
+- Резервні копії `api.env`, unit і `pg_dump` (`pg_restore --list` OK).
+- `prepare` → `config` («kept») → `migrate status`: `applied=10 pending=0 unknown=0`, міграції не виконувались.
+- Unit побайтово збігається з релізним. Далі `activate` (previous = `879fa34`) і restart лише `node-control-api`.
+
+**Після деплою.**
+- current `6c741ec`, previous `879fa34`.
+- Служба active, `NRestarts=0`, процес від `nodecontrol`, слухає лише `127.0.0.1:3100`.
+- health 200/200 локально й через HTTPS. `/nope` → 404, анонімний `/api/applications` → 401.
+- Попереджень за 5 хв — 0. Nginx і PostgreSQL active, failed units — 0.
+- Публічні `index.html`, `theme-init.js` (`application/javascript`), JS і CSS побайтово збігаються з `frontend/dist` активного релізу.
+- Не змінювались: Nginx, БД, ролі, PM2, агенти, Slack.
+
+**Не перевірено.** Свіжість heartbeat агентів через БД (запит не дозволений у цій сесії). Вхід у production UI теж не виконувався. Оператору варто перевірити:
+- перемикач теми (навігація, вхід, мобільне меню);
+- Applications: вибір → деталі → «Закрити деталі»;
+- що обидва сервери на «Огляді» онлайн.
+
+**Відновлення.** Переважний шлях — виправлення вперед. Якщо потрібне відновлення, `server-release.js rollback` повертає `879fa34`: approved Applications redesign, той самий backend, без міграцій. Далі restart лише `node-control-api`. На `590e36d` не повертатися (дефект P1). Запасний варіант — підготовлений `2510092` через явну `activate --revision`.
+
 ## Незалежний review Codex — тема й панель за вибором (`5274822`), 2026-10-23 — APPROVED
 
 Перевірено diff від `a073ecc`, відповідність погодженому промпту, код, тести й документацію Code → Docs / Docs → Code. Зауважень у межах завдання не знайдено. Backend, Agent, broker, API, SQL, RBAC та залежності не змінені. Новий untracked дизайн-архів та два попередні оригінали користувача збережено без змін і не включено до review-коміту.
