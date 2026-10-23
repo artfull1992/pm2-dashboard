@@ -129,6 +129,33 @@ describe('log viewer', () => {
     expect(screen.queryByRole('button', { name: 'Дії: api' })).toBeNull();
   });
 
+  it('server dialog: success, then 404 on the next read → the old text is hidden (same fail-closed tail)', async () => {
+    let gone = false;
+    backend('operator', (req) => (gone && req.url === `/api/log-requests/${REQ}` ? json(404, {}) : undefined));
+    renderAt(`/servers/${A}`);
+    const { user, dialog } = await openLogs();
+    expect(await within(dialog).findByText(/first/)).toBeTruthy();
+    gone = true;
+    await user.click(within(dialog).getByRole('button', { name: 'Оновити' }));
+    const alert = await within(dialog).findByRole('alert');
+    expect(dialog.textContent).not.toContain('first');
+    expect(dialog.querySelector('.log-text')).toBeNull();
+    expect(alert.textContent).toMatch(/Запит або ресурс логів недоступний/);
+  });
+
+  it('server dialog: 404 on create after a success → hidden as well', async () => {
+    let gone = false;
+    backend('operator', (req) => (gone && req.method === 'POST' && req.url.endsWith('/log-requests') ? json(404, {}) : undefined));
+    renderAt(`/servers/${A}`);
+    const { user, dialog } = await openLogs();
+    expect(await within(dialog).findByText(/first/)).toBeTruthy();
+    gone = true;
+    await user.click(within(dialog).getByRole('button', { name: 'Оновити' }));
+    const alert = await within(dialog).findByRole('alert');
+    expect(dialog.textContent).not.toContain('first');
+    expect(alert.textContent).toMatch(/Запит або ресурс логів недоступний/);
+  });
+
   it('409 is explained; auto-refresh stops; no retry', async () => {
     const calls = backend('operator', (req) => (req.url.endsWith('/log-requests') ? json(409, {}) : undefined));
     renderAt(`/servers/${A}`);

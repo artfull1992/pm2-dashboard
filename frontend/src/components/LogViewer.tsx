@@ -13,7 +13,8 @@ import { Dialog } from './Dialog';
 //
 // A failed refresh never silently keeps old text: after a transient failure (network, 5xx, rate limit, a busy or slow
 // broker, an expired request) the last text of THIS process stays, explicitly labelled as not refreshed; when access
-// or the target is gone (403, 409, not authorized, another process behind the target) the text is hidden. A refresh
+// or the target is gone (403, 409, not authorized, another process behind the target) or may be gone (an ambiguous
+// 404 from create or result reads) the shown AND the held-back text are dropped, so nothing can bring them back. A refresh
 // keeps the chosen stream and the reading position: it follows the end only when the reader was already at the end,
 // and while text is selected in the log the new text waits (shown once the selection is cleared or on request).
 
@@ -38,8 +39,11 @@ type Phase = 'loading' | 'ready' | 'error';
 
 /** Outcomes after which the previous text of the same process may still be shown (labelled as not refreshed). */
 const TRANSIENT_REASONS = new Set(['broker_busy', 'timeout', 'broker_unavailable', 'daemon_unavailable', 'deadline_passed']);
-/** Errors after which the previous text is hidden: access, permission or the target itself is no longer confirmed. */
-const hidesText = (error: unknown) => error instanceof ApiError && (error.kind === 'forbidden' || error.kind === 'conflict');
+/**
+ * Errors after which the previous text is hidden: access, permission or the target itself is no longer confirmed.
+ * 404 is included (fail closed): the API answers it also after resource access was revoked, without saying which.
+ */
+const hidesText = (error: unknown) => error instanceof ApiError && (error.kind === 'forbidden' || error.kind === 'conflict' || error.kind === 'not_found');
 /** Distance from the bottom (px) within which the reader counts as "following the end". */
 const STICK_PX = 24;
 
@@ -47,7 +51,8 @@ function errorText(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.kind === 'forbidden') return 'Недостатньо прав для перегляду логів.';
     if (error.kind === 'conflict') return 'Перегляд логів недоступний: агент не підтримує його, не на зв’язку або сервіс не дозволено.';
-    if (error.kind === 'not_found') return 'Запит протерміновано або сервер API перезапускався. Оновіть вручну.';
+    // 404 is deliberately ambiguous (ADR-028): access revoked, the request's lifecycle ended or the API restarted.
+    if (error.kind === 'not_found') return 'Запит або ресурс логів недоступний: доступ могли відкликати, запит міг завершитися або API перезапускався. Текст логів не показано. Оновіть вручну.';
     if (error.kind === 'rate_limited') return 'Забагато запитів. Зачекайте й оновіть вручну.';
   }
   return 'Не вдалося отримати логи. Оновіть вручну.';

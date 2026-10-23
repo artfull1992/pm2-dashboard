@@ -427,14 +427,15 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 .app-row--selected, .app-row--selected:hover { background: var(--primary-soft); box-shadow: inset 3px 0 0 var(--primary); }
 .app-row__marker { color: var(--primary); font-size: var(--font-sm); line-height: 1; }
 .app-row__main { display: grid; gap: 2px; min-width: 0; }
-.app-row__name { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; line-height: 18px; }
+/* Main list text (name, metrics) uses the body size --text-md (14 px), also over .mono's 13 px; secondary lines stay smaller. */
+.app-row__name { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-md); font-weight: 500; line-height: 20px; }
 .app-row--selected .app-row__name { font-weight: 650; }
-.app-row__sub { display: flex; gap: var(--space-2); min-width: 0; overflow: hidden; white-space: nowrap; color: var(--text-muted); font-size: var(--font-xs); line-height: 16px; }
+.app-row__sub { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; overflow: hidden; white-space: nowrap; color: var(--text-muted); font-size: var(--font-xs); line-height: 16px; }
 .app-row__server { flex: 0 1 auto; min-width: 2ch; overflow: hidden; text-overflow: ellipsis; }
 .app-row__stale { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--warning); font-weight: 600; }
-.app-row__compact { display: none; flex: none; }
+.app-row__compact { display: none; flex: none; font-size: var(--text-md); line-height: 18px; color: var(--text); }
 .app-row__status { min-width: 0; overflow: hidden; }
-.app-row__metric { text-align: right; font-size: var(--font-sm); white-space: nowrap; }
+.app-row__metric { text-align: right; font-size: var(--text-md); white-space: nowrap; }
 @container (max-width: 540px) {
   .app-list__head, .app-row { grid-template-columns: 12px minmax(0, 1fr) 6.75rem 4.25rem 4.75rem; }
   .app-list__uptime { display: none; }

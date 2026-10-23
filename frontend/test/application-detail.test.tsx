@@ -575,6 +575,133 @@ describe('log tail in the details', () => {
   });
 });
 
+describe('log tail: an ambiguous 404 fails closed (review P1)', () => {
+  // GET /api/log-requests/:id answers 404 also after resource access was revoked (also after a long-poll), and the API
+  // never says which case it is. Text already on screen must go, and nothing may bring it back.
+  const NOT_AVAILABLE = /Запит або ресурс логів недоступний/;
+  async function openLogs(user: User) {
+    const panel = await select(user, 'beta');
+    await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+    return panel;
+  }
+  const textGone = (text: string) => { expect(document.body.textContent).not.toContain(text); expect(document.querySelector('.log-text')).toBeNull(); };
+
+  it('success, then 404 on the next create → the old text is gone from the DOM; auto-refresh stops; the message names no single cause', async () => {
+    let gone = false;
+    const calls = backend('operator', { route: (req) => (gone && req.method === 'POST' && req.url.endsWith('/log-requests') ? json(404, {}) : undefined), logResult: () => logOk('secret old text') });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    expect(await within(panel).findByText('secret old text')).toBeTruthy();
+    gone = true;
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    const alert = await within(panel).findByRole('alert');
+    textGone('secret old text');
+    expect(alert.textContent).toMatch(NOT_AVAILABLE);
+    expect(alert.textContent).not.toMatch(/^Запит протерміновано або сервер API перезапускався/);
+    expect(within(panel).queryByText(/Показано попередній результат/)).toBeNull();
+    expect(within(panel).getByRole<HTMLInputElement>('checkbox').checked).toBe(false);
+    const before = logReads(calls).length;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(logReads(calls)).toHaveLength(before); // no automatic retry, no extra probing
+  });
+
+  it('success, then 404 on GET of the result → the old text is gone', async () => {
+    let gone = false;
+    backend('operator', { logResult: () => (gone ? json(404, {}) : logOk('secret old text')) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    expect(await within(panel).findByText('secret old text')).toBeTruthy();
+    gone = true;
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    const alert = await within(panel).findByRole('alert');
+    textGone('secret old text');
+    expect(alert.textContent).toMatch(NOT_AVAILABLE);
+  });
+
+  it('a long-poll GET that ends in 404: the text stays while waiting, then is cleared', async () => {
+    let slow: ReturnType<typeof deferred<Response>> | null = null;
+    backend('operator', { logResult: () => (slow ? slow.promise : logOk('secret old text')) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    expect(await within(panel).findByText('secret old text')).toBeTruthy();
+    const pending = deferred<Response>();
+    slow = pending;
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    expect(within(panel).getByText('secret old text')).toBeTruthy(); // still the last answer while the read is pending
+    await act(async () => { pending.resolve(json(404, {})); await Promise.resolve(); });
+    const alert = await within(panel).findByRole('alert');
+    textGone('secret old text');
+    expect(alert.textContent).toMatch(NOT_AVAILABLE);
+  });
+
+  it('a newer fragment held back by a selection is dropped with the visible one; neither selectionchange nor «Показати зараз» brings text back', async () => {
+    let step = 0;
+    backend('operator', { logResult: () => (step === 0 ? logOk('visible old') : step === 1 ? logOk('pending newer') : json(404, {})) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    const pre = await within(panel).findByText('visible old');
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+    step = 1;
+    fireEvent.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    expect(await within(panel).findByText(/Отримано новіший фрагмент/)).toBeTruthy();
+    step = 2;
+    fireEvent.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    const alert = await within(panel).findByRole('alert');
+    textGone('visible old');
+    expect(within(panel).queryByRole('button', { name: 'Показати зараз' })).toBeNull();
+    await act(async () => { document.getSelection()?.removeAllRanges(); document.dispatchEvent(new Event('selectionchange')); await Promise.resolve(); });
+    textGone('visible old');
+    textGone('pending newer');
+    expect(alert.textContent).toMatch(NOT_AVAILABLE);
+  });
+
+  it('a transient 503 still keeps only the labelled previous result of the same process', async () => {
+    let fail = false;
+    backend('operator', { route: (req) => (fail && req.method === 'POST' && req.url.endsWith('/log-requests') ? json(503, {}) : undefined), logResult: () => logOk('kept text') });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    expect(await within(panel).findByText('kept text')).toBeTruthy();
+    fail = true;
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    expect(await within(panel).findByText(/Показано попередній результат .* — його не оновлено/)).toBeTruthy();
+    expect(within(panel).getByText('kept text')).toBeTruthy();
+    expect(within(panel).getByRole('alert').textContent).not.toMatch(NOT_AVAILABLE);
+  });
+
+  it('after a 404, switching the process and coming back or a new session never restores the cleared text', async () => {
+    let mode: 'ok' | 'gone' | 'slow' = 'ok';
+    const slow = deferred<Response>();
+    backend('operator', { logResult: () => (mode === 'ok' ? logOk('secret old text') : mode === 'gone' ? json(404, {}) : slow.promise) });
+    const view = renderAt();
+    const user = userEvent.setup();
+    let panel = await openLogs(user);
+    expect(await within(panel).findByText('secret old text')).toBeTruthy();
+    mode = 'gone';
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    await within(panel).findByRole('alert');
+    textGone('secret old text');
+    mode = 'slow';
+    await select(user, 'alpha');
+    panel = await select(user, 'beta');
+    expect(within(panel).getByRole('tab', { name: 'Логи' }).getAttribute('aria-selected')).toBe('true');
+    expect(await within(panel).findByText('Завантаження логів…')).toBeTruthy();
+    textGone('secret old text');
+    await act(async () => { await nav.logout?.(); });
+    view.unmount();
+    renderAt();
+    await rowOf('beta');
+    textGone('secret old text');
+  });
+});
+
 describe('name search', () => {
   it('debounced: one request after typing stops; q in the URL; cursor reset; clear; Back restores the box', async () => {
     const calls = backend('operator', { items: (q) => (q.get('q') ? [app(B)] : [app(A), app(B)]) });

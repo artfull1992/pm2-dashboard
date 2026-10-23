@@ -15,7 +15,7 @@ const SERVERS = { [A]: 'app-server', [B]: 'backup-server' } as const;
 const LONG = 'very-long-service-name-for-layout-checks-with-many-segments-v2';
 const PAGE = 50;
 
-interface Api { mutations: string[]; reads: string[] }
+interface Api { mutations: string[]; reads: string[]; /** Log result reads answer 404 (ambiguous: e.g. access revoked). */ logGone: boolean }
 interface Item { key: string; serverId: string; name: string; pmId: number; status: string }
 
 /** `count` processes in total: a few named ones on both servers plus generated ones on app-server. */
@@ -35,7 +35,7 @@ function inventory(count: number): Item[] {
 }
 
 async function api(page: Page, count = 23): Promise<Api> {
-  const state: Api = { mutations: [], reads: [] };
+  const state: Api = { mutations: [], reads: [], logGone: false };
   const all = inventory(count);
   await page.route('**/api/**', async (route) => {
     const req = route.request();
@@ -94,6 +94,7 @@ async function api(page: Page, count = 23): Promise<Api> {
           requestedAt: now, deadlineAt: now, dispatchedAt: now, completedAt: now, attempts: 1, before: { status: 'online' }, after: { status: 'online' } },
       ] : [] };
     } else if (path.endsWith('/control-commands')) data = { items: [] };
+    else if (path === `/api/log-requests/${LOG}` && state.logGone) { await route.fulfill({ status: 404, json: {} }); return; }
     else if (path === `/api/log-requests/${LOG}`) {
       const text = Array.from({ length: 100 }, (_, i) => `2026-10-16T10:00:${String(i % 60).padStart(2, '0')}Z GET /api/orders/${String(i)} 200 ${'payload '.repeat(10)}`).join('\n');
       data = { requestId: LOG, serverId: A, targetKey: 'orders-api', status: 'done', deadlineAt: now, result: { outcome: 'ok', reason: null, readAt: now,
@@ -119,6 +120,22 @@ const listGeometry = (page: Page) => page.evaluate(() => {
   const rows = [...list.querySelectorAll<HTMLElement>('.app-row')];
   const visible = rows.filter((r) => { const b = r.getBoundingClientRect(); return b.top >= box.top - 0.5 && b.bottom <= Math.min(box.bottom, window.innerHeight) + 0.5; }).length;
   return { heights: [...new Set(rows.map((r) => Math.round(r.getBoundingClientRect().height)))], visible, scrollable: list.scrollHeight > list.clientHeight };
+});
+
+/** Computed font sizes (px) of the list's main text (names, metrics) and of its secondary lines; name line count. */
+const listTypography = (page: Page) => page.evaluate(() => {
+  const px = (sel: string) => [...new Set([...document.querySelectorAll<HTMLElement>(sel)].filter((el) => el.offsetParent !== null)
+    .map((el) => parseFloat(getComputedStyle(el).fontSize)))];
+  const names = [...document.querySelectorAll<HTMLElement>('.app-row__name')];
+  return {
+    name: px('.app-row__name'), metric: [...px('.app-row__metric'), ...px('.app-row__compact')], sub: px('.app-row__server'),
+    // Compact rows: the metrics are never cut off by the row (only the server name may be shortened).
+    compactFits: [...document.querySelectorAll<HTMLElement>('.app-row__compact')].filter((el) => el.offsetParent !== null)
+      .every((el) => { const sub = el.parentElement?.getBoundingClientRect(); return !sub || el.getBoundingClientRect().right <= sub.right + 0.5; }),
+    // One text line per name: long names are cut with an ellipsis, never wrapped character by character.
+    nameLines: Math.max(...names.map((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)))),
+    nameEllipsis: names.every((el) => getComputedStyle(el).textOverflow === 'ellipsis' && getComputedStyle(el).whiteSpace === 'nowrap'),
+  };
 });
 
 /** WCAG contrast ratio of an element's text against the first opaque background behind it. */
@@ -162,6 +179,13 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768
 
       const geo = await listGeometry(page);
       expect(geo?.visible ?? 0).toBeGreaterThanOrEqual(9);
+      // Main list text is at least 14 px (review P2); secondary lines may be smaller.
+      const type = await listTypography(page);
+      expect(type.name.length).toBeGreaterThan(0);
+      for (const size of [...type.name, ...type.metric]) expect(size).toBeGreaterThanOrEqual(14);
+      for (const size of type.sub) expect(size).toBeGreaterThanOrEqual(12);
+      expect(type.nameLines).toBe(1);
+      expect(type.nameEllipsis).toBe(true);
       // Every column, including the short uptime, is shown in the split list.
       await expect(rowOf(page, 'billing-api').locator('.app-list__uptime')).toBeVisible();
       for (const h of geo?.heights ?? []) { expect(h).toBeGreaterThanOrEqual(48); expect(h).toBeLessThanOrEqual(56); }
@@ -339,6 +363,11 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1279, height: 800
       const [list, content] = await Promise.all([page.locator('.app-list').boundingBox(), page.locator('.page').boundingBox()]);
       expect(list && content && Math.abs(list.width - content.width) <= 1).toBe(true);
       if (viewport.width <= 470) await expect(page.locator('.app-list__head')).toBeHidden(); // compact rows, no table head
+      const type = await listTypography(page);
+      for (const size of [...type.name, ...type.metric]) expect(size).toBeGreaterThanOrEqual(14);
+      expect(type.metric.length).toBeGreaterThan(0);
+      expect(type.compactFits).toBe(true);
+      expect(type.nameLines).toBe(1);
       if (shots) await page.screenshot({ path: `${shots}/apps-list-${String(viewport.width)}-${scheme}.png` });
 
       const target = rowOf(page, 'svc-030');
@@ -397,3 +426,26 @@ for (const width of [1440, 390]) {
     }
   });
 }
+
+test('logs: after a successful read, an ambiguous 404 removes the old text from the page (review P1); a manual refresh adds nothing back', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const state = await api(page);
+  await page.goto('/applications');
+  await rowOf(page, 'orders-api').click();
+  const panel = panelOf(page, 'orders-api');
+  await panel.getByRole('tab', { name: 'Логи' }).click();
+  await expect(panel.locator('.log-text')).toContainText('GET /api/orders/99 200');
+  state.logGone = true;
+  await panel.getByRole('button', { name: 'Оновити' }).click();
+  await expect(panel.getByRole('alert')).toBeVisible();
+  await expect(page.locator('.log-text')).toHaveCount(0);
+  expect(await page.evaluate(() => document.body.innerText.includes('/api/orders/'))).toBe(false);
+  await expect(panel.getByRole('alert')).toContainText('Запит або ресурс логів недоступний');
+  await expect(panel.getByRole('checkbox', { name: /Оновлювати кожні 5 с/ })).not.toBeChecked();
+  await expect(panel.getByText(/Показано попередній результат/)).toHaveCount(0);
+  if (shots) await page.screenshot({ path: `${shots}/apps-logs-404.png` });
+  await panel.getByRole('button', { name: 'Оновити' }).click();
+  await expect(panel.getByRole('alert')).toContainText('Запит або ресурс логів недоступний');
+  expect(await page.evaluate(() => document.body.innerText.includes('/api/orders/'))).toBe(false);
+  expect(state.mutations).toEqual([]);
+});
