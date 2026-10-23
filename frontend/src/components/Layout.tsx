@@ -4,6 +4,7 @@ import type { Permission, Role } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Icon, type IconName } from './icons';
 import { RailTooltip } from './RailTooltip';
+import { ThemeSwitcher } from './ThemeSwitcher';
 import { RAIL_QUERY, useMediaQuery } from './useMediaQuery';
 
 export const ROLE_LABELS: Record<Role, string> = { admin: 'Адміністратор', operator: 'Оператор', viewer: 'Спостерігач' };
@@ -113,6 +114,7 @@ export function Layout() {
               <Icon name="logout" /><span className="nav__label">{logoutState === 'pending' ? 'Вихід…' : 'Вийти'}</span>
             </button>
           </div>
+          <ThemeSwitcher compact={rail} />
           {logoutState === 'failed' ? <p className="account__error" role="alert">Не вдалося вийти: сервіс недоступний. Спробуйте ще раз.</p> : null}
         </div>
       </aside>

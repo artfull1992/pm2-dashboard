@@ -4,7 +4,7 @@ import type { ApplicationItem, CommandView } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { formatDate } from '../pages/ServersPage';
 import { ActionMenu, type MenuItem } from './ActionMenu';
-import { formatUptimeShort, PanelMessage } from './ApplicationList';
+import { formatUptimeShort } from './ApplicationList';
 import { currentState, freshness, lastKnown, notRunning } from './appState';
 import { formatCount, formatCpu, formatMemory } from './Inventory';
 import { LogTail } from './LogViewer';
@@ -87,7 +87,7 @@ function NoticeBox({ notice, role }: { notice: Notice; role?: 'status' | 'alert'
   );
 }
 
-export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reasons, canControl, canLogs, historyVersion, lastSeenAt, onMenuOpen, onBack, headingRef }: {
+export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reasons, canControl, canLogs, historyVersion, lastSeenAt, onMenuOpen, onClose, onBack, headingRef }: {
   /** The selected process: live data when confirmed, otherwise its last known row. */
   app: ApplicationItem;
   presence: Presence;
@@ -108,6 +108,8 @@ export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reas
   onMenuOpen: () => void;
   /** Separate view: back to the list (filters, page and scroll position are kept). */
   onBack?: (() => void) | undefined;
+  /** Split view: «Закрити деталі» clears the selection (the list gets the whole width back). */
+  onClose?: (() => void) | undefined;
   headingRef?: Ref<HTMLHeadingElement> | undefined;
 }) {
   const base = useId();
@@ -146,7 +148,10 @@ export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reas
             <h2 ref={headingRef} tabIndex={-1} className="app-detail__name">{app.name}</h2>
             <p className="app-detail__context">{hidden ? app.serverName : `${app.serverName} · PM2 ${String(app.pmId)}${app.execMode ? ` · ${app.execMode}` : ''}`}</p>
           </div>
-          {hidden ? null : <StatusIndicator tone={state.tone}>{state.label}</StatusIndicator>}
+          <div className="app-detail__corner">
+            {hidden ? null : <StatusIndicator tone={state.tone}>{state.label}</StatusIndicator>}
+            {onClose ? <button type="button" className="button button--ghost icon-button app-detail__close" aria-label="Закрити деталі" title="Закрити деталі" onClick={onClose}>✕</button> : null}
+          </div>
         </div>
         {hidden ? null : (
           <div className="app-detail__actions">
@@ -191,17 +196,6 @@ export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reas
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-/** Split view without a selection (APP-11) or while the first page loads (APP-08). */
-export function DetailPlaceholder({ loading = false }: { loading?: boolean }) {
-  return (
-    <div className="app-detail app-detail--empty">
-      {loading
-        ? <PanelMessage symbol="⋯" title="Завантаження застосунків"><p className="hint">Отримуємо стан процесів.</p></PanelMessage>
-        : <PanelMessage symbol="▤" title="Оберіть застосунок, щоб переглянути деталі"><p className="hint">Стан, логи та історія дій з’являться тут.</p></PanelMessage>}
     </div>
   );
 }

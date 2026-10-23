@@ -181,7 +181,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768
       const state = await api(page, count);
       await page.goto('/applications');
       await expect(rowOf(page, 'billing-api')).toBeVisible();
-      await expect(page.getByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeVisible();
+      // No selection → no details column: the list has the whole width of the content (user decision 2026-10-23).
+      await expect(page.locator('.workspace__detail')).toHaveCount(0);
+      const [wide, content] = await Promise.all([page.locator('.app-list').boundingBox(), page.locator('.workspace').boundingBox()]);
+      expect(wide && content && Math.abs(wide.width - content.width) <= 1).toBe(true);
       await expect(page.getByText(`На цій сторінці: ${String(Math.min(count, PAGE))}`)).toBeVisible();
       if (count > PAGE) await expect(page.getByRole('button', { name: 'Наступна сторінка' })).toBeVisible();
 
@@ -370,11 +373,13 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1279, height: 800
       await expect(rowOf(page, 'billing-api')).toBeVisible();
       await noOverflow(page);
       if (viewport.width >= 1280) {
-        await expect(page.getByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeVisible();
+        await expect(page.locator('.workspace__detail')).toHaveCount(0);
+        await rowOf(page, 'billing-api').click();
+        await expect(page.locator('.workspace--detail .workspace__detail')).toBeVisible(); // a selection opens the side panel
         expect((await listGeometry(page))?.pitch).toEqual([48]);
         return;
       }
-      await expect(page.getByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toHaveCount(0);
+      await expect(page.locator('.workspace__detail')).toHaveCount(0);
       const geo = await listGeometry(page);
       expect(geo?.pitch).toEqual([56]);
       // 601–1279 px: the compact navigation rail (APP-15); every link keeps its name.
@@ -414,7 +419,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 1279, height: 800
       await expect(page).toHaveURL(/\?status=online$/);
       await expect(page.getByLabel('Статус', { exact: true })).toHaveValue('online');
       await expect(target).toBeFocused();
-      await expect(target).toHaveAttribute('aria-current', 'true');
+      await expect(target).not.toHaveAttribute('aria-current', 'true'); // «До списку застосунків» clears the selection
       expect(Math.abs(await page.evaluate(() => window.scrollY) - scrolled)).toBeLessThanOrEqual(2);
       expect(errors).toEqual([]);
     });
@@ -506,3 +511,42 @@ test('reflow at 720×450 CSS px with DPR 2 (not a browser-zoom check): separate 
     await context.close();
   }
 });
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+  test(`details only for a selection at ${String(viewport.width)}×${String(viewport.height)}: open → split, «Закрити деталі» by keyboard → full width, focus back, no detail-only requests`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const state = await api(page);
+    await page.goto('/applications');
+    const row = rowOf(page, 'orders-api');
+    await expect(row).toBeVisible();
+    const content = await page.locator('.workspace').boundingBox();
+    expect((await page.locator('.app-list').boundingBox())?.width).toBeCloseTo(content?.width ?? 0, 0);
+    await row.focus();
+    await page.keyboard.press('Enter');
+    const panel = panelOf(page, 'orders-api');
+    await expect(panel).toBeVisible();
+    const listWidth = (await page.locator('.app-list').boundingBox())?.width ?? 0;
+    expect(listWidth / (content?.width ?? 1)).toBeLessThan(0.6);
+    await panel.getByRole('tab', { name: 'Логи' }).click();
+    await expect(panel.locator('.log-text')).toBeVisible();
+    // Keyboard reaches the close control; Enter closes.
+    const close = panel.getByRole('button', { name: 'Закрити деталі' });
+    await panel.getByRole('tab', { name: 'Логи' }).focus();
+    for (let i = 0; i < 20 && !(await close.evaluate((el) => el === document.activeElement)); i += 1) await page.keyboard.press('Shift+Tab');
+    await expect(close).toBeFocused();
+    expect(await close.evaluate((el) => getComputedStyle(el).outlineStyle)).not.toBe('none');
+    await page.keyboard.press('Enter');
+    await expect(panel).toHaveCount(0);
+    await expect(page.locator('.workspace__detail')).toHaveCount(0);
+    expect((await page.locator('.app-list').boundingBox())?.width).toBeCloseTo(content?.width ?? 0, 0);
+    await expect(row).toBeFocused();
+    await expect(row).not.toHaveAttribute('aria-current', 'true');
+    // No detail-only requests (log reads, history, selection check) after closing.
+    const count = () => state.reads.filter((r) => r.includes('/log-requests') || r.includes('targetKey=') || /\/api\/servers\/[^/]+\/applications$/.test(r)).length;
+    const before = count();
+    await page.waitForTimeout(6_000); // longer than the 5 s log refresh
+    expect(count()).toBe(before);
+    if (shots) await page.screenshot({ path: `${shots}/apps-closed-${String(viewport.width)}.png` });
+    expect(state.mutations).toEqual([]);
+  });
+}

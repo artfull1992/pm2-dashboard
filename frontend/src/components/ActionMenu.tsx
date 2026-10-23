@@ -13,13 +13,14 @@ import { createPortal } from 'react-dom';
 // items stay focusable (aria-disabled) but do nothing. Choosing an item closes the menu, focuses the trigger and only
 // then runs the item (a dialog opened by it returns focus to the trigger). Opening a menu never sends anything.
 
-export interface MenuItem { key: string; label: string; danger?: boolean; disabled: boolean; onSelect: () => void }
+/** `checked` makes the item a radio choice (menuitemradio + aria-checked), e.g. the theme. */
+export interface MenuItem { key: string; label: string; danger?: boolean; disabled: boolean; checked?: boolean; onSelect: () => void }
 
 const GAP = 4;
 const MARGIN = 8;
 let closeOpenMenu: (() => void) | null = null;
 
-export function ActionMenu({ name, items, note, loading = false, onOpen, disabled, label = 'Дії', ariaLabel, subtle = false, iconOnly = false }: {
+export function ActionMenu({ name, items, note, loading = false, onOpen, disabled, label = 'Дії', ariaLabel, subtle = false, iconOnly = false, menuLabel }: {
   name: string;
   /** Visible trigger text (default "Дії"); e.g. "Недоступно" for a row whose menu only explains why. */
   label?: string;
@@ -29,6 +30,8 @@ export function ActionMenu({ name, items, note, loading = false, onOpen, disable
   subtle?: boolean;
   /** A square icon trigger (e.g. «⋯»): `label` is the glyph, `ariaLabel` the name; no chevron. */
   iconOnly?: boolean;
+  /** Accessible name of the open menu (default `Дії для <name>`). */
+  menuLabel?: string;
   items: MenuItem[];
   /** Why items are missing or disabled — shown inside the menu. */
   note?: string | null | undefined;
@@ -68,7 +71,7 @@ export function ActionMenu({ name, items, note, loading = false, onOpen, disable
     return () => { if (closeOpenMenu === mine) closeOpenMenu = null; };
   }, [shown]);
 
-  const menuItems = () => Array.from(popup.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+  const menuItems = () => Array.from(popup.current?.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"]') ?? []);
 
   // Focus the first/last usable item once the items are there (lazy menus: after loading). Polling refreshes of an
   // open menu never move focus again.
@@ -161,10 +164,11 @@ export function ActionMenu({ name, items, note, loading = false, onOpen, disable
           onKeyDown={onMenuKey} onBlur={(event) => { if (leaves(event.relatedTarget)) setOpen(false); }}>
           {loading ? <p className="action-menu__note" role="status">Завантаження…</p> : null}
           {!loading && items.length > 0 ? (
-            <div role="menu" aria-label={`Дії для ${name}`} aria-describedby={note ? noteId : undefined} className="action-menu__list">
+            <div role="menu" aria-label={menuLabel ?? `Дії для ${name}`} aria-describedby={note ? noteId : undefined} className="action-menu__list">
               {items.map((item) => (
-                <button key={item.key} type="button" role="menuitem" tabIndex={-1} aria-disabled={item.disabled || undefined}
-                  className={`action-menu__item ${item.danger ? 'action-menu__item--danger' : ''}`}
+                <button key={item.key} type="button" role={item.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={item.checked}
+                  tabIndex={-1} aria-disabled={item.disabled || undefined}
+                  className={`action-menu__item ${item.danger ? 'action-menu__item--danger' : ''}${item.checked ? ' action-menu__item--checked' : ''}`}
                   onClick={() => { if (item.disabled) return; close(true); item.onSelect(); }}>{item.label}</button>
               ))}
             </div>

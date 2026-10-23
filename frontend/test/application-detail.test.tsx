@@ -109,13 +109,17 @@ async function select(user: User, server: 'alpha' | 'beta', name = 'api') {
 }
 
 describe('workspace: list and details side by side (≥1280 px)', () => {
-  // Design reference 1.0 (APP-01/11): no close control in the split view — a selection is replaced by another one.
-  it('no selection → placeholder; one selection marked on its row (aria-current + accent bar); another row replaces it', async () => {
+  // User decision 2026-10-23 (replaces APP-11's permanent empty panel): without a selection there is no details
+  // column at all; a selection opens it and «Закрити деталі» closes it.
+  it('no selection → list only (no details column); one selection marked on its row; another row replaces it', async () => {
     backend('operator');
     renderAt();
     const user = userEvent.setup();
-    expect(await screen.findByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeTruthy();
+    expect(await screen.findByText('На цій сторінці: 2')).toBeTruthy();
     expect(anyPanel()).toBeNull();
+    expect(document.querySelector('.workspace__detail')).toBeNull();
+    expect(document.querySelector('.workspace--detail')).toBeNull();
+    expect(screen.queryByRole('heading', { name: /Оберіть застосунок/ })).toBeNull();
     expect(await screen.findByText('На цій сторінці: 2')).toBeTruthy();
     expect(screen.queryByText(/ із /)).toBeNull(); // no totals the API does not give
     const a = await rowOf('alpha');
@@ -128,7 +132,7 @@ describe('workspace: list and details side by side (≥1280 px)', () => {
     expect(screen.getAllByRole('region', { name: /^Деталі:/ })).toHaveLength(1);
     expect(a.getAttribute('aria-current')).toBeNull();
     expect((await rowOf('beta')).getAttribute('aria-current')).toBe('true');
-    expect(screen.queryByRole('button', { name: 'Закрити деталі' })).toBeNull();
+    expect(document.querySelector('.workspace--detail .workspace__detail')).toBeTruthy();
   });
 
   // Addendum §2: stopped/errored and offline/stale rows show «—» metrics; offline/stale is an unknown CURRENT state.
@@ -451,19 +455,21 @@ describe('selection beyond the rows on screen', () => {
     renderAt();
     await rowOf('alpha');
     expect(anyPanel()).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeTruthy();
+    expect(document.querySelector('.workspace__detail')).toBeNull();
   });
 });
 
 describe('below 1280 px: separate views', () => {
   // APP-14 / APP-15: the tablet details keep the page header and filters above the panel; the phone details hide both
   // (they come back with the same values through «До списку застосунків»).
-  it.each([1279, 1024, 390])('%i px: list full width; selection opens the details view; «До списку застосунків» keeps filters and focuses the row', async (width) => {
+  // «До списку застосунків» clears the selection (user decision 2026-10-23): the hidden details are gone.
+  it.each([1279, 1024, 390])('%i px: list full width; selection opens the details view; «До списку застосунків» clears it, keeps filters and focuses the row', async (width) => {
     setViewportWidth(width);
     backend('operator');
     renderAt('/applications?status=online');
     const user = userEvent.setup();
-    expect(screen.queryByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeNull();
+    await rowOf('beta');
+    expect(document.querySelector('.workspace__detail')).toBeNull();
     const panel = await select(user, 'beta');
     expect(document.activeElement).toBe(within(panel).getByRole('heading', { name: 'api' }));
     expect(queryRow('alpha')).toBeNull(); // the list is replaced by the details view
@@ -479,14 +485,33 @@ describe('below 1280 px: separate views', () => {
     expect(nav.search).toBe('?status=online');
     expect(screen.getByLabelText<HTMLSelectElement>('Статус').value).toBe('online');
     expect(document.activeElement).toBe(await rowOf('beta'));
-    expect((await rowOf('beta')).getAttribute('aria-current')).toBe('true');
+    expect((await rowOf('beta')).getAttribute('aria-current')).toBeNull(); // the selection is cleared
   });
 
-  it('1280 px is already the split view', async () => {
+  it('1280 px is already the split view: a selection opens the details beside the list', async () => {
     setViewportWidth(1280);
     backend('operator');
     renderAt();
-    expect(await screen.findByRole('heading', { name: 'Оберіть застосунок, щоб переглянути деталі' })).toBeTruthy();
+    const user = userEvent.setup();
+    await select(user, 'alpha');
+    expect(document.querySelector('.workspace--detail .workspace__detail')).toBeTruthy();
+    expect(queryRow('beta')).toBeTruthy(); // the list stays beside the details
+  });
+
+  it('a window that only changes its width keeps the selection and the tab', async () => {
+    backend('operator');
+    renderAt();
+    const user = userEvent.setup();
+    let panel = await select(user, 'beta');
+    await user.click(within(panel).getByRole('tab', { name: 'Історія дій' }));
+    act(() => { setViewportWidth(1024); });
+    panel = await screen.findByRole('region', { name: 'Деталі: api на beta' });
+    expect(queryRow('alpha')).toBeNull(); // the separate details view
+    expect(within(panel).getByRole('tab', { name: 'Історія дій' }).getAttribute('aria-selected')).toBe('true');
+    act(() => { setViewportWidth(1440); });
+    panel = await screen.findByRole('region', { name: 'Деталі: api на beta' });
+    expect(queryRow('alpha')).toBeTruthy();
+    expect(within(panel).getByRole('tab', { name: 'Історія дій' }).getAttribute('aria-selected')).toBe('true');
   });
 });
 
@@ -798,12 +823,13 @@ describe('design reference 1.0: states of the selected process (APP-04…APP-10)
     expect(within(await rowOf('beta')).getByText('Працює')).toBeTruthy();
   });
 
-  it('APP-08 loading: skeleton rows and a loading pane; no process is invented', async () => {
+  it('APP-08 loading: skeleton rows over the whole width (no details column); no process is invented', async () => {
     const slow = deferred<Response>();
     backend('operator', { route: (req) => (req.url.startsWith('/api/applications?') ? slow.promise : undefined) });
     renderAt();
-    expect(await screen.findByRole('heading', { name: 'Завантаження застосунків' })).toBeTruthy();
+    expect(await screen.findByText('Завантаження застосунків…')).toBeTruthy();
     expect(anyPanel()).toBeNull();
+    expect(document.querySelector('.workspace__detail')).toBeNull();
     expect(queryRow('alpha')).toBeNull();
     expect(document.querySelectorAll('.app-row--skeleton').length).toBeGreaterThan(0);
     await act(async () => { slow.resolve(json(200, { items: [app(A)], nextCursor: null, freshWindowSeconds: 180 })); await Promise.resolve(); });
@@ -853,6 +879,108 @@ describe('design reference 1.0: states of the selected process (APP-04…APP-10)
     const denied = within(panel).getByRole('alert');
     expect(denied.textContent).toMatch(/^Логи недоступні/);
     expect(denied.textContent).not.toMatch(/не означає зупинку/);
+  });
+});
+
+describe('details only for a selection (user decision 2026-10-23)', () => {
+  it('«Закрити деталі»: the panel goes, the list gets the whole width, the selection is cleared, focus returns to the row', async () => {
+    backend('operator');
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'beta');
+    await user.click(within(panel).getByRole('button', { name: 'Закрити деталі' }));
+    expect(anyPanel()).toBeNull();
+    expect(document.querySelector('.workspace--detail')).toBeNull();
+    const row = await rowOf('beta');
+    expect(row.getAttribute('aria-current')).toBeNull();
+    expect(document.activeElement).toBe(row);
+    // A new selection opens on «Огляд» again.
+    const again = await select(user, 'beta');
+    expect(within(again).getByRole('tab', { name: 'Огляд' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('closing while the selected row is not on the page: focus goes to the first row', async () => {
+    const calls = backend('operator', { items: (q) => (q.get('serverId') === B ? [app(B)] : [app(A), app(B)]) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    await user.selectOptions(screen.getByLabelText('Сервер'), B);
+    await waitFor(() => { expect(queryRow('alpha')).toBeNull(); });
+    await within(panel).findByText('Вибраний застосунок поза поточним фільтром');
+    await user.click(within(panel).getByRole('button', { name: 'Закрити деталі' }));
+    expect(document.activeElement).toBe(await rowOf('beta'));
+    // The selection check (needed only by the panel) stops: no more server inventory reads after closing.
+    const before = checks(calls).length;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(checks(calls)).toHaveLength(before);
+  });
+
+  it('closing during a pending log read aborts it; nothing detail-only is requested afterwards; reopening shows no old text', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let mode: 'ok' | 'slow' | 'reopen' = 'ok';
+      const slow = deferred<Response>();
+      const reopen = deferred<Response>();
+      const calls = backend('operator', { logResult: () => (mode === 'ok' ? logOk('first text') : mode === 'slow' ? slow.promise : reopen.promise) });
+      renderAt();
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+      let panel = await select(user, 'beta');
+      await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+      expect(await within(panel).findByText('first text')).toBeTruthy();
+      mode = 'slow';
+      await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+      await waitFor(() => { expect(logReads(calls).filter((c) => c.method === 'GET').length).toBeGreaterThanOrEqual(2); });
+      const pending = logReads(calls).filter((c) => c.method === 'GET').at(-1);
+      await user.click(within(panel).getByRole('button', { name: 'Закрити деталі' }));
+      expect(pending?.signal?.aborted).toBe(true);
+      // The late answer of the aborted read neither reopens the panel nor shows up anywhere.
+      slow.resolve(logOk('late text'));
+      const reads = logReads(calls).length;
+      const histories = historyReads(calls).length;
+      const inventoryChecks = checks(calls).length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+      expect(anyPanel()).toBeNull();
+      expect(document.body.textContent).not.toContain('late text');
+      expect(logReads(calls)).toHaveLength(reads);
+      expect(historyReads(calls)).toHaveLength(histories);
+      expect(checks(calls)).toHaveLength(inventoryChecks);
+      // Reopening: a new read cycle — the old text is not shown before (or instead of) the new answer.
+      mode = 'reopen';
+      panel = await select(user, 'beta');
+      await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+      expect(await within(panel).findByText('Завантаження логів…')).toBeTruthy();
+      expect(document.body.textContent).not.toContain('first text'); // nothing of the closed panel comes back
+      await act(async () => { reopen.resolve(logOk('fresh text')); await Promise.resolve(); });
+      expect(await within(panel).findByText('fresh text')).toBeTruthy();
+      expect(logReads(calls).length).toBeGreaterThan(reads);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a command already sent keeps being tracked after the details are closed (closing neither cancels nor resends it)', async () => {
+    let status = 'queued';
+    const calls = backend('operator', { route: (req) => (req.url === `/api/control-commands/${CMD}` ? json(200, command(A, { status, ...(status === 'succeeded' ? { after: { status: 'online' }, completedAt: new Date().toISOString() } : {}) })) : undefined) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    await user.click(await within(panel).findByRole('button', { name: 'Перезапустити' }));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
+    expect(await screen.findByText(/«api-alpha» на сервері «alpha»: У черзі/)).toBeTruthy();
+    await user.click(within(panel).getByRole('button', { name: 'Закрити деталі' }));
+    status = 'succeeded';
+    expect(await screen.findByText(/«api-alpha» на сервері «alpha»: Виконано й підтверджено/, undefined, { timeout: 4000 })).toBeTruthy();
+    expect(posts(calls)).toHaveLength(1);
+  });
+
+  it('Escape is not taken over: it does not close the details', async () => {
+    backend('operator');
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    within(panel).getByRole('tab', { name: 'Огляд' }).focus();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('region', { name: 'Деталі: api на alpha' })).toBe(panel);
   });
 });
 

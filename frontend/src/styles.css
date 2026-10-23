@@ -3,11 +3,14 @@
    (muted text + small dot), problems are visible (colour + text + soft background), numbers use tabular figures. */
 
 /* ------------------------------------------------------------------ tokens */
-/* Semantic tokens (redesign B, 2026-10-22). The theme follows the OS (prefers-color-scheme): dark and light are both
-   first-class; nothing forces a user into another theme. Contrast (WCAG): text ≥ 4.5:1 on every surface it is used
-   on, control borders and focus ≥ 3:1 (checked in e2e/ui-tests/foundation.spec.ts). */
+/* Semantic tokens (redesign B, 2026-10-22). Dark and light are both first-class. The theme is the user's choice
+   (public/theme-init.js → <html data-theme="light|dark">), and «Як у системі» (no attribute, the default) follows the
+   OS through prefers-color-scheme. The dark token block below is applied twice — for an explicit dark choice and for
+   the system setting when no light choice was made; both copies must stay identical (checked in
+   e2e/ui-tests/theme.spec.ts). color-scheme follows the applied theme, so native controls match. Contrast (WCAG): text
+   ≥ 4.5:1 on every surface it is used on, control borders and focus ≥ 3:1 (e2e/ui-tests/foundation.spec.ts). */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --nav: #ffffff;                /* navigation column / mobile top bar */
   --bg: #f4f6f8;                 /* page background */
   --surface: #ffffff;            /* panels, tables, cards */
@@ -63,7 +66,8 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --nav: #10151d;
     --bg: #141b24;
     --surface: #1b2430;
@@ -92,6 +96,37 @@
     --log-bg: #10151d;
     --log-text: #e2e8f0;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --nav: #10151d;
+  --bg: #141b24;
+  --surface: #1b2430;
+  --surface-2: #222c3a;
+  --elevated: #1f2935;
+  --text: #e7edf5;
+  --text-muted: #a8b5c6;
+  --border: #2d3949;
+  --border-strong: #3d4a5c;
+  --control-border: #8293aa;   /* DS-01 / addendum §8: contour of interactive controls */
+  --primary: #729bff;
+  --primary-text: #0b1220;
+  --primary-soft: rgb(114 155 255 / 15%);
+  --success: #62d39a;
+  --success-soft: rgb(98 211 154 / 13%);
+  --warning: #f4c36a;
+  --warning-soft: rgb(244 195 106 / 13%);
+  --danger: #ff8991;
+  --danger-soft: rgb(255 137 145 / 13%);
+  --focus: #729bff;
+  --shadow: 0 8px 24px rgb(0 0 0 / 40%);
+  --surface-sunken: #17202b;
+  --selected-bg: #21314c;
+  --skeleton: #263241;
+  --field-bg: #10151d;
+  --log-bg: #10151d;
+  --log-text: #e2e8f0;
 }
 
 /* Hit areas follow the INPUT, independently of the layout breakpoints (review dca7703):
@@ -461,7 +496,9 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
   .workspace-filters .field--select { flex: none; }
 }
 .workspace { display: grid; gap: var(--space-4); min-width: 0; }
-.page--split > .workspace { flex: 1 1 0; min-height: 0; grid-template-columns: minmax(0, 56fr) minmax(0, 44fr); }
+.page--split > .workspace { flex: 1 1 0; min-height: 0; grid-template-columns: minmax(0, 1fr); }
+/* Only a selected process opens the details column; without one the list has the whole width. */
+.page--split > .workspace--detail { grid-template-columns: minmax(0, 56fr) minmax(0, 44fr); }
 @media (min-width: 1280px) and (max-width: 1400px) { .page--split > .workspace { gap: var(--space-3); } }
 .workspace__detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
@@ -514,10 +551,11 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 /* Details: identity, actions, notices and metrics on top; tabs; the tab content scrolls (the log fills it). */
 .app-detail { display: flex; flex-direction: column; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .workspace__detail .app-detail { flex: 1 1 auto; min-height: 0; }
-.app-detail--empty { align-items: stretch; }
 .app-detail__top { flex: none; display: grid; gap: var(--space-4); padding: var(--pane-pad); }
 .app-detail__back { justify-self: start; }
 .app-detail__identity { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.app-detail__corner { display: flex; align-items: center; gap: var(--space-2); flex: none; }
+.app-detail__close { flex: none; }
 .app-detail__title { min-width: 0; }
 .app-detail__name { font-size: 20px; line-height: 28px; font-weight: 650; overflow-wrap: anywhere; }
 .app-detail__name:focus { outline: none; }
@@ -696,4 +734,15 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 @media (max-width: 760px) {
   .server-context { grid-template-columns: minmax(0, 1fr); }
   .dash-stats .metric { flex-basis: 140px; }
+}
+
+/* Theme switcher (sidebar, rail, mobile menu, login). */
+.theme-switcher { display: inline-flex; }
+.profile .theme-switcher { margin-top: var(--space-2); }
+.login__theme { justify-self: end; }
+.action-menu__item--checked { font-weight: 600; }
+.action-menu__item[role="menuitemradio"]::before { content: ""; display: inline-block; width: 1.2em; }
+.action-menu__item--checked::before { content: "✓"; }
+@media (min-width: 601px) and (max-width: 1279px) {
+  .profile .theme-switcher { position: relative; margin-top: 0; }
 }

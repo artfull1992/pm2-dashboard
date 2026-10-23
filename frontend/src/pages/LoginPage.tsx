@@ -4,6 +4,7 @@ import type { ApiErrorKind } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { safeInternalPath } from '../auth/guards';
 import { formatRetry } from '../components/StatusMessage';
+import { ThemeSwitcher } from '../components/ThemeSwitcher';
 
 export function loginErrorMessage(kind: ApiErrorKind, retryAfterSeconds: number | null): string {
   switch (kind) {
@@ -75,6 +76,7 @@ export function LoginPage() {
   return (
     <main className="login" id="main">
       <form className="login__card" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="login-title">
+        <div className="login__theme"><ThemeSwitcher /></div>
         <h1 id="login-title" className="login__title">Node Control</h1>
         <p className="login__subtitle">Увійдіть, щоб продовжити</p>
         {notice ? <p className="notice" role="status">{notice}</p> : null}

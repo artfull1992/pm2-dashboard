@@ -4,7 +4,7 @@ import { applicationsApi, SEARCH_MAX_LENGTH, serversApi } from '../api/client';
 import { type ApplicationItem, PROCESS_STATUSES, type ProcessStatus, type ServerApplications } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
-import { ApplicationDetail, confirmedPresence, DetailPlaceholder, type DetailTab, type Presence } from '../components/ApplicationDetail';
+import { ApplicationDetail, confirmedPresence, type DetailTab, type Presence } from '../components/ApplicationDetail';
 import { ApplicationList, appIdentity, isLive, ListHead, ListSkeleton, PanelMessage } from '../components/ApplicationList';
 import { PROCESS_STATUS_LABELS } from '../components/Inventory';
 import { CommandStatusList, type CommandRequest, controlReady, rowMenu, useProcessCommands } from '../components/processActions';
@@ -20,9 +20,10 @@ import { formatDate } from './ServersPage';
 // typing is debounced and writes one history entry per pause. Counts are only what the page itself shows — the API
 // has no totals, so the page never claims "N of M".
 //
-// Layout: from 1280 px the compact list and the details of the selected process are side by side (~56/44), each
-// scrolling on its own within the viewport height. Below 1280 px the list is full width and choosing a process opens
-// its details as a separate (non-modal) view; «Назад до списку» returns to the same filters, page and scroll position.
+// Layout: without a selected process the list has the whole width (no empty details column). Choosing one opens its
+// details: from 1280 px beside the list (~56/44, each scrolling on its own within the viewport height), below it as a
+// separate (non-modal) view. «Закрити деталі» / «До списку застосунків» clear the selection and return to the same
+// filters, page and scroll position, focus on the row that was selected.
 //
 // Selection is local state (not in the URL) and survives filter, search and page changes. It is identified by key +
 // serverId + source + name (a PM2 id can be reused). When the process is not in the rows on screen, the page asks the
@@ -101,10 +102,10 @@ function ApplicationsView() {
   const phone = useMediaQuery(PHONE_QUERY);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [tab, setTab] = useState<DetailTab>('overview');
-  // Below 1280 px: the list or the details of the selection (a separate view).
-  const [view, setView] = useState<'list' | 'detail'>('list');
+  // The list's scroll position when a separate details view (below 1280 px) was opened; restored on the way back.
   const listScroll = useRef(0);
-  const restoreList = useRef(false);
+  // After the details are closed: restore the list (scroll) and move the focus to the row that was selected.
+  const restoreList = useRef<{ id: string; scroll: number | null } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useRef(false);
   const [historyVersion, setHistoryVersion] = useState(0);
@@ -199,28 +200,39 @@ function ApplicationsView() {
     if (!split) {
       listScroll.current = window.scrollY;
       focusHeading.current = true;
-      setView('detail');
     }
   }, [ensure, split]);
-  const backToList = () => { restoreList.current = true; setView('list'); };
+  // Closing the details (split view: «Закрити деталі»; separate views: «До списку застосунків») clears the selection:
+  // the panel and everything only it needed (logs, history, the selection check) go away; the list, its filters,
+  // page and capabilities stay. Commands already sent keep being tracked (useProcessCommands lives on this page).
+  const closeDetails = () => {
+    if (!selection) return;
+    restoreList.current = { id: selection.id, scroll: split ? null : listScroll.current };
+    setSelection(null);
+    setTab('overview'); // a new selection opens on «Огляд» again
+  };
 
-  const showDetail = !split && view === 'detail' && selection !== null;
-  // Separate views: the details start at the top with focus on their heading; going back restores the list's
-  // scroll position and focuses the selected row (if it is still on the page).
+  // Below 1280 px a selection is shown as its own view; a window that only changes its width keeps the selection
+  // and the tab (the details move between the side panel and the separate view).
+  const showDetail = !split && selection !== null;
+  // Separate views: the details start at the top with focus on their heading. After closing: the list's scroll
+  // position comes back (separate views) and the focus goes to the row that was selected — or, when it is not on
+  // this page any more, to the first row, then the search field.
   useLayoutEffect(() => {
     if (showDetail && focusHeading.current) {
       focusHeading.current = false;
       window.scrollTo(0, 0);
       heading.current?.focus();
     }
-    if (!showDetail && restoreList.current) {
-      restoreList.current = false;
-      window.scrollTo(0, listScroll.current);
-      const id = selection?.id;
-      const row = id ? [...document.querySelectorAll<HTMLElement>('[data-app-row]')].find((el) => el.dataset.appRow === id) : undefined;
-      row?.focus({ preventScroll: true });
+    const restore = restoreList.current;
+    if (!selection && restore) {
+      restoreList.current = null;
+      if (restore.scroll !== null) window.scrollTo(0, restore.scroll);
+      const rows = [...document.querySelectorAll<HTMLElement>('[data-app-row]')];
+      const target = rows.find((el) => el.dataset.appRow === restore.id) ?? rows[0] ?? document.getElementById(searchFieldId);
+      target?.focus({ preventScroll: true });
     }
-  }, [showDetail, selection?.id]);
+  }, [showDetail, selection, searchFieldId]);
 
   if (state.status === 'forbidden') return <Forbidden />;
   const serverOptions = servers.status === 'ready' ? servers.data.items : [];
@@ -259,7 +271,7 @@ function ApplicationsView() {
     detail = (
       <ApplicationDetail key={selection.id} app={selected} presence={presence} tab={tab} onTab={setTab} caps={loaded} items={items} reasons={reasons}
         canControl={canControl} canLogs={canLogs} historyVersion={historyVersion} lastSeenAt={lastSeenOf(selected.serverId)}
-        onMenuOpen={() => { void ensure(selected.serverId); }} onBack={split ? undefined : backToList} headingRef={heading} />
+        onMenuOpen={() => { void ensure(selected.serverId); }} onClose={split ? closeDetails : undefined} onBack={split ? undefined : closeDetails} headingRef={heading} />
     );
   }
 
@@ -321,7 +333,7 @@ function ApplicationsView() {
       ) : null}
 
       {showDetail ? detail : (
-        <div className="workspace">
+        <div className={`workspace${split && detail ? ' workspace--detail' : ''}`}>
           <section className="app-list" aria-label="Список застосунків">
             <div className="app-list__caption">
               <span className="num">{data ? `На цій сторінці: ${String(data.items.length)}` : state.status === 'loading' ? 'Завантаження…' : 'Список недоступний'}</span>
@@ -351,7 +363,8 @@ function ApplicationsView() {
             {data && data.items.length > 0 ? <ApplicationList items={data.items} selected={selection?.id ?? null} onSelect={select} label="PM2-процеси" /> : null}
             {pager}
           </section>
-          {split ? <div className="workspace__detail">{detail ?? <DetailPlaceholder loading={state.status === 'loading'} />}</div> : null}
+          {/* The details panel exists only for a selection: without one the list has the whole width. */}
+          {split && detail ? <div className="workspace__detail">{detail}</div> : null}
         </div>
       )}
       {dialog}
