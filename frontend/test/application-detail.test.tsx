@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
 import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from 'react-router';
@@ -6,10 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppRoutes } from '../src/App';
 import { useAuth } from '../src/auth/AuthContext';
 import { AuthProvider } from '../src/auth/AuthContext';
-import { deferred, installFetch, json, type RecordedRequest, session } from './support';
+import { deferred, installFetch, json, type RecordedRequest, session, setViewportWidth } from './support';
 
-// Applications: one expandable panel (overview / inline logs / target history), lazy tabs, the same actions; and the
-// server-side name search (debounced, in the URL). Synthetic API only.
+type User = ReturnType<typeof userEvent.setup>;
+
+// Applications workspace (redesign B, stage 2): compact list + details of ONE selected process (overview / inline logs /
+// target history), lazy tabs, the same actions; the selection survives filters and pages and is verified against the
+// server's current inventory; separate views below 1280 px; the server-side name search. Synthetic API only.
 
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -56,9 +59,18 @@ interface Opts {
   items?: (filter: URLSearchParams) => unknown[];
   controlFor?: (id: string) => unknown;
   logsFor?: (id: string) => unknown;
+  /** GET /api/servers/:id/applications (the selection check); default: the current inventory with every process. */
+  serverApps?: (id: string) => Response | Promise<Response>;
+  /** Log read result (GET /api/log-requests/:id). */
+  logResult?: () => Response | Promise<Response>;
 }
 let history: (serverId: string, targetKey: string) => unknown[] = () => [];
-function backend(role: 'operator' | 'viewer' | 'admin', { permissions, route = () => undefined, items = () => [app(A), app(B)], controlFor = (id) => control(id), logsFor = (id) => logTargets(id) }: Opts = {}) {
+const inventory = (id: string, items: unknown[], over: Record<string, unknown> = {}, serverStatus = 'online') => json(200, {
+  serverId: id, serverStatus, items, freshWindowSeconds: 180,
+  inventory: { state: 'current', reason: null, source: 'pm2', capturedAt: null, collectedAt: '2026-10-13T12:00:01.000Z', reportedAt: null, processCount: items.length, ...over },
+});
+const logOk = (text: string) => json(200, { requestId: REQ, serverId: B, targetKey: 'api-beta', status: 'done', deadlineAt: new Date().toISOString(), result: { outcome: 'ok', reason: null, readAt: new Date().toISOString(), stdout: { state: 'ok', text, lines: text.split('\n').length, truncated: false, sizeBytes: text.length, modifiedAt: '2026-10-13T11:59:00.000Z' }, stderr: { state: 'empty', text: '', lines: 0, truncated: false, sizeBytes: 0, modifiedAt: null } } });
+function backend(role: 'operator' | 'viewer' | 'admin', { permissions, route = () => undefined, items = () => [app(A), app(B)], controlFor = (id) => control(id), logsFor = (id) => logTargets(id), serverApps = (id) => inventory(id, [app(id)]), logResult = () => logOk('beta line') }: Opts = {}) {
   return installFetch((req) => {
     const r = route(req);
     if (r) return r;
@@ -69,100 +81,145 @@ function backend(role: 'operator' | 'viewer' | 'admin', { permissions, route = (
     for (const id of [A, B]) {
       if (req.url === `/api/servers/${id}/control`) return json(200, controlFor(id));
       if (req.url === `/api/servers/${id}/log-targets`) return json(200, logsFor(id));
+      if (req.url === `/api/servers/${id}/applications`) return serverApps(id);
       if (req.method === 'POST' && req.url === `/api/servers/${id}/control-commands`) return json(201, command(id));
       if (req.method === 'POST' && req.url === `/api/servers/${id}/log-requests`) return json(202, { requestId: REQ, deadlineAt: new Date(Date.now() + 15_000).toISOString() });
     }
     const hist = /^\/api\/servers\/([^/]+)\/control-commands\?limit=10&targetKey=([a-z0-9._-]+)$/.exec(req.url);
     if (hist) return json(200, { items: history(hist[1] ?? '', hist[2] ?? '') });
     if (req.url === `/api/control-commands/${CMD}`) return json(200, command(A));
-    if (req.url === `/api/log-requests/${REQ}`) return json(200, { requestId: REQ, serverId: B, targetKey: 'api-beta', status: 'done', deadlineAt: new Date().toISOString(), result: { outcome: 'ok', reason: null, readAt: new Date().toISOString(), stdout: { state: 'ok', text: 'beta line', lines: 1, truncated: false, sizeBytes: 9, modifiedAt: null }, stderr: { state: 'empty', text: '', lines: 0, truncated: false, sizeBytes: 0, modifiedAt: null } } });
+    if (req.url === `/api/log-requests/${REQ}`) return logResult();
     return json(404, {});
   });
 }
 const posts = (calls: RecordedRequest[]) => calls.filter((c) => c.method === 'POST' && c.url.includes('/control-commands'));
 const capReads = (calls: RecordedRequest[]) => calls.filter((c) => /\/api\/servers\/[^/]+\/(control|log-targets)$/.test(c.url)).map((c) => c.url.replace('/api/servers/', '').replace(A, 'A').replace(B, 'B'));
-const menuOf = (server: 'alpha' | 'beta') => screen.findByRole('button', { name: `Дії: api на ${server}` });
-
-const toggle = (server: 'alpha' | 'beta', open = false) => screen.findByRole('button', { name: `${open ? 'Згорнути' : 'Розгорнути'} деталі: api на ${server}` });
-const panelOf = (server: 'alpha' | 'beta') => screen.findByRole('region', { name: `Деталі: api на ${server}` });
 const logReads = (calls: RecordedRequest[]) => calls.filter((c) => c.url.includes('/log-requests'));
 const historyReads = (calls: RecordedRequest[]) => calls.filter((c) => c.url.includes('targetKey='));
+const checks = (calls: RecordedRequest[]) => calls.filter((c) => /^\/api\/servers\/[^/]+\/applications$/.test(c.url));
 const apps = (calls: RecordedRequest[]) => calls.filter((c) => c.url.startsWith('/api/applications?')).map((c) => new URL(c.url, 'http://x').searchParams);
 
-describe('expandable application panel', () => {
-  it('collapsed by default; one panel at a time; the same toggle collapses; aria wiring; the table row stays one row', async () => {
+const rowOf = (server: 'alpha' | 'beta', name = 'api') => screen.findByRole('button', { name: new RegExp(`^${name} на ${server}:`) });
+const queryRow = (server: 'alpha' | 'beta', name = 'api') => screen.queryByRole('button', { name: new RegExp(`^${name} на ${server}:`) });
+const panelOf = (server: 'alpha' | 'beta', name = 'api') => screen.findByRole('region', { name: `Деталі: ${name} на ${server}` });
+const anyPanel = () => screen.queryByRole('region', { name: /^Деталі:/ });
+async function select(user: User, server: 'alpha' | 'beta', name = 'api') {
+  await user.click(await rowOf(server, name));
+  return panelOf(server, name);
+}
+
+describe('workspace: list and details side by side (≥1280 px)', () => {
+  it('no selection → placeholder; one selection marked on its row (aria-current + marker); another row replaces it; close returns focus', async () => {
     backend('operator');
     renderAt();
     const user = userEvent.setup();
-    const a = await toggle('alpha');
-    expect(a.getAttribute('aria-expanded')).toBe('false');
-    expect(a.getAttribute('aria-controls')).toBeNull();
-    expect(screen.queryByRole('region', { name: /^Деталі:/ })).toBeNull();
-    await user.click(a);
-    const panel = await panelOf('alpha');
-    expect(a.getAttribute('aria-expanded')).toBe('true');
-    expect(document.getElementById(a.getAttribute('aria-controls') ?? '')?.contains(panel)).toBe(true);
-    expect(panel.closest('td')?.colSpan).toBe(screen.getAllByRole('columnheader').length); // spans the whole table
-    await user.click(await toggle('beta'));
-    await panelOf('beta');
-    expect(screen.queryByRole('region', { name: 'Деталі: api на alpha' })).toBeNull();
+    expect(await screen.findByText('Оберіть застосунок, щоб переглянути деталі.')).toBeTruthy();
+    expect(anyPanel()).toBeNull();
+    expect(await screen.findByText('На цій сторінці: 2')).toBeTruthy();
+    expect(screen.queryByText(/ із /)).toBeNull(); // no totals the API does not give
+    const a = await rowOf('alpha');
+    expect(a.getAttribute('aria-current')).toBeNull();
+    await select(user, 'alpha');
+    expect(a.getAttribute('aria-current')).toBe('true');
+    expect(a.className).toContain('app-row--selected');
+    expect(a.querySelector('.app-row__marker')?.textContent).toBe('▸');
+    expect(document.activeElement).toBe(a); // focus stays in the list in the split view
+    await select(user, 'beta');
     expect(screen.getAllByRole('region', { name: /^Деталі:/ })).toHaveLength(1);
-    await user.click(await toggle('beta', true));
-    expect(screen.queryByRole('region', { name: /^Деталі:/ })).toBeNull();
+    expect(a.getAttribute('aria-current')).toBeNull();
+    expect((await rowOf('beta')).getAttribute('aria-current')).toBe('true');
+    await user.click(screen.getByRole('button', { name: 'Закрити деталі' }));
+    expect(anyPanel()).toBeNull();
+    expect(document.activeElement).toBe(await rowOf('beta'));
   });
 
-  it('overview is the default and reads nothing extra: no log read, no history; the menu still works independently', async () => {
+  it('rows: compact name + server, status, CPU, memory, short uptime; unknown metric is «—»; offline/stale rows warn with the time', async () => {
+    backend('viewer', { items: () => [
+      app(A, { uptimeSeconds: 90_061, cpuPercent: 12.5, memoryBytes: 150 * 1024 ** 2 }),
+      app(B, { status: 'stopped', serverStatus: 'offline', cpuPercent: null, memoryBytes: null, uptimeSeconds: null }),
+      app(A, { key: `${A}:pm2:4`, pmId: 4, name: 'worker', status: 'errored', inventoryState: 'stale' }),
+    ] });
+    renderAt();
+    const a = await rowOf('alpha');
+    expect(a.getAttribute('aria-label')).toBe("api на alpha: Працює, CPU 12.5 %, пам'ять 150 МіБ, аптайм 1 д 1 год");
+    expect(within(a).getByText('Працює')).toBeTruthy();
+    const b = await rowOf('beta');
+    expect(b.getAttribute('aria-label')).toContain('Зупинено (останні відомі дані, сервер офлайн)');
+    expect(within(b).getByText(/⚠ сервер офлайн ·/)).toBeTruthy();
+    expect(within(b).getAllByText('—').length).toBeGreaterThanOrEqual(3);
+    const w = await rowOf('alpha', 'worker');
+    expect(within(w).getByText('Помилка').className).toContain('status--bad');
+    expect(within(w).getByText(/⚠ дані застарілі ·/)).toBeTruthy();
+    expect(within(b).getByText('Зупинено').className).toContain('status--warn');
+    expect(screen.getByText('неактуальні дані: 2')).toBeTruthy();
+    // No interactive content nested inside a row.
+    expect(a.querySelector('a, button, input, select')).toBeNull();
+  });
+
+  it('overview is the first tab and reads nothing extra (no log read, no history); PM2 id, mode, restarts total, exact collection time', async () => {
     const calls = backend('operator');
     renderAt();
     const user = userEvent.setup();
-    await user.click(await toggle('alpha'));
-    const panel = await panelOf('alpha');
+    const panel = await select(user, 'alpha');
     expect(within(panel).getByRole('tab', { name: 'Огляд' }).getAttribute('aria-selected')).toBe('true');
     expect(within(panel).getByText('PM2 id')).toBeTruthy();
+    expect(within(panel).getByText('Рестарти (усього)')).toBeTruthy();
+    expect(within(panel).getByText('Режим')).toBeTruthy();
+    expect(within(panel).getByText('Зібрано')).toBeTruthy();
     expect(await within(panel).findByText(/Доступно: Запустити, Зупинити, Перезапустити/)).toBeTruthy();
     expect(logReads(calls)).toEqual([]);
     expect(historyReads(calls)).toEqual([]);
-    await user.click(await menuOf('beta')); // the other row's menu is independent of the panel
-    expect(await screen.findByRole('menuitem', { name: 'Перезапустити' })).toBeTruthy();
-    expect(screen.getAllByRole('region', { name: /^Деталі:/ })).toHaveLength(1);
+    expect(checks(calls)).toEqual([]); // the process is on the page: no extra inventory check
   });
 
-  it('history: one request for the confirmed target of that server (filtered by the API); scope is stated; reloads after a command', async () => {
+  it('history: one request for the confirmed target of that server; scope is stated; reloads after a command', async () => {
     history = (serverId, key) => (serverId === A && key === 'api-alpha' ? [command(A, { status: 'succeeded', after: { status: 'online' }, completedAt: new Date().toISOString() })] : []);
     const calls = backend('operator');
     renderAt();
     const user = userEvent.setup();
-    await user.click(await toggle('alpha'));
-    const panel = await panelOf('alpha');
+    const panel = await select(user, 'alpha');
     await user.click(within(panel).getByRole('tab', { name: 'Історія дій' }));
     expect(await within(panel).findByText(/Виконано й підтверджено/)).toBeTruthy();
     expect(within(panel).getByText(/Команди цілі «api-alpha» з allowlist цього сервера/)).toBeTruthy();
     expect(historyReads(calls).map((c) => c.url)).toEqual([`/api/servers/${A}/control-commands?limit=10&targetKey=api-alpha`]);
-    // A command from the panel: the same confirmation and POST; the history reloads after it was accepted.
-    await user.click(within(panel).getByRole('button', { name: 'Перезапустити' }));
+    await user.click(await within(panel).findByRole('button', { name: 'Перезапустити' }));
     const dialog = await screen.findByRole('dialog', { name: 'Перезапустити процес?' });
     expect(dialog.textContent).toContain('«api» (api-alpha) на сервері «alpha»');
     await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
     await waitFor(() => { expect(posts(calls)).toHaveLength(1); });
-    expect(posts(calls)[0]?.url).toBe(`/api/servers/${A}/control-commands`);
     expect(JSON.parse(posts(calls)[0]?.body ?? '{}')).toMatchObject({ targetKey: 'api-alpha', action: 'restart' });
     await waitFor(() => { expect(historyReads(calls).length).toBeGreaterThanOrEqual(2); });
   });
 
-  it('history: no confirmed target → explained, nothing requested (not shown as an empty history); empty history is its own message', async () => {
+  it('history: no confirmed target → explained, nothing requested; empty history is its own message', async () => {
     const calls = backend('operator', { controlFor: (id) => control(id, { targets: id === A ? [] : [target(id)] }) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await toggle('alpha'));
-    let panel = await panelOf('alpha');
+    let panel = await select(user, 'alpha');
     await user.click(within(panel).getByRole('tab', { name: 'Історія дій' }));
     expect(await within(panel).findByText(/немає підтвердженої цілі керування.*Це не означає, що команд не було/)).toBeTruthy();
     expect(historyReads(calls)).toEqual([]);
-    await user.click(await toggle('beta'));
-    panel = await panelOf('beta');
-    await user.click(within(panel).getByRole('tab', { name: 'Історія дій' }));
+    panel = await select(user, 'beta');
+    // The open tab is kept when another process is selected.
+    expect(within(panel).getByRole('tab', { name: 'Історія дій' }).getAttribute('aria-selected')).toBe('true');
     expect(await within(panel).findByText('Команд для цієї цілі ще не було.')).toBeTruthy();
     expect(historyReads(calls).map((c) => c.url)).toEqual([`/api/servers/${B}/control-commands?limit=10&targetKey=api-beta`]);
+  });
+
+  it('a late history answer of the previously selected process is ignored', async () => {
+    const slowA = deferred<Response>();
+    history = (serverId) => (serverId === B ? [] : []);
+    const calls = backend('operator', { route: (req) => (req.url.includes(`/servers/${A}/control-commands?`) ? slowA.promise : undefined) });
+    renderAt();
+    const user = userEvent.setup();
+    let panel = await select(user, 'alpha');
+    await user.click(within(panel).getByRole('tab', { name: 'Історія дій' }));
+    await waitFor(() => { expect(historyReads(calls)).toHaveLength(1); });
+    panel = await select(user, 'beta');
+    expect(historyReads(calls)[0]?.signal?.aborted).toBe(true);
+    expect(await within(panel).findByText('Команд для цієї цілі ще не було.')).toBeTruthy();
+    await act(async () => { slowA.resolve(json(200, { items: [command(A, { status: 'succeeded', after: { status: 'online' } })] })); await Promise.resolve(); });
+    expect(screen.queryByText(/Виконано й підтверджено/)).toBeNull();
   });
 
   it('logs load only on the Logs tab; switching away aborts the read; keyboard moves between tabs', async () => {
@@ -170,12 +227,10 @@ describe('expandable application panel', () => {
     const calls = backend('operator', { route: (req) => (req.url.endsWith('/log-requests') && req.method === 'POST' ? slow.promise : undefined) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await toggle('beta'));
-    const panel = await panelOf('beta');
+    const panel = await select(user, 'beta');
     within(panel).getByRole('tab', { name: 'Огляд' }).focus();
     await user.keyboard('{ArrowRight}');
     expect(document.activeElement).toBe(within(panel).getByRole('tab', { name: 'Логи' }));
-    expect(within(panel).getByRole('tab', { name: 'Логи' }).getAttribute('aria-selected')).toBe('true');
     await waitFor(() => { expect(logReads(calls)).toHaveLength(1); });
     expect(logReads(calls)[0]?.url).toBe(`/api/servers/${B}/log-requests`);
     await user.keyboard('{ArrowRight}');
@@ -183,16 +238,30 @@ describe('expandable application panel', () => {
     expect(logReads(calls)[0]?.signal?.aborted).toBe(true);
     await user.keyboard('{Home}');
     expect(document.activeElement).toBe(within(panel).getByRole('tab', { name: 'Огляд' }));
+    await user.keyboard('{Escape}'); // Escape never runs anything
+    expect(posts(calls)).toEqual([]);
   });
 
-  it('polling refreshes keep the panel, its tab and focus', async () => {
+  it('logs: switching to another process stops the read of the previous one', async () => {
+    const slow = deferred<Response>();
+    const calls = backend('operator', { route: (req) => (req.url === `/api/servers/${B}/log-requests` ? slow.promise : undefined) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'beta');
+    await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+    await waitFor(() => { expect(logReads(calls)).toHaveLength(1); });
+    await select(user, 'alpha');
+    expect(logReads(calls)[0]?.signal?.aborted).toBe(true);
+    await waitFor(() => { expect(logReads(calls).some((c) => c.url === `/api/servers/${A}/log-requests`)).toBe(true); });
+  });
+
+  it('polling refreshes keep the details, the tab and focus', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const calls = backend('operator');
       renderAt();
       const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
-      await user.click(await toggle('alpha'));
-      const panel = await panelOf('alpha');
+      const panel = await select(user, 'alpha');
       await user.click(within(panel).getByRole('tab', { name: 'Історія дій' }));
       const tab = within(panel).getByRole('tab', { name: 'Історія дій' });
       const before = apps(calls).length;
@@ -207,46 +276,11 @@ describe('expandable application panel', () => {
     }
   });
 
-  it('a filter change closes the panel and aborts its open read; a vanished or renamed row closes it', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      let rows = [app(A), app(B)];
-      const slow = deferred<Response>();
-      const calls = backend('operator', { items: (q) => (q.get('serverId') === B ? [app(B)] : rows), route: (req) => (req.url.includes('targetKey=') ? slow.promise : undefined) });
-      renderAt();
-      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
-      await user.click(await toggle('alpha'));
-      let panel = await panelOf('alpha');
-      await user.click(within(panel).getByRole('tab', { name: 'Історія дій' }));
-      await waitFor(() => { expect(historyReads(calls)).toHaveLength(1); });
-      await act(async () => { await nav.current?.(`/applications?serverId=${B}`); });
-      await waitFor(() => { expect(screen.queryByRole('region', { name: /^Деталі:/ })).toBeNull(); });
-      expect(historyReads(calls)[0]?.signal?.aborted).toBe(true);
-      await act(async () => { slow.resolve(json(200, { items: [] })); await Promise.resolve(); });
-      expect(screen.queryByRole('region', { name: /^Деталі:/ })).toBeNull();
-      // Back to all servers: the same row identity renamed on the next poll → closed (never shows another process).
-      await act(async () => { await nav.current?.('/applications'); });
-      await user.click(await toggle('alpha'));
-      panel = await panelOf('alpha');
-      rows = [app(A, { name: 'api-renamed' }), app(B)];
-      await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
-      await waitFor(() => { expect(screen.queryByRole('region', { name: /^Деталі:/ })).toBeNull(); });
-      await user.click(await toggle('beta'));
-      await panelOf('beta');
-      rows = [app(A, { name: 'api-renamed' })];
-      await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
-      await waitFor(() => { expect(screen.queryByRole('region', { name: /^Деталі:/ })).toBeNull(); });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it('viewer: overview only; logs and history explain why, and nothing is requested', async () => {
     const calls = backend('viewer');
     renderAt();
     const user = userEvent.setup();
-    await user.click(await toggle('alpha'));
-    const panel = await panelOf('alpha');
+    const panel = await select(user, 'alpha');
     expect(within(panel).getByText('Немає права керування процесами.')).toBeTruthy();
     expect(within(panel).queryByRole('button', { name: /Запустити|Зупинити|Перезапустити/ })).toBeNull();
     await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
@@ -258,19 +292,286 @@ describe('expandable application panel', () => {
     expect(capReads(calls)).toEqual([]);
   });
 
-  it('a command started from the panel keeps being tracked after the panel is collapsed', async () => {
+  it('a command started from the details keeps being tracked after they are closed', async () => {
     let status = 'queued';
     backend('operator', { route: (req) => (req.url === `/api/control-commands/${CMD}` ? json(200, command(A, { status, ...(status === 'succeeded' ? { after: { status: 'online' }, completedAt: new Date().toISOString() } : {}) })) : undefined) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await toggle('alpha'));
-    const panel = await panelOf('alpha');
+    const panel = await select(user, 'alpha');
     await user.click(await within(panel).findByRole('button', { name: 'Перезапустити' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     expect(await screen.findByText(/«api-alpha» на сервері «alpha»: У черзі/)).toBeTruthy();
-    await user.click(within(panel).getByRole('button', { name: 'Згорнути' }));
+    await user.click(within(panel).getByRole('button', { name: 'Закрити деталі' }));
     status = 'succeeded';
     expect(await screen.findByText(/«api-alpha» на сервері «alpha»: Виконано й підтверджено/, undefined, { timeout: 4000 })).toBeTruthy();
+  });
+});
+
+describe('selection beyond the rows on screen', () => {
+  it('outside the filter: the details stay, verified against the server inventory, commands available; reset clears filters and cursor', async () => {
+    const calls = backend('operator', { items: (q) => (q.get('serverId') === B ? [app(B)] : [app(A), app(B)]) });
+    renderAt('/applications?cursor=abc');
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    await user.selectOptions(screen.getByLabelText('Сервер'), B);
+    await waitFor(() => { expect(nav.search).toBe(`?serverId=${B}`); });
+    await waitFor(() => { expect(queryRow('alpha')).toBeNull(); });
+    expect(await within(panel).findByText(/не відповідає поточним фільтрам/)).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Деталі: api на alpha' })).toBe(panel);
+    expect(checks(calls).map((c) => c.url)).toEqual([`/api/servers/${A}/applications`]);
+    expect((await within(panel).findByRole('button', { name: 'Перезапустити' })).getAttribute('aria-disabled')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Скинути фільтри' }));
+    await waitFor(() => { expect(nav.search).toBe(''); });
+    expect((await rowOf('alpha')).getAttribute('aria-current')).toBe('true');
+    expect(within(panel).queryByText(/не відповідає поточним фільтрам/)).toBeNull();
+  });
+
+  it('on another page: said so; the selection survives page changes', async () => {
+    backend('operator', { items: (q) => (q.get('cursor') ? [app(B)] : [app(A)]), route: (req) => (req.url.startsWith('/api/applications?') && !req.url.includes('cursor') ? json(200, { items: [app(A)], nextCursor: 'NEXT', freshWindowSeconds: 180 }) : undefined) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    await user.click(screen.getByRole('button', { name: 'Наступна сторінка' }));
+    await rowOf('beta');
+    expect(await within(panel).findByText(/не на поточній сторінці списку/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'На першу сторінку' }));
+    expect((await rowOf('alpha')).getAttribute('aria-current')).toBe('true');
+  });
+
+  it('confirmed gone from a current inventory: message, no metrics, no commands, no logs; nothing substituted', async () => {
+    let rows = [app(A), app(B)];
+    let inv = () => inventory(A, [app(A)]);
+    const calls = backend('operator', { items: () => rows, serverApps: (id) => (id === A ? inv() : inventory(id, [app(id)])) });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderAt();
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+      const panel = await select(user, 'alpha');
+      await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+      await waitFor(() => { expect(logReads(calls).length).toBeGreaterThan(0); });
+      // The same key now belongs to another process (PM2 id reused): never shown as the selected one.
+      rows = [app(A, { name: 'other' }), app(B)];
+      inv = () => inventory(A, [app(A, { name: 'other' })]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+      expect(await within(panel).findByText(/Процесу більше немає серед доступних вам процесів сервера «alpha»/)).toBeTruthy();
+      expect(within(panel).queryByText('CPU')).toBeNull();
+      expect(within(panel).queryByRole('tab')).toBeNull();
+      expect(within(panel).queryByRole('button', { name: /Перезапустити|^Дії:/ })).toBeNull();
+      expect(within(panel).queryByText('beta line')).toBeNull();
+      expect(logReads(calls).filter((c) => c.method === 'GET').every((c) => c.signal?.aborted)).toBe(true);
+      expect(screen.getByRole('region', { name: 'Деталі: api на alpha' })).toBe(panel); // no substitution by "other"
+      expect((await rowOf('alpha', 'other')).getAttribute('aria-current')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['stale inventory', () => inventory(A, [], { state: 'stale' }), /inventory сервера застарілий/],
+    ['unavailable inventory', () => inventory(A, [], { state: 'unavailable', reason: 'timeout' }), /inventory сервера недоступний/],
+    ['offline server', () => inventory(A, [], {}, 'offline'), /сервер не онлайн/],
+    ['truncated answer', () => inventory(A, Array.from({ length: 500 }, (_, i) => app(A, { key: `${A}:pm2:${String(100 + i)}`, pmId: 100 + i, name: `p${String(i)}` }))), /обмежена 500 процесами/],
+  ])('not confirmable (%s): last known data under a warning, commands blocked', async (_n, inv, why) => {
+    const calls = backend('operator', { items: (q) => (q.get('status') ? [] : [app(A), app(B)]), serverApps: (id) => (id === A ? inv() : inventory(id, [app(id)])) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    await within(panel).findByRole('button', { name: 'Перезапустити' });
+    await user.selectOptions(screen.getByLabelText('Статус процесу'), 'errored');
+    expect(await within(panel).findByText(why)).toBeTruthy();
+    expect(within(panel).getByText(/Не вдалося підтвердити, що процес ще існує/)).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: 'Перезапустити' }).getAttribute('aria-disabled')).toBe('true');
+    expect(within(panel).getByText('Заблоковано: наявність процесу не підтверджено.')).toBeTruthy();
+    await user.click(within(panel).getByRole('button', { name: 'Перезапустити' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(posts(calls)).toEqual([]);
+  });
+
+  it('the check itself failed (503): uncertainty, commands blocked', async () => {
+    backend('operator', { items: (q) => (q.get('status') ? [] : [app(A)]), serverApps: () => json(503, {}) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    await user.selectOptions(screen.getByLabelText('Статус процесу'), 'errored');
+    expect(await within(panel).findByText(/Не вдалося перевірити поточний inventory сервера/)).toBeTruthy();
+    expect((await within(panel).findByRole('button', { name: 'Перезапустити' })).getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it.each([[403], [404]])('access revoked (%i on the check): details and log text are hidden', async (code) => {
+    let revoked = false;
+    const calls = backend('operator', { items: () => (revoked ? [app(B)] : [app(A), app(B)]), serverApps: (id) => (id === A && revoked ? json(code, {}) : inventory(id, [app(id)])) });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderAt();
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+      const panel = await select(user, 'alpha');
+      await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+      expect(await within(panel).findByText('beta line')).toBeTruthy();
+      revoked = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+      expect(await within(panel).findByText(/Доступ до цього застосунку або його сервера більше не надано/)).toBeTruthy();
+      expect(within(panel).queryByText('beta line')).toBeNull();
+      expect(within(panel).queryByRole('tab')).toBeNull();
+      expect(within(panel).queryByText('CPU')).toBeNull();
+      expect(posts(calls)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('same PM2 id and name on two servers: the selection is per server; the check asks only the selected server', async () => {
+    const calls = backend('operator', { items: (q) => (q.get('serverId') === B ? [app(B)] : [app(A), app(B)]) });
+    renderAt();
+    const user = userEvent.setup();
+    await select(user, 'beta');
+    expect((await rowOf('alpha')).getAttribute('aria-current')).toBeNull();
+    await user.selectOptions(screen.getByLabelText('Сервер'), B);
+    await waitFor(() => { expect(queryRow('alpha')).toBeNull(); });
+    expect((await rowOf('beta')).getAttribute('aria-current')).toBe('true');
+    // While the new list loads, only the selected server is checked (never the other one).
+    expect(checks(calls).every((c) => c.url === `/api/servers/${B}/applications`)).toBe(true);
+  });
+
+  it('a new session starts without a selection', async () => {
+    backend('operator');
+    const view = renderAt();
+    const user = userEvent.setup();
+    await select(user, 'alpha');
+    await act(async () => { await nav.logout?.(); });
+    expect(await screen.findByRole('heading', { name: 'Node Control' })).toBeTruthy();
+    view.unmount();
+    renderAt();
+    await rowOf('alpha');
+    expect(anyPanel()).toBeNull();
+    expect(screen.getByText('Оберіть застосунок, щоб переглянути деталі.')).toBeTruthy();
+  });
+});
+
+describe('below 1280 px: separate views', () => {
+  it.each([1279, 1024, 390])('%i px: list full width; selection opens the details view; «Назад до списку» keeps filters and focuses the row', async (width) => {
+    setViewportWidth(width);
+    backend('operator');
+    renderAt('/applications?status=online');
+    const user = userEvent.setup();
+    expect(screen.queryByText('Оберіть застосунок, щоб переглянути деталі.')).toBeNull();
+    const panel = await select(user, 'beta');
+    expect(document.activeElement).toBe(within(panel).getByRole('heading', { name: 'api' }));
+    expect(queryRow('alpha')).toBeNull(); // the list is replaced by the details view
+    expect(screen.queryByLabelText('Пошук за назвою')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Закрити деталі' })).toBeNull();
+    await user.click(within(panel).getByRole('button', { name: '← Назад до списку' }));
+    expect(anyPanel()).toBeNull();
+    expect(nav.search).toBe('?status=online');
+    expect(screen.getByLabelText<HTMLSelectElement>('Статус процесу').value).toBe('online');
+    expect(document.activeElement).toBe(await rowOf('beta'));
+    expect((await rowOf('beta')).getAttribute('aria-current')).toBe('true');
+  });
+
+  it('1280 px is already the split view', async () => {
+    setViewportWidth(1280);
+    backend('operator');
+    renderAt();
+    expect(await screen.findByText('Оберіть застосунок, щоб переглянути деталі.')).toBeTruthy();
+  });
+});
+
+describe('log tail in the details', () => {
+  async function openLogs(user: User) {
+    const panel = await select(user, 'beta');
+    await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+    return panel;
+  }
+
+  it('shows the read time, the file time and the PM2 collection time', async () => {
+    backend('operator');
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    await within(panel).findByText('beta line');
+    expect(within(panel).getByText(/Отримано .* · файл змінено .* · PM2 зібрано /)).toBeTruthy();
+  });
+
+  it('transient failure: the previous text of the same process stays, explicitly labelled as not refreshed', async () => {
+    let fail = false;
+    backend('operator', { logResult: () => (fail ? json(503, {}) : logOk('first text')) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    expect(await within(panel).findByText('first text')).toBeTruthy();
+    fail = true;
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    expect(await within(panel).findByText(/Показано попередній результат .* — його не оновлено/)).toBeTruthy();
+    expect(within(panel).getByText('first text')).toBeTruthy();
+  });
+
+  it.each([[403], [409]])('%i: the text is hidden', async (code) => {
+    let fail = false;
+    backend('operator', { route: (req) => (fail && req.url.endsWith('/log-requests') ? json(code, {}) : undefined), logResult: () => logOk('secret-ish text') });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    expect(await within(panel).findByText('secret-ish text')).toBeTruthy();
+    fail = true;
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    await waitFor(() => { expect(within(panel).queryByText('secret-ish text')).toBeNull(); });
+    expect(within(panel).getByRole('alert')).toBeTruthy();
+  });
+
+  it('a refusal for another reason (not authorized / target changed) hides the text', async () => {
+    let refuse = false;
+    backend('operator', { logResult: () => (refuse ? json(200, { requestId: REQ, serverId: B, targetKey: 'api-beta', status: 'done', deadlineAt: new Date().toISOString(), result: { outcome: 'rejected', reason: 'not_authorized', readAt: new Date().toISOString(), stdout: null, stderr: null } }) : logOk('old text')) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    expect(await within(panel).findByText('old text')).toBeTruthy();
+    refuse = true;
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    expect(await within(panel).findByText(/доступ до цього сервісу більше не надано/)).toBeTruthy();
+    expect(within(panel).queryByText('old text')).toBeNull();
+  });
+
+  it('while text is selected in the log, a newer fragment waits; clearing the selection shows it', async () => {
+    let text = 'line one';
+    backend('operator', { logResult: () => logOk(text) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    const pre = await within(panel).findByText('line one');
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+    text = 'line two';
+    // A plain click: user-event's pointer emulation would itself clear the selection.
+    fireEvent.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    expect(await within(panel).findByText(/Отримано новіший фрагмент/)).toBeTruthy();
+    expect(within(panel).getByText('line one')).toBeTruthy();
+    await act(async () => { document.getSelection()?.removeAllRanges(); document.dispatchEvent(new Event('selectionchange')); await Promise.resolve(); });
+    expect(await within(panel).findByText('line two')).toBeTruthy();
+  });
+
+  it('follows the end only when the reader was at the end; the stream stays as chosen', async () => {
+    let text = Array.from({ length: 50 }, (_, i) => `l${String(i)}`).join('\n');
+    backend('operator', { logResult: () => logOk(text) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await openLogs(user);
+    const pre = await within(panel).findByText(/^l0/);
+    Object.defineProperty(pre, 'scrollHeight', { configurable: true, get: () => 1000 });
+    Object.defineProperty(pre, 'clientHeight', { configurable: true, get: () => 200 });
+    pre.scrollTop = 100; // reading somewhere in the middle
+    pre.dispatchEvent(new Event('scroll'));
+    text += '\nnew';
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    await within(panel).findByText(/new$/);
+    expect(pre.scrollTop).toBe(100);
+    pre.scrollTop = 800; // at the end
+    pre.dispatchEvent(new Event('scroll'));
+    text += '\nnewer';
+    await user.click(within(panel).getByRole('button', { name: 'Оновити' }));
+    await within(panel).findByText(/newer$/);
+    expect(pre.scrollTop).toBe(1000);
+    expect(within(panel).getByRole('tab', { name: 'stdout' }).getAttribute('aria-selected')).toBe('true');
   });
 });
 
@@ -280,7 +581,7 @@ describe('name search', () => {
     renderAt('/applications?cursor=abc');
     const user = userEvent.setup();
     const box = await screen.findByLabelText('Пошук за назвою');
-    await screen.findByRole('button', { name: 'Розгорнути деталі: api на alpha' });
+    await rowOf('alpha');
     const before = apps(calls).length;
     await user.type(box, 'API');
     expect(apps(calls).length).toBe(before); // nothing per keystroke
@@ -288,7 +589,7 @@ describe('name search', () => {
     await waitFor(() => { expect(apps(calls).at(-1)?.get('q')).toBe('API'); });
     expect(apps(calls).slice(before).filter((p) => p.get('q') !== null)).toHaveLength(1);
     expect(apps(calls).at(-1)?.get('cursor')).toBeNull();
-    await waitFor(() => { expect(screen.queryByRole('button', { name: 'Розгорнути деталі: api на alpha' })).toBeNull(); });
+    await waitFor(() => { expect(queryRow('alpha')).toBeNull(); });
     await user.click(screen.getByRole('button', { name: 'Очистити' }));
     await waitFor(() => { expect(nav.search).toBe(''); });
     expect((box as HTMLInputElement).value).toBe('');
@@ -312,6 +613,6 @@ describe('name search', () => {
     await waitFor(() => { expect(nav.search).toBe('?q=none'); }, { timeout: 2000 });
     expect(await screen.findByText('Немає застосунків, у назві яких є «none».')).toBeTruthy();
     await act(async () => { slow.resolve(json(200, { items: [app(A), app(B)], nextCursor: null, freshWindowSeconds: 180 })); await Promise.resolve(); });
-    expect(screen.queryByRole('button', { name: /^Розгорнути деталі/ })).toBeNull();
+    expect(queryRow('alpha')).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 // Command tracking limit in the browser, synthetic API only (no DB, no PM2): five accepted commands stay followed;
-// a sixth is not offered (reason in the menu) and no POST is sent; when one command finishes, the next is accepted.
+// a sixth is not offered (reason in the details) and no POST is sent; when one command finishes, the next is accepted.
 
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NAMES = ['p0', 'p1', 'p2', 'p3', 'p4', 'p5'];
@@ -55,22 +55,25 @@ test('five running commands: the sixth waits with an explanation; a finished one
   });
 
   await page.goto('/applications');
+  // Select the process in the list; «Перезапустити» is the button in its details.
+  const details = async (name: string) => {
+    await page.getByRole('button', { name: new RegExp(`^${name} на app-server:`) }).click();
+    return page.getByRole('region', { name: `Деталі: ${name} на app-server` });
+  };
   const restart = async (name: string) => {
-    await page.getByRole('button', { name: `Дії: ${name} на app-server` }).click();
-    await page.getByRole('menuitem', { name: 'Перезапустити' }).click();
+    await (await details(name)).getByRole('button', { name: 'Перезапустити' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Перезапустити' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
   };
   for (const name of NAMES.slice(0, 5)) await restart(name);
   await expect(page.getByRole('status').filter({ hasText: /: У черзі/ })).toHaveCount(5);
 
-  // The sixth: control item disabled, the reason is shown, nothing is sent.
-  await page.getByRole('button', { name: 'Дії: p5 на app-server' }).click();
-  await expect(page.getByRole('menuitem', { name: 'Перезапустити' })).toHaveAttribute('aria-disabled', 'true');
-  await expect(page.locator('.action-menu__popup')).toContainText('Уже виконується 5 команд');
-  await page.getByRole('menuitem', { name: 'Перезапустити' }).click({ force: true }); // a disabled item does nothing
+  // The sixth: the command is disabled, the reason is shown, nothing is sent.
+  const sixth = await details('p5');
+  await expect(sixth.getByRole('button', { name: 'Перезапустити' })).toHaveAttribute('aria-disabled', 'true');
+  await expect(sixth.locator('.app-detail__reasons')).toContainText('Уже виконується 5 команд');
+  await sixth.getByRole('button', { name: 'Перезапустити' }).click({ force: true }); // a disabled (aria-disabled) button does nothing
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await page.keyboard.press('Escape');
   expect(posts).toHaveLength(5);
 
   // The first command is still followed, and stays listed.

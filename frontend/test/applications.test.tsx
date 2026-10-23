@@ -66,19 +66,21 @@ describe('applications page', () => {
       app(A, 'down', { key: `${A}:pm2:3`, pmId: 3, inventoryState: 'unavailable' }),
     ])) : undefined);
     renderApp('/applications');
-    const table = await screen.findByRole('table', { name: 'PM2-процеси' });
+    const table = await screen.findByRole('list', { name: 'PM2-процеси' });
     expect(within(table).getByText(XSS)).toBeTruthy();
     expect(document.querySelector('img')).toBeNull();
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
-    expect(within(table).getAllByText('1 д 1 год 1 хв').length).toBeGreaterThan(0);
+    expect(within(table).getAllByText('1 д 1 год').length).toBeGreaterThan(0);
     expect(within(table).getAllByText('12.5 %').length).toBeGreaterThan(0);
     expect(within(table).getAllByText('150 МіБ').length).toBeGreaterThan(0);
-    expect(within(table).getByText('Сервер офлайн')).toBeTruthy();
-    expect(within(table).getByText('Застарілі дані')).toBeTruthy();
-    expect(within(table).getByText('Exporter недоступний')).toBeTruthy();
+    expect(within(table).getByText(/⚠ сервер офлайн/)).toBeTruthy();
+    expect(within(table).getByText(/⚠ дані застарілі/)).toBeTruthy();
+    expect(within(table).getByText(/⚠ exporter недоступний/)).toBeTruthy();
     expect(within(table).getAllByText('—').length).toBeGreaterThanOrEqual(3); // unknown metrics are not 0
-    expect(screen.getByText(/3 з 4 рядків не актуальні/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /restart|stop|start|перезап|зупин|запуст|видал/i })).toBeNull();
+    expect(screen.getByText('неактуальні дані: 3')).toBeTruthy();
+    expect(screen.getByText('На цій сторінці: 4')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^(restart|stop|start|перезапустити|зупинити|запустити|видалити)$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Дії:/ })).toBeNull();
   });
 
   it('empty, filtered-empty, error (503 with retry), 403 and 401 states', async () => {

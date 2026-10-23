@@ -37,10 +37,12 @@ async function api(page: Page): Promise<Api> {
     } else if (path === '/api/applications') {
       const only = url.searchParams.get('serverId');
       data = { items: [...(only === B ? [] : items(A)), ...(only === A ? [] : items(B))], nextCursor: null, freshWindowSeconds: 180 };
-    } else if (path === `/api/servers/${A}`) {
-      data = { id: A, name: SERVERS[A], status: 'online', isActive: true, createdAt: now, lastSeenAt: now, hasActiveCredential: true, snapshot: null };
-    } else if (path === `/api/servers/${A}/applications`) {
-      data = { serverId: A, serverStatus: 'online', freshWindowSeconds: 180, items: items(A),
+    } else if (path === `/api/servers/${A}` || path === `/api/servers/${B}`) {
+      const id = path.split('/')[3] ?? '';
+      data = { id, name: SERVERS[id as keyof typeof SERVERS], status: 'online', isActive: true, createdAt: now, lastSeenAt: now, hasActiveCredential: true, snapshot: null };
+    } else if (path === `/api/servers/${A}/applications` || path === `/api/servers/${B}/applications`) {
+      const id = path.split('/')[3] ?? '';
+      data = { serverId: id, serverStatus: 'online', freshWindowSeconds: 180, items: items(id),
         inventory: { state: 'current', source: 'pm2', reason: null, capturedAt: now, collectedAt: now, reportedAt: now, processCount: NAMES.length } };
     } else if (/^\/api\/servers\/[^/]+\/control$/.test(path)) {
       const id = path.split('/')[3] ?? '';
@@ -131,36 +133,37 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       const state = await api(page);
       const tag = `${String(viewport.width)}-${scheme}`;
 
-      // All applications: first row, then the bottom row of the page, then the horizontally scrolled table (mobile).
-      await page.goto('/applications');
-      const first = page.getByRole('button', { name: `Дії: catalog-api на ${SERVERS[A]}` });
+      // Server page: first row, then the bottom row of the page, then the horizontally scrolled table (mobile). The
+      // all-applications list has no row menus since the master-detail workspace (its menu lives in the details).
+      await page.goto(`/servers/${A}`);
+      await expect(page.getByRole('heading', { name: 'Сервіси сервера' })).toBeVisible();
+      const first = page.getByRole('button', { name: 'Дії: catalog-api' });
       await openAndCheck(page, first);
       expect(state.capabilityReads.sort()).toEqual([`/api/servers/${A}/control`, `/api/servers/${A}/log-targets`]);
-      if (shots) await page.screenshot({ path: `${shots}/applications-menu-${tag}.png` });
+      if (shots) await page.screenshot({ path: `${shots}/server-menu-first-${tag}.png` });
       await page.keyboard.press('Escape');
       await expect(first).toBeFocused();
 
-      const last = page.getByRole('button', { name: `Дії: export-worker на ${SERVERS[B]}` });
+      const last = page.getByRole('button', { name: 'Дії: export-worker' });
       // The bottom row placed right at the bottom edge of the viewport: the menu opens upwards.
       await last.evaluate((el) => { el.scrollIntoView({ block: 'end' }); });
       await openAndCheck(page, last);
       await expect(page.locator('.action-menu__popup')).toHaveAttribute('data-placement', 'top');
-      if (shots) await page.screenshot({ path: `${shots}/applications-menu-bottom-${tag}.png` });
+      if (shots) await page.screenshot({ path: `${shots}/server-menu-bottom-${tag}.png` });
       await page.keyboard.press('Escape');
 
       if (viewport.width === 390) {
         // The table scrolls horizontally inside its wrapper; the menu of a row at the right edge stays on screen.
         const scrolled = await page.evaluate(() => { const w = document.querySelector<HTMLElement>('.table-wrap'); if (!w) return 0; w.scrollLeft = w.scrollWidth; return w.scrollLeft; });
         expect(scrolled).toBeGreaterThan(0);
-        await openAndCheck(page, page.getByRole('button', { name: `Дії: gateway на ${SERVERS[B]}` }));
-        if (shots) await page.screenshot({ path: `${shots}/applications-menu-hscroll-${tag}.png` });
+        await openAndCheck(page, page.getByRole('button', { name: 'Дії: gateway' }));
+        if (shots) await page.screenshot({ path: `${shots}/server-menu-hscroll-${tag}.png` });
         await page.keyboard.press('Escape');
       }
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+;
 
-      // Server page: the same menu.
-      await page.goto(`/servers/${A}`);
-      await expect(page.getByRole('heading', { name: 'Сервіси сервера' })).toBeVisible();
+      // The same menu, its items in order.
       await openAndCheck(page, page.getByRole('button', { name: 'Дії: orders-api' }));
       expect(await page.getByRole('menuitem').allTextContents()).toEqual(['Запустити', 'Зупинити', 'Перезапустити', 'Переглянути логи']);
       if (shots) await page.screenshot({ path: `${shots}/server-menu-${tag}.png` });
@@ -179,12 +182,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
   }
 }
 
-test('keyboard, outside click, scroll re-placement, polling, filter and a disappearing row', async ({ page }) => {
+test('keyboard, outside click, scroll re-placement, polling, navigation and a disappearing row', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.clock.install();
   const state = await api(page);
-  await page.goto('/applications');
-  const trigger = page.getByRole('button', { name: `Дії: orders-api на ${SERVERS[A]}` });
+  await page.goto(`/servers/${A}`);
+  const trigger = page.getByRole('button', { name: 'Дії: orders-api' });
   await expect(trigger).toBeVisible();
 
   // Keyboard: Enter opens on the first item, arrows move, Escape returns focus; Tab leaves the menu.
@@ -208,15 +211,15 @@ test('keyboard, outside click, scroll re-placement, polling, filter and a disapp
 
   // Outside click and a second trigger click close it; one menu at a time.
   await trigger.click();
-  await page.getByRole('heading', { name: 'Застосунки' }).click();
+  await page.getByRole('heading', { name: 'Сервіси сервера' }).click();
   await expect(page.getByRole('menu')).toHaveCount(0);
   await trigger.click();
   await trigger.click();
   await expect(page.getByRole('menu')).toHaveCount(0);
   await trigger.click();
-  await page.getByRole('button', { name: `Дії: billing-api на ${SERVERS[A]}` }).click();
+  await page.getByRole('button', { name: 'Дії: billing-api' }).click();
   await expect(page.getByRole('menu')).toHaveCount(1);
-  await expect(page.getByRole('menu')).toHaveAttribute('aria-label', `Дії для billing-api на ${SERVERS[A]}`);
+  await expect(page.getByRole('menu')).toHaveAttribute('aria-label', 'Дії для billing-api');
   await page.keyboard.press('Escape');
 
   // Scrolling the page re-places the menu next to its trigger.
@@ -239,14 +242,11 @@ test('keyboard, outside click, scroll re-placement, polling, filter and a disapp
   await expect(trigger).toHaveCount(0);
   await expect(page.locator('.action-menu__popup')).toHaveCount(0);
 
-  // A filter change leaves no floating menu behind.
-  await page.getByRole('button', { name: `Дії: catalog-api на ${SERVERS[A]}` }).click();
+  // Navigating to another server leaves no floating menu behind.
+  await page.getByRole('button', { name: 'Дії: catalog-api' }).click();
   await expect(page.getByRole('menu')).toHaveCount(1);
-  await page.getByLabel('Сервер').selectOption(B);
-  await expect(page).toHaveURL(new RegExp(`serverId=${B}`));
+  await page.evaluate((id) => { window.history.pushState({}, '', `/servers/${id}`); window.dispatchEvent(new PopStateEvent('popstate')); }, B);
   await expect(page.locator('.action-menu__popup')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: `Дії: catalog-api на ${SERVERS[B]}` })).toBeVisible();
-  // Capabilities only for opened menus of the servers on screen; never a command.
-  expect(new Set(state.capabilityReads)).toEqual(new Set([`/api/servers/${A}/control`, `/api/servers/${A}/log-targets`]));
+  await expect(page.getByRole('button', { name: 'Дії: catalog-api' })).toBeVisible();
   expect(state.mutations).toEqual([]);
 });

@@ -1,33 +1,47 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { applicationsApi, SEARCH_MAX_LENGTH, serversApi } from '../api/client';
-import { type ApplicationItem, PROCESS_STATUSES, type ProcessStatus } from '../api/types';
+import { type ApplicationItem, PROCESS_STATUSES, type ProcessStatus, type ServerApplications } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
-import { ActionMenu } from '../components/ActionMenu';
-import { ApplicationsTable, PROCESS_STATUS_LABELS } from '../components/Inventory';
-import { ApplicationDetail, type DetailTab } from '../components/ApplicationDetail';
+import { ApplicationDetail, confirmedPresence, DetailPlaceholder, type DetailTab, type Presence } from '../components/ApplicationDetail';
+import { ApplicationList, appIdentity, isLive } from '../components/ApplicationList';
+import { PROCESS_STATUS_LABELS } from '../components/Inventory';
 import { CommandStatusList, type CommandRequest, controlReady, rowMenu, useProcessCommands } from '../components/processActions';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { PageHeader } from '../components/ui';
 import { usePolledResource } from '../components/usePolledResource';
+import { SPLIT_VIEW_QUERY, useMediaQuery } from '../components/useMediaQuery';
 import { useServerCapabilities } from '../components/useServerCapabilities';
 import { formatDate } from './ServersPage';
 
-// PM2 processes of all servers (ADR-016). Filters, the name search and the page cursor live in the URL, so the polled
-// resource is keyed by them: switching a filter never shows rows of the previous filter (Task 007.1 rule). The search
-// is server-side (all applications, keyset pages); typing is debounced and writes one history entry per pause.
+// PM2 processes of all servers (ADR-016) as a master-detail workspace (redesign B, stage 2). Filters, the name search
+// and the page cursor live in the URL, so the polled list is keyed by them: switching a filter never shows rows of the
+// previous filter (Task 007.1 rule). The search is server-side (keyset pages of 50, ordered by name and server);
+// typing is debounced and writes one history entry per pause. Counts are only what the page itself shows — the API
+// has no totals, so the page never claims "N of M".
 //
-// Row actions (start/stop/restart, logs) are the same as on the server page (processActions) and follow the same
-// rules: permissions, API switch, broker report, allowlist + broker-confirmed target, live inventory. Capabilities are
-// loaded per server only when a row menu or panel is opened (useServerCapabilities) — no polling per server or per row
-// — and checked again right before a command is sent. Every action is addressed by the row's serverId + confirmed
-// targetKey. One application can be expanded (ApplicationDetail): its tabs load only when opened; a new list (filter,
-// search, page) or a row that disappears or changes identity closes it. The whole view is mounted per session.
+// Layout: from 1280 px the compact list and the details of the selected process are side by side (~56/44), each
+// scrolling on its own within the viewport height. Below 1280 px the list is full width and choosing a process opens
+// its details as a separate (non-modal) view; «Назад до списку» returns to the same filters, page and scroll position.
+//
+// Selection is local state (not in the URL) and survives filter, search and page changes. It is identified by key +
+// serverId + source + name (a PM2 id can be reused). When the process is not in the rows on screen, the page asks the
+// existing GET /api/servers/:id/applications (polled like the list, only while needed) to tell apart: outside the
+// filter / on another page (still present), confirmed gone from a current inventory, not confirmable (stale or
+// unavailable inventory, offline server, truncated answer), the check failed, or access revoked (403/404). Only a
+// confirmed process shows its data as current and may be controlled; nothing is ever substituted by another process.
+//
+// Actions are the shared processActions (permissions, API switch, broker report, allowlist + broker-confirmed target,
+// live inventory, confirmation, tracking). Capabilities are loaded per server only when needed (rows' servers and the
+// selected one are retained) and checked again right before a command is sent. The whole view is mounted per session:
+// a new session starts without a selection, details or logs.
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CURSOR_RE = /^[A-Za-z0-9_-]{1,400}$/;
 export const SEARCH_DEBOUNCE_MS = 300;
+/** GET /api/servers/:id/applications returns at most this many rows: a miss in a full answer proves nothing. */
+const SERVER_APPS_LIMIT = 500;
 
 function readFilter(params: URLSearchParams) {
   const serverId = params.get('serverId');
@@ -41,6 +55,23 @@ function readFilter(params: URLSearchParams) {
     q: q !== '' && q.length <= SEARCH_MAX_LENGTH ? q : null,
   };
 }
+type Filter = Pick<ReturnType<typeof readFilter>, 'serverId' | 'status' | 'q'>;
+
+const matchesFilter = (app: ApplicationItem, f: Filter) => (!f.serverId || app.serverId === f.serverId) && (!f.status || app.status === f.status)
+  && (!f.q || app.name.toLowerCase().includes(f.q.toLowerCase()));
+
+/** Where the selected process is, judged from the server's current inventory (when it is not among the rows). */
+function presenceFromInventory(inv: ServerApplications, id: string, filter: Filter): { presence: Presence; app: ApplicationItem | null } {
+  const found = inv.items.find((a) => appIdentity(a) === id) ?? null;
+  if (found) return { presence: { kind: matchesFilter(found, filter) ? 'other_page' : 'filtered' }, app: found };
+  if (inv.items.length >= SERVER_APPS_LIMIT) return { presence: { kind: 'uncertain', why: 'відповідь сервера обмежена 500 процесами' }, app: null };
+  if (inv.serverStatus !== 'online') return { presence: { kind: 'uncertain', why: 'сервер не онлайн' }, app: null };
+  if (inv.inventory.state === 'current') return { presence: { kind: 'missing', collectedAt: inv.inventory.collectedAt }, app: null };
+  const why = inv.inventory.state === 'stale' ? 'inventory сервера застарілий' : inv.inventory.state === 'unavailable' ? 'inventory сервера недоступний' : 'сервер ще не передавав inventory';
+  return { presence: { kind: 'uncertain', why }, app: null };
+}
+
+const timeFormat = new Intl.DateTimeFormat('uk-UA', { timeStyle: 'medium' });
 
 export function ApplicationsPage() {
   const { state: auth } = useAuth();
@@ -48,7 +79,7 @@ export function ApplicationsPage() {
   return <ApplicationsView key={sessionKey} />;
 }
 
-interface Expanded { listKey: string; key: string; name: string; tab: DetailTab }
+interface Selection { id: string; serverId: string; last: ApplicationItem }
 
 function ApplicationsView() {
   const { can } = useAuth();
@@ -67,9 +98,16 @@ function ApplicationsView() {
   const canLogs = can('logs:read');
   const caps = useServerCapabilities({ canControl, canLogs });
   const { ensure, invalidate, retain } = caps;
-  const [expanded, setExpanded] = useState<Expanded | null>(null);
+  const split = useMediaQuery(SPLIT_VIEW_QUERY);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [tab, setTab] = useState<DetailTab>('overview');
+  // Below 1280 px: the list or the details of the selection (a separate view).
+  const [view, setView] = useState<'list' | 'detail'>('list');
+  const listScroll = useRef(0);
+  const restoreList = useRef(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const focusHeading = useRef(false);
   const [historyVersion, setHistoryVersion] = useState(0);
-  const refocus = useRef<string | null>(null);
   const onChanged = useCallback((changed: string) => { invalidate(changed); reload(); setHistoryVersion((v) => v + 1); }, [invalidate, reload]);
   // Right before the POST: the target must still be confirmed, allowed and controllable (fresh capabilities).
   const verify = useCallback(async (request: CommandRequest): Promise<string | null> => {
@@ -112,6 +150,12 @@ function ApplicationsView() {
     next.delete('cursor'); // a new filter starts from the first page
     setParams(next);
   };
+  const resetFilters = () => {
+    setDraft('');
+    const next = new URLSearchParams(params);
+    for (const name of ['serverId', 'status', 'q', 'cursor']) next.delete(name);
+    setParams(next);
+  };
   const goTo = (nextCursor: string | null) => {
     const next = new URLSearchParams(params);
     if (nextCursor) next.set('cursor', nextCursor);
@@ -120,136 +164,194 @@ function ApplicationsView() {
   };
 
   const data = state.status === 'ready' ? state.data : state.status === 'error' ? state.data : null;
-  // Capabilities are kept only for the servers of the rows on screen (filter/page changes drop the others).
-  const serverIds = data ? [...new Set(data.items.map((a) => a.serverId))].join(',') : '';
+
+  // The selected process among the rows on screen (same identity, not just the same key).
+  const onPage = selection && data ? data.items.find((a) => appIdentity(a) === selection.id) ?? null : null;
+  // Not among the rows: check the server's current inventory (polled only while needed; never another process).
+  const checkServer = selection && !onPage ? selection.serverId : null;
+  const loadCheck = useCallback((signal: AbortSignal) => (checkServer ? applicationsApi.forServer(checkServer, signal) : Promise.resolve(null)), [checkServer]);
+  const { state: check } = usePolledResource(loadCheck, `check:${checkServer ?? ''}`);
+
+  let presence: Presence = { kind: 'checking' };
+  let selected: ApplicationItem | null = selection?.last ?? null;
+  if (selection && onPage) {
+    presence = { kind: 'page' };
+    selected = onPage;
+  } else if (selection) {
+    if (check.status === 'forbidden' || check.status === 'not_found') presence = { kind: 'revoked' };
+    else if (check.status === 'ready' && check.data) {
+      const found = presenceFromInventory(check.data, selection.id, { serverId, status, q });
+      presence = found.presence;
+      if (found.app) selected = found.app;
+    } else if (check.status === 'error') presence = { kind: 'unverified' };
+  }
+  // Remember the latest confirmed data of the selection (shown, labelled, while a later check is pending or fails).
+  const confirmedNow = selection && selected && confirmedPresence(presence) && selected !== selection.last ? selected : null;
+  if (selection && confirmedNow) setSelection({ ...selection, last: confirmedNow });
+
+  // Capabilities are kept for the servers of the rows on screen and of the selection.
+  const serverIds = [...new Set([...(data ? data.items.map((a) => a.serverId) : []), ...(selection ? [selection.serverId] : [])])].sort().join(',');
   useEffect(() => { retain(serverIds ? serverIds.split(',') : []); }, [serverIds, retain]);
 
-  // A new list (filter, search, page) closes the panel; so does a row that vanished or changed identity (same key,
-  // other name) in a fresh answer. Derived during render (no effect): the panel never shows another process.
-  const expandedApp = expanded && data && expanded.listKey === key
-    ? data.items.find((a) => a.key === expanded.key && a.name === expanded.name) ?? null : null;
-  if (expanded && (expanded.listKey !== key || (state.status === 'ready' && !expandedApp))) setExpanded(null);
-  // After collapsing, focus goes back to the row's toggle (if the row is still there).
-  useEffect(() => {
-    if (expanded || !refocus.current) return;
-    const want = refocus.current;
-    [...document.querySelectorAll<HTMLElement>('[data-row-toggle]')].find((el) => el.dataset.rowToggle === want)?.focus();
-    refocus.current = null;
-  }, [expanded]);
-
-  const open = useCallback((app: ApplicationItem, tab: DetailTab) => {
-    setExpanded({ listKey: key, key: app.key, name: app.name, tab });
+  const select = useCallback((app: ApplicationItem) => {
+    setSelection({ id: appIdentity(app), serverId: app.serverId, last: app });
     void ensure(app.serverId);
-  }, [ensure, key]);
-  const collapse = useCallback((app: ApplicationItem) => { refocus.current = app.key; setExpanded(null); }, []);
+    if (!split) {
+      listScroll.current = window.scrollY;
+      focusHeading.current = true;
+      setView('detail');
+    }
+  }, [ensure, split]);
+  const closeDetail = () => {
+    const id = selection?.id ?? null;
+    setSelection(null);
+    if (id) [...document.querySelectorAll<HTMLElement>('[data-app-row]')].find((el) => el.dataset.appRow === id)?.focus();
+  };
+  const backToList = () => { restoreList.current = true; setView('list'); };
+
+  const showDetail = !split && view === 'detail' && selection !== null;
+  // Separate views: the details start at the top with focus on their heading; going back restores the list's
+  // scroll position and focuses the selected row (if it is still on the page).
+  useLayoutEffect(() => {
+    if (showDetail && focusHeading.current) {
+      focusHeading.current = false;
+      window.scrollTo(0, 0);
+      heading.current?.focus();
+    }
+    if (!showDetail && restoreList.current) {
+      restoreList.current = false;
+      window.scrollTo(0, listScroll.current);
+      const id = selection?.id;
+      const row = id ? [...document.querySelectorAll<HTMLElement>('[data-app-row]')].find((el) => el.dataset.appRow === id) : undefined;
+      row?.focus({ preventScroll: true });
+    }
+  }, [showDetail, selection?.id]);
 
   if (state.status === 'forbidden') return <Forbidden />;
   const serverOptions = servers.status === 'ready' ? servers.data.items : [];
+
   const loadedCaps = (app: ApplicationItem) => {
     const entry = caps.entries.get(app.serverId);
     return entry?.status === 'ready' ? entry.caps : null;
   };
-  const menuFor = (app: ApplicationItem) => {
+  const menuFor = (app: ApplicationItem, confirmed: boolean) => {
     const loaded = loadedCaps(app);
     const menu = loaded ? rowMenu({
       app, canControl, canLogs, control: loaded.control, logs: loaded.logs,
       busy: (loaded.control?.targets ?? []).some((t) => t.name === app.name && t.pmId === app.pmId && isBusy(app.serverId, t.targetKey)), limitReached,
       onAction: (target, action) => { ask({ serverId: app.serverId, serverName: app.serverName, target, action }); },
-      // In this list logs open inline, in the application's panel.
-      onLogs: () => { open(app, 'logs'); },
+      onLogs: () => { setTab('logs'); },
     }) : { items: [], reasons: [] as string[], rowReasons: [] as string[] };
     if (loaded?.failed) menu.reasons.unshift('Не вдалося перевірити можливості — відкрийте меню ще раз');
-    return { loaded, ...menu };
+    // An unconfirmed process is never controlled: the commands stay visible but blocked.
+    if (!confirmed) return { loaded, items: menu.items.map((i) => (i.key === 'logs' ? i : { ...i, disabled: true })), reasons: ['Наявність процесу не підтверджено — команди заблоковано', ...menu.reasons] };
+    return { loaded, items: menu.items, reasons: menu.reasons };
   };
-  const renderActions = (app: ApplicationItem) => {
-    const { loaded, items, reasons } = menuFor(app);
-    return <ActionMenu name={`${app.name} на ${app.serverName}`} items={items} note={reasons.join('. ') || null}
-      loading={!loaded} onOpen={() => { void ensure(app.serverId); }} />;
-  };
-  const expansion = {
-    expandedKey: expandedApp?.key ?? null,
-    onToggle: (app: ApplicationItem) => { if (expandedApp?.key === app.key) collapse(app); else open(app, 'overview'); },
-    renderDetail: (app: ApplicationItem) => {
-      const { loaded, items, reasons } = menuFor(app);
-      return (
-        <ApplicationDetail app={app} tab={expanded?.tab ?? 'overview'} onTab={(tab) => { setExpanded({ listKey: key, key: app.key, name: app.name, tab }); }}
-          onClose={() => { collapse(app); }} caps={loaded} items={items} reasons={reasons}
-          canControl={canControl} canLogs={canLogs} historyVersion={historyVersion} />
-      );
-    },
-  };
-  const notCurrent = data ? data.items.filter((a) => a.inventoryState !== 'current' || a.serverStatus !== 'online').length : 0;
-  // A shared collection time is shown above the table only when every row has the same one; rows always keep theirs.
+
+  const notCurrent = data ? data.items.filter((a) => !isLive(a)).length : 0;
+  // A shared collection time is shown only when every row has the same one; rows always keep their own warnings.
   const times = data ? [...new Set(data.items.map((a) => a.collectedAt))] : [];
-  const collected = times.length === 1 ? formatDate(times[0] ?? null) : null;
+  const shared = times.length === 1 ? times[0] ?? null : null;
+  const collected = shared ? { full: formatDate(shared), time: timeFormat.format(new Date(shared)) } : null;
   const filtered = Boolean(serverId || status || q);
+  const refreshed = state.status === 'ready' ? state.receivedAt : state.status === 'error' ? state.receivedAt : null;
+
+  let detail = null;
+  if (selection && selected) {
+    const confirmed = confirmedPresence(presence);
+    const { loaded, items, reasons } = menuFor(selected, confirmed);
+    detail = (
+      <ApplicationDetail key={selection.id} app={selected} presence={presence} tab={tab} onTab={setTab} caps={loaded} items={items} reasons={reasons}
+        canControl={canControl} canLogs={canLogs} historyVersion={historyVersion} onMenuOpen={() => { void ensure(selected.serverId); }}
+        onClose={split ? closeDetail : undefined} onBack={split ? undefined : backToList} headingRef={heading} />
+    );
+  }
 
   return (
-    <section className="page" aria-labelledby="apps-title">
+    <section className={`page page--workspace${split ? ' page--split' : ''}`} aria-labelledby="apps-title">
       <PageHeader title="Застосунки" titleId="apps-title"
-        meta={<span>PM2-процеси всіх серверів.</span>} />
+        meta={<>
+          <span>PM2-процеси всіх серверів.</span>
+          {state.status === 'ready' && state.refreshing ? <span role="status">Оновлення…</span>
+            : refreshed ? <span>{`Оновлено ${timeFormat.format(refreshed)}`}</span> : null}
+        </>}
+        actions={showDetail ? null : <button type="button" className="button button--small" onClick={reload}>Оновити</button>} />
 
-      <div className="toolbar" role="group" aria-label="Фільтри">
-        <div className="field field--search">
-          <label htmlFor={searchFieldId}>Пошук за назвою</label>
-          <div className="search-box">
-            <input id={searchFieldId} type="search" value={draft} maxLength={SEARCH_MAX_LENGTH} autoComplete="off" spellCheck={false}
-              onChange={(e) => { setDraft(e.target.value); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') commitSearch(draft); }} />
-            {draft ? <button type="button" className="button button--small" onClick={() => { setDraft(''); commitSearch(''); }}>Очистити</button> : null}
-          </div>
-        </div>
-        <div className="field">
-          <label htmlFor={serverFieldId}>Сервер</label>
-          <select id={serverFieldId} value={serverId ?? ''} onChange={(e) => { setFilter('serverId', e.target.value); }}>
-            <option value="">Усі сервери</option>
-            {serverOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            {serverId && !serverOptions.some((s) => s.id === serverId) ? <option value={serverId}>Обраний сервер</option> : null}
-          </select>
-        </div>
-        <div className="field">
-          <label htmlFor={statusFieldId}>Статус процесу</label>
-          <select id={statusFieldId} value={status ?? ''} onChange={(e) => { setFilter('status', e.target.value); }}>
-            <option value="">Усі статуси</option>
-            {PROCESS_STATUSES.map((s) => <option key={s} value={s}>{PROCESS_STATUS_LABELS[s]}</option>)}
-          </select>
-        </div>
-      </div>
-
-      {state.status === 'loading' ? <LoadingState /> : null}
-      {state.status === 'not_found' ? <EmptyState title="Не знайдено">Перевірте фільтр.</EmptyState> : null}
-      {state.status === 'error' ? (
-        <ErrorState title={data ? 'Не вдалося оновити дані' : 'Не вдалося завантажити застосунки'} onRetry={reload}>
-          {`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}${data ? ' Показано попередні дані.' : ''}`}
-        </ErrorState>
-      ) : null}
-      {data && data.items.length === 0 ? (
-        <EmptyState title={filtered ? 'Нічого не знайдено' : 'Ще немає даних про процеси'}>
-          {q ? `Немає застосунків, у назві яких є «${q}»${serverId || status ? ' (з урахуванням фільтрів)' : ''}.`
-            : filtered ? 'За цим фільтром процесів немає.'
-              : can('servers:manage') ? 'Процеси з’являться, коли на сервері буде налаштовано PM2 exporter і агент передасть inventory.'
-                : 'Ви бачите лише сервіси, до яких адміністратор надав доступ. Наданих сервісів немає або їхній inventory ще не надійшов.'}
-        </EmptyState>
-      ) : null}
-      {data && data.items.length > 0 && notCurrent === 0 && collected ? (
-        <p className="freshness" role="status"><span className="status status--ok">{`Усі рядки актуальні · зібрано ${collected}`}</span></p>
-      ) : null}
-      {data && notCurrent > 0 ? (
-        <p className="notice notice--warning" role="status">
-          {`${String(notCurrent)} з ${String(data.items.length)} рядків не актуальні (сервер офлайн, застарілий або недоступний inventory) — дивіться колонку «Дані».`}
-        </p>
-      ) : null}
       <CommandStatusList tracked={tracked} showServer />
-      {data && data.items.length > 0 ? (
-        <ApplicationsTable items={data.items} showServer caption="PM2-процеси" expansion={expansion}
-          renderActions={canControl || canLogs ? renderActions : undefined} />
-      ) : null}
-      {data && (cursor || data.nextCursor) ? (
-        <div className="pager">
-          {cursor ? <button type="button" className="button" onClick={() => { goTo(null); }}>На першу сторінку</button> : null}
-          {data.nextCursor ? <button type="button" className="button" onClick={() => { goTo(data.nextCursor); }}>Наступна сторінка</button> : null}
-        </div>
-      ) : null}
+
+      {showDetail ? detail : (
+        <>
+          <div className="toolbar" role="group" aria-label="Фільтри">
+            <div className="field field--search">
+              <label htmlFor={searchFieldId}>Пошук за назвою</label>
+              <div className="search-box">
+                <input id={searchFieldId} type="search" value={draft} maxLength={SEARCH_MAX_LENGTH} autoComplete="off" spellCheck={false}
+                  onChange={(e) => { setDraft(e.target.value); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') commitSearch(draft); }} />
+                {draft ? <button type="button" className="button button--small" onClick={() => { setDraft(''); commitSearch(''); }}>Очистити</button> : null}
+              </div>
+            </div>
+            <div className="field">
+              <label htmlFor={serverFieldId}>Сервер</label>
+              <select id={serverFieldId} value={serverId ?? ''} onChange={(e) => { setFilter('serverId', e.target.value); }}>
+                <option value="">Усі сервери</option>
+                {serverOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {serverId && !serverOptions.some((s) => s.id === serverId) ? <option value={serverId}>Обраний сервер</option> : null}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor={statusFieldId}>Статус процесу</label>
+              <select id={statusFieldId} value={status ?? ''} onChange={(e) => { setFilter('status', e.target.value); }}>
+                <option value="">Усі статуси</option>
+                {PROCESS_STATUSES.map((s) => <option key={s} value={s}>{PROCESS_STATUS_LABELS[s]}</option>)}
+              </select>
+            </div>
+            {filtered || cursor || draft ? <button type="button" className="button toolbar__reset" onClick={resetFilters}>Скинути фільтри</button> : null}
+          </div>
+
+          <div className="workspace">
+            <div className="workspace__list">
+              {state.status === 'loading' ? <LoadingState /> : null}
+              {state.status === 'not_found' ? <EmptyState title="Не знайдено">Перевірте фільтр.</EmptyState> : null}
+              {state.status === 'error' ? (
+                <ErrorState title={data ? 'Не вдалося оновити дані' : 'Не вдалося завантажити застосунки'} onRetry={reload}>
+                  {`Сервіс тимчасово недоступний.${formatRetry(state.retryAfterSeconds)}${data ? ' Показано попередні дані.' : ''}`}
+                </ErrorState>
+              ) : null}
+              {data && data.items.length === 0 ? (
+                <EmptyState title={filtered ? 'Нічого не знайдено' : 'Ще немає даних про процеси'}>
+                  {q ? `Немає застосунків, у назві яких є «${q}»${serverId || status ? ' (з урахуванням фільтрів)' : ''}.`
+                    : filtered ? 'За цим фільтром процесів немає.'
+                      : can('servers:manage') ? 'Процеси з’являться, коли на сервері буде налаштовано PM2 exporter і агент передасть inventory.'
+                        : 'Ви бачите лише сервіси, до яких адміністратор надав доступ. Наданих сервісів немає або їхній inventory ще не надійшов.'}
+                </EmptyState>
+              ) : null}
+              {data && (data.items.length > 0 || cursor || data.nextCursor) ? (
+                <div className="workspace__bar">
+                  {data.items.length > 0 ? (
+                    <p className="workspace__summary">
+                      <span className="num">{`На цій сторінці: ${String(data.items.length)}`}</span>
+                      {notCurrent > 0 ? <span className="status status--warn">{`неактуальні дані: ${String(notCurrent)}`}</span>
+                        : collected ? <span title={`Зібрано ${collected.full}`}>{`усі актуальні · ${collected.time}`}</span> : null}
+                    </p>
+                  ) : null}
+                  {cursor || data.nextCursor ? (
+                    <div className="pager" role="group" aria-label="Сторінки списку">
+                      {cursor ? <button type="button" className="button button--small" aria-label="На першу сторінку" onClick={() => { goTo(null); }}>« Перша</button> : null}
+                      {data.nextCursor ? <button type="button" className="button button--small" aria-label="Наступна сторінка" onClick={() => { goTo(data.nextCursor); }}>Наступна »</button> : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {data && data.items.length > 0 ? (
+                <ApplicationList items={data.items} selected={selection?.id ?? null} onSelect={select} label="PM2-процеси"
+                  note="* значення на момент збору; «—» — метрика невідома (не нуль). CPU за PM2 на кількох ядрах може перевищувати 100 %." />
+              ) : null}
+            </div>
+            {split ? <div className="workspace__detail">{detail ?? <DetailPlaceholder />}</div> : null}
+          </div>
+        </>
+      )}
       {dialog}
     </section>
   );

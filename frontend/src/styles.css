@@ -395,24 +395,96 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 .toolbar .field--search { flex: 1 1 320px; }
 .search-box { display: flex; gap: var(--space-2); align-items: center; }
 .search-box input { flex: 1 1 auto; min-width: 0; }
-.row-toggle { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 2px 4px; margin: -2px -4px; background: transparent; border: 0; border-radius: 4px; font: inherit; color: inherit; text-align: left; cursor: pointer; }
-.row-toggle:hover .row-toggle__name { text-decoration: underline; }
-.row-toggle__chevron { color: var(--text-muted); flex: none; width: 1ch; }
-.row-toggle__name { overflow-wrap: anywhere; }
-.row--expanded > * { background: color-mix(in srgb, var(--primary) 6%, transparent); }
-.table .detail-row > td { padding: 0; background: var(--surface-2); }
-/* Sticky at the left edge of the horizontally scrollable table: the panel stays on screen while the row scrolls. */
-.app-detail { position: sticky; left: 0; display: grid; gap: var(--space-3); padding: var(--space-3) var(--space-4) var(--space-4); min-width: 0; max-width: min(100%, calc(100vw - 2 * var(--space-4))); box-sizing: border-box; }
-.app-detail__head { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); align-items: center; justify-content: space-between; }
+/* ------------------------------------------------------------------ applications workspace (redesign B, stage 2) */
+/* From 1280 px: list | details side by side within the viewport height, each scrolling on its own. Below: one column,
+   the details are a separate view (ApplicationsPage). */
+.page--workspace { max-width: none; }
+.page--split { display: flex; flex-direction: column; gap: var(--space-3); height: calc(100dvh - 2 * var(--space-5)); min-height: 520px; }
+.page--split > * { flex: none; }
+.workspace { display: grid; gap: var(--space-4); min-width: 0; }
+.page--split > .workspace { flex: 1 1 0; min-height: 0; grid-template-columns: minmax(0, 56fr) minmax(0, 44fr); }
+.workspace__list { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; min-height: 0; }
+.workspace__list > * { flex: none; }
+.workspace__detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.workspace__bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-3); min-height: var(--control-sm); }
+.workspace__summary { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--space-3); color: var(--text-muted); font-size: var(--font-sm); }
+.toolbar__reset { align-self: flex-end; }
+
+/* Compact list: one fixed-height button per row (two lines); the columns follow the list's own width. */
+.app-list { display: flex; flex-direction: column; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; container-type: inline-size; }
+.page--split .app-list { flex: 1 1 auto; min-height: 0; }
+.app-list__head, .app-row { display: grid; grid-template-columns: 12px minmax(0, 1fr) 6.75rem 4.25rem 4.75rem 5.75rem; column-gap: var(--space-3); align-items: center; padding: 0 var(--space-3) 0 var(--space-2); }
+.app-list__head { min-height: 28px; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: var(--font-xs); font-weight: 600; white-space: nowrap; }
+.app-list__head .num { text-align: right; }
+.app-list__rows { list-style: none; margin: 0; padding: 0; min-height: 0; overflow-y: auto; }
+.page--split .app-list__rows { flex: 1 1 auto; }
+.app-list__rows > li + li { border-top: 1px solid var(--border); }
+.app-list__note { padding: 4px var(--space-3); border-top: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); font-size: var(--font-xs); line-height: 16px; }
+.app-row { width: 100%; height: 50px; margin: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.app-row:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+.app-row:focus-visible { outline-offset: -2px; border-radius: 0; }
+/* Selected: tint + inset bar + a visible marker (not colour alone). */
+.app-row--selected, .app-row--selected:hover { background: var(--primary-soft); box-shadow: inset 3px 0 0 var(--primary); }
+.app-row__marker { color: var(--primary); font-size: var(--font-sm); line-height: 1; }
+.app-row__main { display: grid; gap: 2px; min-width: 0; }
+.app-row__name { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; line-height: 18px; }
+.app-row--selected .app-row__name { font-weight: 650; }
+.app-row__sub { display: flex; gap: var(--space-2); min-width: 0; overflow: hidden; white-space: nowrap; color: var(--text-muted); font-size: var(--font-xs); line-height: 16px; }
+.app-row__server { flex: 0 1 auto; min-width: 2ch; overflow: hidden; text-overflow: ellipsis; }
+.app-row__stale { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--warning); font-weight: 600; }
+.app-row__compact { display: none; flex: none; }
+.app-row__status { min-width: 0; overflow: hidden; }
+.app-row__metric { text-align: right; font-size: var(--font-sm); white-space: nowrap; }
+@container (max-width: 540px) {
+  .app-list__head, .app-row { grid-template-columns: 12px minmax(0, 1fr) 6.75rem 4.25rem 4.75rem; }
+  .app-list__uptime { display: none; }
+}
+@container (max-width: 470px) {
+  .app-list__head { display: none; }
+  .app-row { grid-template-columns: 12px minmax(0, 1fr) auto; grid-template-areas: "mk name status" "mk sub sub"; row-gap: 2px; align-content: center; }
+  .app-row__main { display: contents; }
+  .app-row__marker { grid-area: mk; }
+  .app-row__name { grid-area: name; }
+  .app-row__sub { grid-area: sub; }
+  .app-row__status { grid-area: status; }
+  .app-row__metric { display: none; }
+  .app-row__compact { display: inline; }
+  .app-row__compact::before { content: "· "; }
+}
+
+/* Details: the right pane (split) or a separate view. */
+.app-detail { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; padding: var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.workspace__detail .app-detail { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.app-detail--empty { align-items: center; justify-content: center; gap: var(--space-1); text-align: center; }
+.app-detail__nav { display: flex; }
+.app-detail__head { display: flex; gap: var(--space-2) var(--space-3); align-items: flex-start; justify-content: space-between; }
 .app-detail__title { display: grid; gap: 4px; min-width: 0; }
-.app-detail__title strong { overflow-wrap: anywhere; }
+.app-detail__name { font-size: var(--text-lg); line-height: 24px; font-weight: 650; overflow-wrap: anywhere; }
+.app-detail__name:focus { outline: none; }
+.app-detail__name:focus-visible { outline: 2px solid var(--focus); }
 .app-detail__meta { display: flex; flex-wrap: wrap; gap: 4px var(--space-3); align-items: center; color: var(--text-muted); font-size: var(--font-sm); }
-.app-detail__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.app-detail__close { flex: none; }
+.app-detail__presence { margin: 0; }
+.app-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.app-metrics > div { display: grid; gap: 2px; min-width: 0; padding: 6px 10px; background: var(--surface-2); }
+.app-metrics dt { color: var(--text-muted); font-size: var(--font-xs); }
+.app-metrics dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.app-metrics--stale dd { color: var(--text-muted); }
+.app-detail__stale { color: var(--warning); font-weight: 600; }
+.app-detail__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 .app-detail__actions [aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
 .app-detail__reasons { margin: 0; }
-.app-detail__tabs { justify-self: start; max-width: 100%; overflow-x: auto; }
+.app-detail__tabs { align-self: flex-start; max-width: 100%; overflow-x: auto; flex: none; }
 .app-detail__panel { min-width: 0; }
-.app-detail .log-text { max-height: 320px; }
+.app-detail .log-tail { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.app-detail .log-panel { display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; }
+.app-detail .log-text { max-height: 60vh; }
+/* Split view, Logs tab: the log fills the pane and is the only vertical scroll (no scroll inside a scroll). */
+.workspace__detail .app-detail--logs { overflow-y: auto; }
+.workspace__detail .app-detail--logs .app-detail__panel, .workspace__detail .app-detail--logs .log-tail, .workspace__detail .app-detail--logs .log-panel { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; }
+.workspace__detail .app-detail--logs .log-text { flex: 1 1 0; min-height: 10rem; max-height: none; }
+.log-pending { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.log-stale { margin: 0; }
 .detail-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--space-2) var(--space-4); margin: 0; }
 .detail-list__row { display: grid; gap: 2px; min-width: 0; }
 .detail-list dt { color: var(--text-muted); font-size: var(--font-xs); }

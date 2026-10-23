@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import type { ApplicationItem, InventoryInfo, ProcessStatus, ServerStatus } from '../api/types';
 import { formatDate, StatusBadge } from '../pages/ServersPage';
@@ -61,22 +61,10 @@ export function formatMemory(bytes: number | null): string {
 export const formatCpu = (cpu: number | null) => (cpu === null ? '—' : `${cpu.toFixed(1)} %`);
 export const formatCount = (n: number | null) => (n === null ? '—' : String(n));
 
-/** Optional row expansion (applications list): one detail row under the expanded application. */
-export interface RowExpansion {
-  expandedKey: string | null;
-  onToggle: (app: ApplicationItem) => void;
-  renderDetail: (app: ApplicationItem, panelId: string) => ReactNode;
-}
-
-/** Stable DOM id of an application's detail panel (keys contain only [0-9a-z:._-]). */
-export const detailPanelId = (key: string) => `app-detail-${key.replace(/[^A-Za-z0-9_-]/g, '_')}`;
-
-export function ApplicationsTable({ items, showServer, caption, renderActions, expansion }: {
+export function ApplicationsTable({ items, showServer, caption, renderActions }: {
   items: ApplicationItem[]; showServer: boolean; caption: string;
   renderActions?: ((app: ApplicationItem) => ReactNode) | undefined;
-  expansion?: RowExpansion | undefined;
 }) {
-  const columns = 8 + (showServer ? 1 : 0) + (renderActions ? 1 : 0);
   // Every row live and collected at the same moment: that moment is shown once above the table, rows show only the
   // state. Any difference (another time, stale data, offline server) keeps the time in each row.
   const uniform = items.every((a) => a.inventoryState === 'current' && a.serverStatus === 'online')
@@ -102,21 +90,9 @@ export function ApplicationsTable({ items, showServer, caption, renderActions, e
         <tbody>
           {items.map((app) => {
             const live = app.inventoryState === 'current' && app.serverStatus === 'online';
-            const open = expansion?.expandedKey === app.key;
-            const panelId = detailPanelId(app.key);
             return (
-              <Fragment key={app.key}>
-              <tr className={open ? 'row--expanded' : undefined}>
-                <th scope="row" className="mono">
-                  {expansion ? (
-                    <button type="button" className="row-toggle" data-row-toggle={app.key} aria-expanded={open}
-                      aria-controls={open ? panelId : undefined} aria-label={`${open ? 'Згорнути' : 'Розгорнути'} деталі: ${app.name} на ${app.serverName}`}
-                      onClick={() => { expansion.onToggle(app); }}>
-                      <span className="row-toggle__chevron" aria-hidden="true">{open ? '▾' : '▸'}</span>
-                      <span className="row-toggle__name">{app.name}</span>
-                    </button>
-                  ) : app.name}
-                </th>
+              <tr key={app.key}>
+                <th scope="row" className="mono">{app.name}</th>
                 {showServer ? (
                   <td>
                     <Link to={`/servers/${app.serverId}`}>{app.serverName}</Link>
@@ -135,12 +111,6 @@ export function ApplicationsTable({ items, showServer, caption, renderActions, e
                 </td>
                 {renderActions ? <td>{renderActions(app)}</td> : null}
               </tr>
-              {expansion && open ? (
-                <tr className="detail-row">
-                  <td colSpan={columns} id={panelId}>{expansion.renderDetail(app, panelId)}</td>
-                </tr>
-              ) : null}
-              </Fragment>
             );
           })}
         </tbody>

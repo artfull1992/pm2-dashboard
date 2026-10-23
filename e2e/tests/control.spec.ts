@@ -162,13 +162,13 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     const uptimeOf = (name: string) => (JSON.parse(pm2('jlist')) as { name: string; pm2_env: { pm_uptime: number } }[]).find((p) => p.name === name)?.pm2_env.pm_uptime ?? 0;
     const startedAt = uptimeOf('e2e-allowed');
     await op.goto('/applications');
-    await expect(op.getByRole('button', { name: 'Дії: e2e-other на e2e-control' })).toBeVisible({ timeout: 15_000 });
-    await op.getByRole('button', { name: 'Дії: e2e-other на e2e-control' }).click();
-    await expect(op.getByText(/Процесу немає в allowlist сервера/)).toBeVisible();
-    await expect(op.getByRole('menuitem')).toHaveCount(0);
-    await op.keyboard.press('Escape');
-    await op.getByRole('button', { name: 'Дії: e2e-allowed на e2e-control' }).click();
-    await op.getByRole('menuitem', { name: 'Перезапустити' }).click();
+    // Select a process in the list; its details hold «Перезапустити» and the «Дії» menu.
+    await op.getByRole('button', { name: /^e2e-other на e2e-control:/ }).click({ timeout: 15_000 });
+    const otherDetails = op.getByRole('region', { name: 'Деталі: e2e-other на e2e-control' });
+    await expect(otherDetails.getByText(/Процесу немає в allowlist сервера/).first()).toBeVisible();
+    await expect(otherDetails.getByRole('button', { name: 'Перезапустити' })).toHaveCount(0);
+    await op.getByRole('button', { name: /^e2e-allowed на e2e-control:/ }).click();
+    await op.getByRole('region', { name: 'Деталі: e2e-allowed на e2e-control' }).getByRole('button', { name: 'Перезапустити' }).click();
     const restartDialog = op.getByRole('dialog', { name: 'Перезапустити процес?' });
     await expect(restartDialog).toContainText('«e2e-allowed» (e2e-allowed) на сервері «e2e-control»');
     await restartDialog.getByRole('button', { name: 'Перезапустити' }).click();

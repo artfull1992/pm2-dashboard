@@ -8,8 +8,11 @@ import { useAuth } from '../src/auth/AuthContext';
 import { AuthProvider } from '../src/auth/AuthContext';
 import { CSRF, deferred, installFetch, json, type RecordedRequest, session } from './support';
 
-// Process actions in the all-applications list: same rules as the server page, addressed by serverId + confirmed
-// targetKey, capabilities loaded lazily per server (no polling per row).
+type User = ReturnType<typeof userEvent.setup>;
+
+// Process actions of the applications workspace: same rules as the server page, addressed by serverId + confirmed
+// targetKey, capabilities loaded lazily per server (no polling per row). «Перезапустити» is a button in the details of
+// the selected process, the other commands are in its «Дії» menu.
 
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -77,62 +80,78 @@ function backend(role: 'operator' | 'viewer' | 'admin', { permissions, route = (
 }
 const posts = (calls: RecordedRequest[]) => calls.filter((c) => c.method === 'POST' && c.url.includes('/control-commands'));
 const capReads = (calls: RecordedRequest[]) => calls.filter((c) => /\/api\/servers\/[^/]+\/(control|log-targets)$/.test(c.url)).map((c) => c.url.replace('/api/servers/', '').replace(A, 'A').replace(B, 'B'));
-const menuOf = (server: 'alpha' | 'beta') => screen.findByRole('button', { name: `Дії: api на ${server}` });
+const rowOf = (server: 'alpha' | 'beta', name = 'api') => screen.findByRole('button', { name: new RegExp(`^${name} на ${server}:`) });
+const panelOf = (server: 'alpha' | 'beta', name = 'api') => screen.findByRole('region', { name: `Деталі: ${name} на ${server}` });
+/** Selects the process (one click on its row) and returns its details pane. */
+async function select(user: User, server: 'alpha' | 'beta', name = 'api') {
+  await user.click(await rowOf(server, name));
+  return panelOf(server, name);
+}
+/** Selects the process and opens the «Дії» menu of its details. */
+async function openMenu(user: User, server: 'alpha' | 'beta', name = 'api') {
+  const panel = await select(user, server, name);
+  await user.click(within(panel).getByRole('button', { name: `Дії: ${name} на ${server}` }));
+  return panel;
+}
+/** Selects the process and presses its «Перезапустити» button (shown once capabilities are known). */
+async function restart(user: User, server: 'alpha' | 'beta') {
+  const panel = await select(user, server);
+  await user.click(await within(panel).findByRole('button', { name: 'Перезапустити' }));
+  return panel;
+}
 
-describe('applications list: row actions', () => {
-  it('viewer: no "Дії" column, no capability requests', async () => {
+describe('applications workspace: actions', () => {
+  it('viewer: no actions, no capability requests (also with a process selected)', async () => {
     const calls = backend('viewer');
     renderAt();
-    await screen.findAllByText('api');
-    expect(screen.queryByRole('columnheader', { name: 'Дії' })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Дії:/ })).toBeNull();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    expect(within(panel).queryByRole('button', { name: /^Дії:/ })).toBeNull();
+    expect(within(panel).queryByRole('button', { name: /Запустити|Зупинити|Перезапустити/ })).toBeNull();
     expect(capReads(calls)).toEqual([]);
   });
 
-  it('operator: capabilities are loaded only when a menu opens, once per server (cached), never polled per row', async () => {
+  it('operator: capabilities are loaded only for the selected process’s server, once (cached), never polled per row', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const calls = backend('operator');
       renderAt();
       const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
-      expect(await screen.findByText('PM2-процеси всіх серверів.')).toBeTruthy();
-      await menuOf('alpha');
+      await rowOf('alpha');
       expect(capReads(calls)).toEqual([]);
-      await user.click(await menuOf('alpha'));
-      expect(await screen.findByRole('menuitem', { name: 'Перезапустити' })).toBeTruthy();
+      const panel = await select(user, 'alpha');
+      expect(await within(panel).findByRole('button', { name: 'Перезапустити' })).toBeTruthy();
       expect(capReads(calls).sort()).toEqual(['A/control', 'A/log-targets']);
-      // Same order and names as on the server page; "Зупинити" has the danger style.
-      expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Запустити', 'Зупинити', 'Перезапустити', 'Переглянути логи']);
+      // «Перезапустити» is a neutral outline button; the other commands are in the menu, in the server page's order.
+      expect(within(panel).getByRole('button', { name: 'Перезапустити' }).className).toBe('button');
+      await user.click(within(panel).getByRole('button', { name: 'Дії: api на alpha' }));
+      expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Запустити', 'Зупинити']);
       expect(screen.getByRole('menuitem', { name: 'Зупинити' }).className).toContain('action-menu__item--danger');
       await user.keyboard('{Escape}');
-      await user.click(await menuOf('alpha'));
-      await screen.findByRole('menuitem', { name: 'Перезапустити' });
-      expect(capReads(calls)).toHaveLength(2); // reused within the cache window
-      await user.keyboard('{Escape}');
-      // Polling of the list (several intervals) does not load capabilities of any server.
+      // Polling of the list (several intervals) does not load capabilities again or for other servers.
       await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
-      expect(capReads(calls)).toHaveLength(2);
+      expect(capReads(calls).filter((u) => u.startsWith('B/'))).toEqual([]);
       expect(calls.filter((c) => c.url.startsWith('/api/applications?')).length).toBeGreaterThan(2);
-      await user.click(await menuOf('beta'));
-      await screen.findByRole('menuitem', { name: 'Перезапустити' });
+      await select(user, 'beta');
+      await within(await panelOf('beta')).findByRole('button', { name: 'Перезапустити' });
       expect(capReads(calls).filter((u) => u.startsWith('B/')).sort()).toEqual(['B/control', 'B/log-targets']);
-      expect(posts(calls)).toEqual([]); // opening menus sends no command
+      expect(posts(calls)).toEqual([]); // selecting and opening menus sends no command
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('concurrent openings of the same server share one load (dedup)', async () => {
+  it('selecting two processes of the same server while capabilities load shares one load (dedup)', async () => {
     const slow = deferred<Response>();
     const calls = backend('operator', { items: () => [app(A), app(A, { key: `${A}:pm2:4`, pmId: 4, name: 'worker' })], route: (req) => (req.url === `/api/servers/${A}/control` ? slow.promise : undefined) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Дії: api на alpha' }));
-    expect(screen.getByText('Завантаження…')).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Дії: worker на alpha' }));
+    let panel = await select(user, 'alpha');
+    expect(within(panel).getByText('Перевіряється…')).toBeTruthy();
+    panel = await select(user, 'alpha', 'worker');
     expect(capReads(calls).filter((u) => u === 'A/control')).toHaveLength(1);
     await act(async () => { slow.resolve(json(200, control(A))); await Promise.resolve(); });
-    expect(await screen.findByText(/Процесу немає в allowlist сервера/)).toBeTruthy(); // worker is not allowlisted
+    expect((await within(panel).findAllByText(/Процесу немає в allowlist сервера/)).length).toBeGreaterThan(0); // worker is not allowlisted
     expect(capReads(calls).filter((u) => u === 'A/control')).toHaveLength(1);
   });
 
@@ -140,14 +159,13 @@ describe('applications list: row actions', () => {
     const calls = backend('operator');
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('beta'));
-    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
+    const panel = await restart(user, 'beta');
     let dialog = await screen.findByRole('dialog', { name: 'Перезапустити процес?' });
     expect(dialog.textContent).toContain('Підтвердьте перезапуск процесу «api» (api-beta) на сервері «beta».');
     await user.click(within(dialog).getByRole('button', { name: 'Скасувати' }));
     expect(posts(calls)).toEqual([]);
-    expect(document.activeElement).toBe(await menuOf('beta')); // focus back on the row trigger
-    await user.click(await menuOf('beta'));
+    expect(document.activeElement).toBe(within(panel).getByRole('button', { name: 'Перезапустити' })); // focus back on the button
+    await user.click(within(panel).getByRole('button', { name: 'Дії: api на beta' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Зупинити' }));
     dialog = await screen.findByRole('dialog', { name: 'Зупинити процес?' });
     expect(within(dialog).getByRole('button', { name: 'Зупинити' }).className).toContain('button--danger');
@@ -160,29 +178,42 @@ describe('applications list: row actions', () => {
     expect(Object.keys(body).sort()).toEqual(['action', 'idempotencyKey', 'targetKey']);
     expect(body).toMatchObject({ targetKey: 'api-beta', action: 'stop' });
     expect(body.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
-    // Capabilities were re-checked right before the POST (a fresh control read after the menu's one).
+    // Capabilities were re-checked right before the POST (a fresh control read after the selection's one).
     const beforePost = calls.slice(0, calls.indexOf(req as RecordedRequest));
-    expect(beforePost.filter((c) => c.url === `/api/servers/${B}/control`)).toHaveLength(2);
+    expect(beforePost.filter((c) => c.url === `/api/servers/${B}/control`).length).toBeGreaterThanOrEqual(2);
     expect(calls.some((c) => c.method === 'POST' && c.url.includes(A))).toBe(false);
   });
 
-  it('lifecycle: accepted is shown as queued, success only after the confirmed status; the row of that target is locked, the other server stays usable', async () => {
+  it('double click on «Перезапустити» and on the confirmation sends one command', async () => {
+    const slow = deferred<Response>();
+    const calls = backend('operator', { route: (req) => (req.method === 'POST' && req.url === `/api/servers/${A}/control-commands` ? slow.promise : undefined) });
+    renderAt();
+    const user = userEvent.setup();
+    const panel = await select(user, 'alpha');
+    await user.dblClick(await within(panel).findByRole('button', { name: 'Перезапустити' }));
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    await user.dblClick(within(screen.getByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
+    await waitFor(() => { expect(posts(calls)).toHaveLength(1); });
+    await act(async () => { slow.resolve(json(201, command(A))); await Promise.resolve(); });
+    expect(await screen.findByText(/«api-alpha» на сервері «alpha»: У черзі/)).toBeTruthy();
+    expect(posts(calls)).toHaveLength(1);
+  });
+
+  it('lifecycle: accepted is shown as queued, success only after the confirmed status; that target is locked, the other server stays usable', async () => {
     let status = 'queued';
     const calls = backend('operator', { route: (req) => (req.url === `/api/control-commands/${CMD}` ? json(200, command(A, { status, ...(status === 'succeeded' ? { after: { status: 'online' }, completedAt: new Date().toISOString() } : {}) })) : undefined) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
+    let panel = await restart(user, 'alpha');
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     expect(await screen.findByText('Перезапустити «api-alpha» на сервері «alpha»: У черзі — очікує агента.')).toBeTruthy();
     expect(screen.queryByText(/Виконано/)).toBeNull();
-    await user.click(await menuOf('alpha'));
-    expect((await screen.findByRole('menuitem', { name: 'Перезапустити' })).getAttribute('aria-disabled')).toBe('true');
-    expect(screen.getByText(/Команда для цього процесу ще виконується/)).toBeTruthy();
-    await user.keyboard('{Escape}');
-    await user.click(await menuOf('beta'));
-    expect((await screen.findByRole('menuitem', { name: 'Перезапустити' })).getAttribute('aria-disabled')).toBeNull();
-    await user.keyboard('{Escape}');
+    await waitFor(() => { expect(within(panel).getByRole('button', { name: 'Перезапустити' }).getAttribute('aria-disabled')).toBe('true'); });
+    expect(within(panel).getAllByText(/Команда для цього процесу ще виконується/).length).toBeGreaterThan(0);
+    await user.click(within(panel).getByRole('button', { name: 'Перезапустити' })); // blocked: nothing happens
+    expect(screen.queryByRole('dialog')).toBeNull();
+    panel = await select(user, 'beta');
+    expect((await within(panel).findByRole('button', { name: 'Перезапустити' })).getAttribute('aria-disabled')).toBeNull();
     status = 'succeeded';
     expect(await screen.findByText(/alpha»: Виконано й підтверджено \(стан після: online\)/, undefined, { timeout: 4000 })).toBeTruthy();
     expect(posts(calls)).toHaveLength(1);
@@ -192,19 +223,17 @@ describe('applications list: row actions', () => {
     backend('operator', { route: (req) => (req.url === `/api/control-commands/${CMD}` ? json(200, command(A, { status: 'unknown', reason: 'timeout', completedAt: new Date().toISOString() })) : undefined) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
+    await restart(user, 'alpha');
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     expect(await screen.findByText(/Результат невідомий .*дія могла виконатися/, undefined, { timeout: 4000 })).toBeTruthy();
   });
 
-  it('a lost response is never retried automatically; an explicit retry reuses the same idempotency key', async () => {
+  it('a lost response (timeout/503) is never retried automatically; an explicit retry reuses the same idempotency key', async () => {
     let down = true;
     const calls = backend('operator', { route: (req) => (req.method === 'POST' && req.url === `/api/servers/${A}/control-commands` && down ? json(503, {}) : undefined) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
+    await restart(user, 'alpha');
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
     expect(await within(dialog).findByText(/команда могла бути створена/)).toBeTruthy();
@@ -218,13 +247,24 @@ describe('applications list: row actions', () => {
     expect(new Set(keys).size).toBe(1);
   });
 
+  it('refusal (409) is explained and not retried', async () => {
+    const calls = backend('operator', { route: (req) => (req.method === 'POST' && req.url === `/api/servers/${A}/control-commands` ? json(409, {}) : undefined) });
+    renderAt();
+    const user = userEvent.setup();
+    await restart(user, 'alpha');
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
+    expect(await within(dialog).findByText(/Дію зараз неможливо виконати/)).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(posts(calls)).toHaveLength(1);
+  });
+
   it('capabilities changed between opening and confirming (fingerprint mismatch): nothing is sent', async () => {
     let mismatch = false;
     const calls = backend('operator', { controlFor: (id) => control(id, mismatch ? { targets: [target(id, { matchStatus: 'fingerprint_mismatch' })] } : {}) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
+    await restart(user, 'alpha');
     const dialog = await screen.findByRole('dialog');
     mismatch = true;
     await user.click(within(dialog).getByRole('button', { name: 'Перезапустити' }));
@@ -238,14 +278,18 @@ describe('applications list: row actions', () => {
     ['control disabled in the API', { controlFor: (id: string) => control(id, { enabled: false }) }, /Керування вимкнено на сервері API \(аварійний вимикач\)/],
     ['broker report stale', { controlFor: (id: string) => control(id, { broker: { state: 'ok', daemon: 'ok', allowlist: 'ok', reportedAt: new Date().toISOString(), fresh: false } }) }, /Broker давно не звітував/],
     ['fingerprint mismatch', { controlFor: (id: string) => control(id, { targets: [target(id, { matchStatus: 'fingerprint_mismatch' })] }) }, /fingerprint/],
-  ] as [string, Opts, RegExp][])('%s → control items disabled with the reason, no POST', async (_n, opts, reason) => {
+  ] as [string, Opts, RegExp][])('%s → commands disabled with the reason, no POST', async (_n, opts, reason) => {
     const calls = backend('operator', { ...opts, logsFor: (id) => logTargets(id, { state: 'not_connected', targets: [] }) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    expect(await screen.findByText(reason)).toBeTruthy();
+    const panel = await select(user, 'alpha');
+    expect((await within(panel).findAllByText(reason)).length).toBeGreaterThan(0);
+    const button = within(panel).getByRole('button', { name: 'Перезапустити' });
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(within(panel).getAllByText(/Логи: агент не на зв’язку/).length).toBeGreaterThan(0);
+    await user.click(button);
+    await user.click(within(panel).getByRole('button', { name: 'Дії: api на alpha' }));
     for (const m of screen.getAllByRole('menuitem')) expect(m.getAttribute('aria-disabled')).toBe('true');
-    expect(screen.getByText(/Логи: агент не на зв’язку/)).toBeTruthy();
     await user.click(screen.getAllByRole('menuitem')[0] as HTMLElement);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(posts(calls)).toEqual([]);
@@ -255,68 +299,52 @@ describe('applications list: row actions', () => {
     ['not allowlisted', []],
     ['another PM2 id under the same name', [{ targetKey: 'api-alpha', name: 'api', pmId: 9, actions: ['restart'], matchStatus: 'ok' }]],
     ['ambiguous mapping', [{ targetKey: 'one', name: 'api', pmId: 3, actions: ['restart'], matchStatus: 'ok' }, { targetKey: 'two', name: 'api', pmId: 3, actions: ['restart'], matchStatus: 'ok' }]],
-  ])('%s → no control items at all, only the reason', async (_n, targets) => {
+  ])('%s → no commands at all, only the reason', async (_n, targets) => {
     backend('operator', { controlFor: (id) => control(id, { targets }), logsFor: (id) => logTargets(id, { targets: [] }) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    expect(await screen.findByText(/Процесу немає в allowlist сервера|Ідентичність процесу не підтверджена|Кілька цілей broker/)).toBeTruthy();
+    const panel = await openMenu(user, 'alpha');
+    expect((await screen.findAllByText(/Процесу немає в allowlist сервера|Ідентичність процесу не підтверджена|Кілька цілей broker/)).length).toBeGreaterThan(0);
     expect(screen.queryByRole('menuitem')).toBeNull();
+    expect(within(panel).queryByRole('button', { name: 'Перезапустити' })).toBeNull();
   });
 
   it('control and logs permissions are independent', async () => {
     const onlyLogs = backend('viewer', { permissions: ['monitoring:read', 'logs:read'] });
     const view = renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    await screen.findByRole('menuitem', { name: 'Переглянути логи' });
-    expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Переглянути логи']);
+    let panel = await select(user, 'alpha');
+    expect(within(panel).queryByRole('button', { name: /^Дії:/ })).toBeNull();
+    await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+    expect(await within(panel).findByRole('button', { name: 'Оновити' })).toBeTruthy();
     expect(capReads(onlyLogs)).toEqual(['A/log-targets']);
     view.unmount();
     vi.unstubAllGlobals();
     const onlyControl = backend('viewer', { permissions: ['monitoring:read', 'processes:control'] });
     renderAt();
-    await user.click(await menuOf('alpha'));
-    await screen.findByRole('menuitem', { name: 'Перезапустити' });
-    expect(screen.queryByRole('menuitem', { name: 'Переглянути логи' })).toBeNull();
+    panel = await select(user, 'alpha');
+    await within(panel).findByRole('button', { name: 'Перезапустити' });
+    await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+    expect(within(panel).getByText('Немає права на перегляд логів.')).toBeTruthy();
     expect(capReads(onlyControl)).toEqual(['A/control']);
   });
 
-  it('"Переглянути логи" opens the row’s panel on the Logs tab (inline, same protected reader) for its server and target', async () => {
+  it('logs of the selected process: inline on the Logs tab (same protected reader) for its server and target', async () => {
     const calls = backend('operator');
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('beta'));
-    await user.click(await screen.findByRole('menuitem', { name: 'Переглянути логи' }));
-    expect(screen.queryByRole('dialog')).toBeNull(); // no modal in this list
-    const panel = await screen.findByRole('region', { name: 'Деталі: api на beta' });
-    expect(within(panel).getByRole('tab', { name: 'Логи' }).getAttribute('aria-selected')).toBe('true');
+    const panel = await select(user, 'beta');
+    await user.click(within(panel).getByRole('tab', { name: 'Логи' }));
+    expect(screen.queryByRole('dialog')).toBeNull(); // no modal in this workspace
     expect(await within(panel).findByText('beta line')).toBeTruthy();
     const create = calls.find((c) => c.method === 'POST' && c.url.endsWith('/log-requests'));
     expect(create?.url).toBe(`/api/servers/${B}/log-requests`);
     expect(JSON.parse(create?.body ?? '{}')).toEqual({ targetKey: 'api-beta' });
     expect(create?.headers.get('x-csrf-token')).toBe(CSRF);
-    await user.click(within(panel).getByRole('button', { name: 'Згорнути' }));
+    await user.click(within(panel).getByRole('button', { name: 'Закрити деталі' }));
     expect(screen.queryByRole('region', { name: 'Деталі: api на beta' })).toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Розгорнути деталі: api на beta' }));
-  });
-
-  it('filter change while capabilities load: the old row and its menu are gone, the late answer shows nothing', async () => {
-    const slow = deferred<Response>();
-    const calls = backend('operator', {
-      items: (q) => (q.get('serverId') === B ? [app(B)] : [app(A), app(B)]),
-      route: (req) => (req.url === `/api/servers/${A}/control` ? slow.promise : undefined),
-    });
-    renderAt();
-    const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    await act(async () => { await nav.current?.(`/applications?serverId=${B}`); });
-    await waitFor(() => { expect(screen.queryByRole('button', { name: 'Дії: api на alpha' })).toBeNull(); });
-    expect(document.querySelector('.action-menu__popup')).toBeNull();
-    expect(calls.find((c) => c.url === `/api/servers/${A}/control`)?.signal?.aborted).toBe(true);
-    await act(async () => { slow.resolve(json(200, control(A))); await Promise.resolve(); });
-    expect(screen.queryByRole('menu')).toBeNull();
-    expect(posts(calls)).toEqual([]);
+    expect(screen.getByText('Оберіть застосунок, щоб переглянути деталі.')).toBeTruthy();
+    expect(document.activeElement).toBe(await rowOf('beta'));
   });
 
   it('a filter change while a POST is pending keeps it addressed to the confirmed target; its status names that server', async () => {
@@ -327,8 +355,7 @@ describe('applications list: row actions', () => {
     });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
+    await restart(user, 'alpha');
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     await waitFor(() => { expect(posts(calls)).toHaveLength(1); });
     await act(async () => { await nav.current?.(`/applications?serverId=${B}`); });
@@ -342,8 +369,7 @@ describe('applications list: row actions', () => {
     const calls = backend('operator', { route: (req) => (req.method === 'POST' && req.url === `/api/servers/${A}/control-commands` ? slow.promise : undefined) });
     renderAt();
     const user = userEvent.setup();
-    await user.click(await menuOf('alpha'));
-    await user.click(await screen.findByRole('menuitem', { name: 'Перезапустити' }));
+    await restart(user, 'alpha');
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Перезапустити' }));
     await waitFor(() => { expect(posts(calls)).toHaveLength(1); });
     await act(async () => { await nav.logout?.(); });

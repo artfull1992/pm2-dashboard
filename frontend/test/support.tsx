@@ -72,3 +72,8 @@ export function renderApp(path = '/', state?: unknown) {
     </AuthProvider>,
   );
 }
+
+/** Simulated window width for media queries (see setup.ts); reset to 1440 after every test. */
+export function setViewportWidth(width: number) {
+  (globalThis as { __setViewportWidth?: (w: number) => void }).__setViewportWidth?.(width);
+}
