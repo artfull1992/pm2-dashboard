@@ -1,0 +1,155 @@
+[
+  {
+    "id": "APP-01-logs",
+    "view": "logs",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-02-overview",
+    "view": "overview",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-03-history",
+    "view": "history",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-04-stopped",
+    "view": "stopped",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-05-error",
+    "view": "error",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-06-offline",
+    "view": "offline",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-07-stale",
+    "view": "stale",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-08-loading",
+    "view": "loading",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-09-empty",
+    "view": "empty",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 0
+  },
+  {
+    "id": "APP-10-no-access",
+    "view": "no-access",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-11-unselected",
+    "view": "unselected",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-12-network-error",
+    "view": "network-error",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "APP-13-mobile-list",
+    "view": "mobile-list",
+    "width": 390,
+    "height": 844,
+    "errors": [],
+    "overflow": false,
+    "rows": 8
+  },
+  {
+    "id": "APP-14-mobile-detail",
+    "view": "logs",
+    "width": 390,
+    "height": 844,
+    "errors": [],
+    "overflow": false,
+    "rows": 0
+  },
+  {
+    "id": "APP-15-tablet-detail",
+    "view": "logs",
+    "width": 1024,
+    "height": 768,
+    "errors": [],
+    "overflow": false,
+    "rows": 0
+  },
+  {
+    "id": "APP-16-compact-desktop",
+    "view": "logs",
+    "width": 1366,
+    "height": 768,
+    "errors": [],
+    "overflow": false,
+    "rows": 9
+  },
+  {
+    "id": "DS-01-components",
+    "view": "system",
+    "width": 1440,
+    "height": 900,
+    "errors": [],
+    "overflow": false,
+    "rows": 0
+  }
+]
