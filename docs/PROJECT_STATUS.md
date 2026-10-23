@@ -1,5 +1,38 @@
 # Поточний стан проєкту
 
+## Production: деплой `879fa34` — approved Applications redesign (2026-10-23, за прямим дозволом користувача)
+
+Користувач прямо дозволив розгорнути схвалене. `879fa34` — документаційний descendant approved `677f6e2`: між ними змінено лише `docs/`, функціональний код ідентичний. Отже, результати перевірок approved-коду застосовні до артефакту: check:local, UI 143/143, E2E 19/19 (+2 opt-in), справжній zoom 200 % — 11/11.
+
+**До деплою.**
+- Фактично на production був `590e36d` (previous `7c35626`); служба active, health 200/200 локально й через HTTPS, 0 warn/error за годину.
+- Runtime — `/opt/node-control-runtime/bin/node` → `/usr/bin/node` v22.23.2.
+- Unit у системі збігається з релізним. Nginx віддає `current/frontend/dist`.
+- Heartbeat і inventory свіжі: 5 + 18 процесів.
+
+**Відмінності `590e36d` → `879fa34`.** Лише frontend, тести й документація. Backend, міграції, Agent, broker, installer, scripts, deploy-файли та залежності (`package*.json`) не змінювались. Тому агентів не оновлено.
+
+**Процедура (штатна).**
+- Артефакт зібрано `build-release.js --from-tree` з `git archive 879fa34` на одноразовій VM (Node 22.22.1). Untracked-матеріали користувача не зачеплено.
+- API `sha256 ff657e1543a7ae083550af4db939db0f1ee5caae1ff32c783d008dffdede15fd`. Checksum на сервері збігся; `RELEASE.json` — revision `879fa34`, 86 файлів.
+- Резервні копії `api.env`, unit і `pg_dump` (`pg_restore --list` OK).
+- `prepare` → `config` (без змін) → `migrate status` (applied 10, pending 0; міграції не виконувались) → unit без змін → `activate` (previous = `590e36d`) → restart лише `node-control-api`.
+
+**Після деплою.**
+- `active`, `NRestarts=0`, процес від `nodecontrol`, слухає лише `127.0.0.1:3100`, 0 warn/error.
+- health 200/200 локально й через HTTPS; невідомий шлях → 404; анонімні `/api/applications` і `/api/log-requests/:id` → 401.
+- Публічні `index.html`, JS і CSS побайтово = `frontend/dist` активного релізу.
+- PostgreSQL і Nginx active, failed units — 0.
+- Обидва агенти звітують: heartbeat і inventory свіжі, 5 + 18 процесів.
+- Не змінювались: Nginx, доступи й ролі, PM2, Slack, глобальний Node. Журнали застосунків не читались, команд над процесами не було.
+
+**Перевірити оператору** (вхід у production UI я не виконував):
+- Applications: список → деталі → логи → назад;
+- компактна навігація на вікні 601–1279 px;
+- меню «⋯».
+
+**Відновлення.** Сліпий rollback на `590e36d` заборонений: там дефект P1 (старі логи після 404). Переважний шлях — виправлення вперед. Якщо потрібне відновлення, безпечний варіант — зібрати й активувати штатно `2510092` (approved етап 2 з виправленням P1; той самий backend зі scoped RBAC, без міграцій). Завчасно його не готували. Down-міграцій немає.
+
 ## Незалежний повторний review Codex — rail-виправлення `677f6e2` (2026-10-23) — APPROVED
 
 Перевірено diff від `71b9f84`, промпт виправлення, реалізацію scroll/tooltip lifecycle, regression-тести й документацію Code → Docs / Docs → Code з урахуванням APP-15/DS-01. Попереднє P2 закрито: rail має власну вертикальну прокрутку, підказка винесена в portal поза scroll-контейнером; нижні пункти, профіль і вихід доступні в низькому вікні. Зони 44 px, назви й keyboard/focus збережені. Нових зауважень у межах повторного review немає. Етап 2.1 з виправленням `677f6e2` — **APPROVED**.
