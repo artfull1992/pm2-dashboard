@@ -211,7 +211,9 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 
 @media (min-width: 601px) and (max-width: 1279px) {
   .shell { grid-template-columns: var(--rail) minmax(0, 1fr); }
-  .sidebar { padding: var(--space-4) 6px; align-items: stretch; overflow: visible; }
+  /* The rail scrolls on its own when the menu is taller than the window (short windows, a full admin menu); its
+     tooltips are an overlay outside it (RailTooltip), so nothing is clipped. Every control keeps its 44 px height. */
+  .sidebar { padding: var(--space-4) 6px; align-items: stretch; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
   .sidebar__brand { padding: 0; text-align: center; }
   .brand__full, .nav-group__title, .profile__email, .profile__role { display: none; }
   .brand__short { display: inline; }
@@ -222,15 +224,12 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
   .profile__actions { flex-direction: column; margin: 0; gap: 4px; }
   .profile__link, .profile__logout { position: relative; justify-content: center; width: 44px; min-height: 44px; padding: 0; }
   .profile__link .icon, .profile__logout .icon { display: block; }
-  /* The label as a tooltip next to the rail, on hover and on keyboard focus (never the only source of the name). */
-  [data-tip]:hover::after, [data-tip]:focus-visible::after {
-    content: attr(data-tip); position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%); z-index: 50;
-    padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--elevated); color: var(--text);
-    font-size: var(--font-sm); font-weight: 500; white-space: nowrap; box-shadow: var(--shadow); pointer-events: none;
-  }
   .profile .account__error { position: fixed; left: calc(var(--rail) + 8px); bottom: 16px; max-width: 280px; padding: 8px 10px; background: var(--elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); z-index: 50; }
   .content { padding: 20px; }
 }
+
+/* Rail tooltip overlay (RailTooltip): fixed, in <body>, never intercepts the pointer. */
+.rail-tip { position: fixed; top: 0; left: 0; z-index: 60; max-width: calc(100vw - 16px); padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--elevated); color: var(--text); font-size: var(--font-sm); font-weight: 500; line-height: 18px; white-space: nowrap; box-shadow: var(--shadow); pointer-events: none; }
 
 @media (max-width: 600px) {
   .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; }

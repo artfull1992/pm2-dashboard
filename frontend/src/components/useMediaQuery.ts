@@ -21,3 +21,6 @@ export const SPLIT_VIEW_QUERY = '(min-width: 1280px)';
 
 /** Phone layout (design reference 1.0, ≤ 600 px): no navigation column; the details view hides the page header. */
 export const PHONE_QUERY = '(max-width: 600px)';
+
+/** Compact navigation rail (design reference 1.0, APP-15): icons only, labels as tooltips. */
+export const RAIL_QUERY = '(min-width: 601px) and (max-width: 1279px)';

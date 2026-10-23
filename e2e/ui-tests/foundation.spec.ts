@@ -140,8 +140,8 @@ for (const theme of ['dark', 'light'] as const) {
           }
           await navLinks.first().focus();
           await page.keyboard.press('Tab');
-          const tip = await page.evaluate(() => getComputedStyle(document.activeElement as Element, '::after').content);
-          expect(tip).toBe('"Сервери"');
+          // The tooltip is an overlay outside the rail's scroll (review 71b9f84): see navigation-rail.spec.ts.
+          await expect(page.locator('.rail-tip')).toHaveText('Сервери');
           await expect(page.getByRole('button', { name: 'Вийти' })).toBeVisible();
           await expect(page.getByRole('link', { name: 'Обліковий запис' })).toBeVisible();
         } else {

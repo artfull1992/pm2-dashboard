@@ -3,6 +3,8 @@ import { NavLink, Outlet } from 'react-router';
 import type { Permission, Role } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Icon, type IconName } from './icons';
+import { RailTooltip } from './RailTooltip';
+import { RAIL_QUERY, useMediaQuery } from './useMediaQuery';
 
 export const ROLE_LABELS: Record<Role, string> = { admin: 'Адміністратор', operator: 'Оператор', viewer: 'Спостерігач' };
 
@@ -14,7 +16,8 @@ interface NavGroup { title: string; items: readonly NavItem[] }
 //
 // Widths (design reference 1.0, APP-15): ≥ 1280 px a 184 px column with icons and labels; 601–1279 px a compact
 // 68 px rail with icons only — every link keeps its text as the accessible name and shows it as a tooltip on hover and
-// keyboard focus; ≤ 600 px a top bar with the «Меню» button.
+// keyboard focus (RailTooltip, an overlay outside the rail's own scroll: a full menu scrolls in a short window instead of
+// losing its last links, the account link or «Вийти»); ≤ 600 px a top bar with the «Меню» button.
 export const NAV_GROUPS: readonly NavGroup[] = [
   {
     title: 'Моніторинг',
@@ -41,6 +44,8 @@ export function Layout() {
   const [logoutState, setLogoutState] = useState<'idle' | 'pending' | 'failed'>('idle');
   const navId = useId();
   const toggle = useRef<HTMLButtonElement>(null);
+  const sidebar = useRef<HTMLElement>(null);
+  const rail = useMediaQuery(RAIL_QUERY);
 
   // Mobile menu: Escape closes it and returns focus to the toggle. A closed menu is display:none, so none of its
   // links stay in the Tab order.
@@ -76,7 +81,7 @@ export function Layout() {
           Меню
         </button>
       </header>
-      <aside id={navId} className={`sidebar${menuOpen ? ' sidebar--open' : ''}`}>
+      <aside ref={sidebar} id={navId} className={`sidebar${menuOpen ? ' sidebar--open' : ''}`}>
         <div className="sidebar__brand brand"><span className="brand__full">Node Control</span><abbr className="brand__short" title="Node Control">NC</abbr></div>
         <nav aria-label="Основна навігація">
           {groups.map((group, index) => (
@@ -111,6 +116,7 @@ export function Layout() {
           {logoutState === 'failed' ? <p className="account__error" role="alert">Не вдалося вийти: сервіс недоступний. Спробуйте ще раз.</p> : null}
         </div>
       </aside>
+      <RailTooltip container={sidebar} active={rail} />
       <main className="content" id="main" tabIndex={-1}>
         <Outlet />
       </main>

@@ -475,10 +475,9 @@ test('logs: after a successful read, an ambiguous 404 removes the old text from 
   expect(state.mutations).toEqual([]);
 });
 
-test('200 % zoom of a 1440×900 window (DPR 2 at 720×450 CSS px): separate views, nothing overlaps, no page overflow', async ({ browser }) => {
-  // Playwright cannot press the browser's zoom; a DPR 2 page of 720×450 CSS px gets the same CSS layout as a
-  // 1440×900 window zoomed to 200 % (CSS px = window px / zoom, media queries alike). A manual zoom check is
-  // described in PROJECT_STATUS.
+test('reflow at 720×450 CSS px with DPR 2 (not a browser-zoom check): separate views, nothing overlaps, no page overflow', async ({ browser }) => {
+  // A reflow / DPR check only: same CSS viewport as a 1440×900 window at 200 %, but NOT the browser's zoom. The real
+  // browser zoom (chrome.tabs.setZoom) was checked separately — see PROJECT_STATUS.
   const context = await browser.newContext({ viewport: { width: 720, height: 450 }, deviceScaleFactor: 2, locale: 'uk-UA', baseURL: 'http://127.0.0.1:4175' });
   const page = await context.newPage();
   try {
