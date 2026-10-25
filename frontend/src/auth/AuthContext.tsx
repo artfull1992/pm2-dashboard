@@ -38,10 +38,16 @@ export interface SessionBinding { current: () => boolean }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 const MAX_TIMER_MS = 2 ** 31 - 1;
+/** A session the server confirmed although its expiry is past by this browser's clock (clock skew): re-check rarely. */
+const PAST_DUE_RECHECK_MS = 60_000;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'checking' });
   const epoch = useRef(0);
+  // The expiry re-check: whether the last answer confirmed a session that is past due by the local clock, and a tick
+  // that schedules another re-check after a transient failure.
+  const pastDue = useRef(false);
+  const [recheckTick, setRecheckTick] = useState(0);
   const inflight = useRef(new Set<AbortController>());
 
   /** Starts a new epoch: aborts every request of the previous one. */
@@ -135,13 +141,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [startMe]);
 
-  // Absolute session expiry: re-check with the server when it is due (the server stays authoritative).
+  // Absolute session expiry: re-check with the server when it is due (the server stays authoritative; every API call
+  // that gets 401 ends the session anyway). The re-check is silent: the session stays on screen while it runs, so the
+  // same session never remounts pages (selection, drafts, open dialogs survive). 401 → expired. When the server still
+  // confirms a session that is past due by this browser's clock (client/server clock skew), it is re-checked once a
+  // minute instead of every second; a transient failure is retried the same way.
+  const recheck = useCallback(() => {
+    const mine = epoch.current;
+    const { controller, done } = track();
+    authApi.me(controller.signal).then(
+      (session) => {
+        if (epoch.current !== mine) return;
+        pastDue.current = Date.parse(session.expiresAt) <= Date.now();
+        setState({ status: 'authenticated', session });
+      },
+      (error: unknown) => {
+        if (epoch.current !== mine || !(error instanceof ApiError) || error.kind === 'aborted') return;
+        if (error.kind === 'unauthorized') { nextEpoch(); setState({ status: 'anonymous', reason: 'expired' }); return; }
+        pastDue.current = true;
+        setRecheckTick((t) => t + 1);
+      },
+    ).finally(done);
+  }, [nextEpoch, track]);
+
   useEffect(() => {
-    if (state.status !== 'authenticated') return undefined;
-    const delay = Math.min(Math.max(Date.parse(state.session.expiresAt) - Date.now(), 0) + 1000, MAX_TIMER_MS);
-    const timer = setTimeout(checkSession, delay);
+    if (state.status !== 'authenticated') { pastDue.current = false; return undefined; }
+    const remaining = Date.parse(state.session.expiresAt) - Date.now();
+    const delay = remaining > 0 ? remaining + 1000 : pastDue.current ? PAST_DUE_RECHECK_MS : 1000;
+    const timer = setTimeout(recheck, Math.min(delay, MAX_TIMER_MS));
     return () => { clearTimeout(timer); };
-  }, [state, checkSession]);
+  }, [state, recheck, recheckTick]);
 
   const value = useMemo<AuthContextValue>(() => ({
     state,

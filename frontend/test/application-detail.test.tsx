@@ -1025,3 +1025,55 @@ describe('name search', () => {
     expect(queryRow('alpha')).toBeNull();
   });
 });
+
+// Review 73bfd84 (E2E inventory.spec:85): a session whose absolute expiry is already past by THIS browser's clock (the
+// server's clock is behind — e.g. a drifted test DB VM — while the server still accepts the session) used to be
+// re-checked about every second through the «checking» state, which unmounted the private area in a real browser and
+// dropped the selection (regression: e2e/ui-tests/session-skew.spec.ts; jsdom does not reproduce that loop). These
+// tests pin the new contract: the re-check keeps the page, a confirmed past-due expiry is re-checked once a minute,
+// and a 401 still ends the session.
+describe('session expiry re-check with a skewed client clock', () => {
+  // One session = one stored expiry (the server returns the same expires_at on every /me), 90 min past by this clock.
+  const expired = new Date(Date.now() - 90 * 60_000).toISOString();
+  const pastDue = () => ({ ...session('operator'), expiresAt: expired });
+
+  it('keeps the page (selection, details) and does not poll /me every second', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const calls = backend('operator', { route: (req) => (req.url === '/api/auth/me' ? json(200, pastDue()) : undefined) });
+      renderAt();
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+      await select(user, 'beta');
+      const me = () => calls.filter((c) => c.url === '/api/auth/me').length;
+      const before = me();
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(me() - before).toBeLessThanOrEqual(1); // one re-check, then once a minute
+      expect((await rowOf('beta')).getAttribute('aria-current')).toBe('true');
+      expect(screen.getByRole('region', { name: 'Деталі: api на beta' })).toBeTruthy();
+      await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+      expect(me() - before).toBeLessThanOrEqual(2);
+      expect((await rowOf('beta')).getAttribute('aria-current')).toBe('true');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a re-check answered with 401 still ends the session (back to sign-in)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let first = true;
+      backend('operator', { route: (req) => {
+        if (req.url !== '/api/auth/me') return undefined;
+        if (first) { first = false; return json(200, pastDue()); }
+        return json(401, {});
+      } });
+      renderAt();
+      await rowOf('beta');
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      expect(await screen.findByLabelText('Email')).toBeTruthy();
+      expect(queryRow('beta')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

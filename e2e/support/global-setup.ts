@@ -16,6 +16,8 @@ import { connectTestClient, createRunSchema, newRunSchemaName, readTestDbEnv, te
 import { API_PORT, STATE_FILE, UI_ORIGIN, UI_PORT, USERS } from './env.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
+/** Allowed difference between the test DB clock and this machine's (review 73bfd84). */
+const MAX_CLOCK_SKEW_MS = 60_000;
 
 async function assertPortFree(port: number): Promise<void> {
   const server = createServer();
@@ -44,6 +46,14 @@ export default async function globalSetup(): Promise<void> {
   const schema = newRunSchemaName();
   const admin = await connectTestClient(config);
   try {
+    // Sessions, heartbeats and inventories are stamped by the DB clock and judged by the browser's. A drifted test DB
+    // host (e.g. a VM after the laptop slept) made a valid 30 min session look expired and its re-check reset pages,
+    // so the run fails here with the cause instead of failing later in an unrelated assertion.
+    const dbNow = (await admin.query<{ now: Date }>('SELECT now() AS now')).rows[0]?.now;
+    const skew = dbNow ? dbNow.getTime() - Date.now() : Number.NaN;
+    if (!Number.isFinite(skew) || Math.abs(skew) > MAX_CLOCK_SKEW_MS) {
+      throw new Error(`test DB clock differs from this machine by ${Number.isFinite(skew) ? `${String(Math.round(skew / 1000))} s` : 'an unknown amount'} (limit ${String(MAX_CLOCK_SKEW_MS / 1000)} s): synchronise the test DB host clock before E2E`);
+    }
     await createRunSchema(admin, schema);
     await migrateUp(admin, { schema });
   } finally {
