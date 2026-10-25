@@ -746,13 +746,32 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 
 /* Alerts (NTF-01…07, docs/design/part-01): tabs, page-local filters, a table of 72 px rows (64 px in the compact
    1280–1400 range) or records on narrow windows, details in a modal drawer. Existing tokens only. */
-.alerts { gap: var(--space-3); }
+/* The page fills the window (minus the content padding and, on phones, the sticky top bar): the list card takes what
+   the header, tabs, filters and notices leave, its rows scroll inside it, caption and pager stay in view. A short
+   window keeps the card at a useful minimum and lets the page scroll by that bounded amount — never by the length of
+   the list (review 73bfd84). */
+.alerts { --alerts-chrome: calc(2 * var(--space-5)); display: flex; flex-direction: column; gap: var(--space-3); height: calc(100dvh - var(--alerts-chrome)); }
+@media (min-width: 601px) and (max-width: 1400px) { .alerts { --alerts-chrome: 40px; } }
+/* Phones: content padding 2 × 16 px + the sticky top bar (6 px + 44 px control + 6 px + 1 px border). */
+@media (max-width: 600px) { .alerts { --alerts-chrome: calc(2 * var(--space-4) + 57px); } }
+.alerts > * { flex: none; }
+.alerts > .incidents-card { flex: 1 1 0; min-height: 280px; display: flex; flex-direction: column; }
+/* Phones and short windows (incl. 200 % zoom of a laptop window): header, tabs and filters scroll away with the page,
+   the card is as high as the window (minus the same chrome), so the list gets a useful area with the pager at the
+   bottom of the card. The page is then taller than the window by the height of those top blocks only. */
+@media (max-width: 600px), (max-height: 640px) {
+  .alerts { height: auto; }
+  .alerts > .incidents-card { flex: none; height: calc(100dvh - var(--alerts-chrome)); }
+}
 .alerts .page-header { align-items: center; }
 .alerts__tabs { padding: 0; }
 .alerts__hint { font-size: var(--font-xs); line-height: 18px; }
 .incidents-card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.incidents-card > * { flex: none; }
 .incidents-card > .state, .incidents-card > .state--loading { border: 0; border-radius: 0; }
-.incidents__scroll { overflow-x: auto; }
+/* The rows' own scroll (both axes for the table; the head row stays visible). */
+.incidents-card > .incidents__scroll, .incidents-card > .incident-records { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.incidents thead th { position: sticky; top: 0; z-index: 1; }
 .incidents { table-layout: auto; }
 .incidents tbody tr { height: 72px; }
 @media (min-width: 1280px) and (max-width: 1400px) { .incidents tbody tr { height: 64px; } }
