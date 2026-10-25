@@ -129,6 +129,10 @@ for (const theme of THEMES) {
         await page.getByRole('menuitem', { name: 'Доступи' }).click();
         const dialog = page.getByRole('dialog', { name: /^Доступи:/ });
         await expect(dialog.getByRole('checkbox', { name: /^catalog-api/ })).toBeVisible();
+        // catalog-api is already in the granted list (/access); the picker list comes with a second request
+        // (/api/access/servers/:id/services). Counting before it arrived saw only the 4 mode radios + 3 granted services
+        // = 7 (review 217af0b): wait for a service that only the loaded picker shows.
+        await expect(dialog.getByRole('checkbox', { name: /^cron-worker/ })).toBeVisible();
         await shot(page, `access-${theme}-${String(width)}`);
         // Choice controls keep their own size (not the text field's 100 % width / 40 px height).
         const boxes = await dialog.locator('input[type="checkbox"], input[type="radio"]').evaluateAll((els) => els.map((e) => {
