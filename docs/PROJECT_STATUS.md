@@ -1,5 +1,42 @@
 # Поточний стан проєкту
 
+## Production: деплой `78c827b` — етап 3.2 «Сповіщення» з виправленнями (2026-10-25, після APPROVED Codex і за прямим дозволом користувача)
+
+Активна code revision — `78c827b` (review-commit APPROVED поверх `434abe1`). Цей запис — пізніший docs-commit; він не розгортався.
+
+**До деплою (перевірено на сервері).**
+- current `6c741ec`, previous `879fa34`; API active з 2026-10-23, `NRestarts=0`, процес від `nodecontrol`, runtime Node 22.23.2.
+- health 200/200 локально й через HTTPS; попереджень API за 2 год — 0; Nginx і PostgreSQL active.
+- Годинник сервера й БД збігається з годинником машини оператора (до секунди).
+- `6c741ec → 78c827b`: backend, міграції, `scripts/deploy`, `deploy/systemd`, `package*.json`, Agent і installer ідентичні. Змінились лише frontend, тести й документація.
+
+**Fallback — `6c741ec`** (current до деплою, не `590e36d`).
+- Підготовлений: manifest 87/87 без розбіжностей, root, `node_modules`, unit збігається, `migrate status` `applied=10 pending=0 unknown=0`.
+- Відоме обмеження: стара щосекундна перевірка сесії при розсинхронізованому годиннику клієнта (UX, не безпека).
+- Приватний runbook повернення лежить у захищеному recovery-каталозі на сервері; наявний recovery-комплект `2510092` не змінено.
+
+**Процедура (штатна, DEPLOYMENT).**
+- Збірка: `git archive 78c827b` → `build-release.js --from-tree` на одноразовій VM (Node 22.22.1). API `sha256 fb73a63d220047e76d32ec6828b590b5fac5c22268b2c2cad9d6a205e9999b73`, 87 файлів.
+- Артефакт: є `frontend/dist/theme-init.js`; немає `.env`, source maps, дизайн-матеріалів і секретних шаблонів. Відносно `6c741ec` відрізняються лише 5 файлів `frontend/dist`.
+- На сервері: checksum OK → резервні копії `api.env`, unit і `pg_dump -Fc` (`pg_restore --list` OK) → `prepare` → `config` («kept») → `migrate status` (`pending=0 unknown=0`; `up` не запускався) → unit без змін (daemon-reload не потрібен) → `activate` → restart лише `node-control-api`.
+
+**Після деплою.**
+- current `78c827b`, previous `6c741ec`; active, `NRestarts=0`, `nodecontrol`, слухає лише `127.0.0.1:3100`.
+- health/live і health/ready — 200 локально й через HTTPS; `/nope` → 404; анонімні `/api/applications`, `/api/alerts`, `/api/auth/me` → 401; SPA-маршрут `/alerts` → 200.
+- Попереджень API за 5 хв — 0; Nginx і PostgreSQL active, failed units — 0.
+- `index.html`, `theme-init.js`, JS і CSS побайтово відповідають активному артефакту; JS віддається як `application/javascript`.
+- Анонімний smoke у браузері (1440 і 390, без входу, лише GET): перенаправлення на `/login`; тема «Темна» застосовується й зберігається після reload; без горизонтального переповнення й помилок консолі.
+
+**Операційне зауваження (не змінювалось, поза scope).** Production Nginx не надсилає заголовок `Content-Security-Policy`: у `/etc/nginx` його немає, vhost не змінювався з 2026-10-15. Frontend із суворим `default-src 'self'` сумісний (UI-тести). Додавання заголовка — окреме рішення з `nginx -t`.
+
+**Не перевірено** (production-облікових даних для smoke немає, вхід у production не виконувався). Перевірити оператору:
+- Огляд, Сервери; Застосунки: вибір → деталі → «Закрити деталі»;
+- Сповіщення: активні / історія, пошук і фільтри, «Старіші», прокрутка списку й пагінація, drawer (Escape, фокус);
+- mobile-меню; viewer не бачить «Доставка»;
+- свіжість heartbeat агентів на «Огляді».
+
+**Не змінювались:** Agent, broker, exporter, PM2, Slack, правила й доставка, користувачі й доступи, PostgreSQL/HBA/firewall, Nginx. Rollback не знадобився.
+
 ## Повторний незалежний review Codex — ізоляція сесій (`bf1737f`, `434abe1`), 2026-10-25 — APPROVED
 
 Перевірено diff від `217af0b`, реалізацію, тести та документацію Code → Docs / Docs → Code. P2 з review `217af0b` закрито; етап 3.2 «Сповіщення» з усіма виправленнями отримує APPROVED у межах проведених перевірок. Нових зауважень не знайдено. Backend, SQL, RBAC, Agent, залежності та погоджене компонування NTF не змінені; AUD не починався.
