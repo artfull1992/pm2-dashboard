@@ -100,7 +100,7 @@ Commit має описувати фактичну зміну. Push — у пот
 - Гонки перевіряти real-DB тестами з утриманням блокування в окремому з'єднанні (`BEGIN … COMMIT`), а не лише через `Promise.all`.
 - Паролі й hash не потрапляють у відповіді, audit, журнали, client storage чи URL; тести перевіряють відсутність синтетичних паролів у логах, audit і тілах відповідей.
 - E2E: для сценаріїв з багатьма входами — окремий admin у per-run схемі (ліміт входів 5/15 хв на обліковий запис).
-- Frontend: кожна асинхронна мутація прив'язана до сесії (`bindSession()` з `AuthContext`) і власного `AbortController`. Після **кожного** `await`, перед будь-яким побічним ефектом (стан, callback, reload, `passwordChanged`, `sessionExpired`) — перевірка `aborted || !binding.current()`. `apiRequest` не повертає результат, що надійшов після abort/timeout. Regression-тести — з transport, який завершується **після** abort (deferred), бо справжній `fetch` це приховує.
+- Frontend: кожна асинхронна мутація прив'язана до сесії (`bindSession()` з `AuthContext`) і власного `AbortController`. Після **кожного** `await`, перед будь-яким побічним ефектом (стан, callback, reload, `passwordChanged`, `sessionExpired`) — перевірка `aborted || !binding.current()`. `apiRequest` не повертає результат, що надійшов після abort/timeout. Regression-тести — з transport, який завершується **після** abort (deferred), бо справжній `fetch` це приховує. Будь-яка зміна сесії, також виявлена тихою перевіркою `/me` (інша `sessionIdentity`), починає нову епоху (ADR-012).
 - Списки з keyset-курсором у UI — сторінками (`Назад`/`Далі`), ресурс keyed за курсором: дані іншої сторінки не показуються, запізніла відповідь відкидається. Неможливість дійти до записів після першої сторінки — дефект.
 
 ### Dashboard (Task 012)

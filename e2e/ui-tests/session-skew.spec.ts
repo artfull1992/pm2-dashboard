@@ -51,3 +51,54 @@ test('a session that is past due by the browser clock but confirmed by the serve
   await expect(row).toHaveAttribute('aria-current', 'true');
   expect(confirmed - before).toBe(1);
 });
+
+// Review 217af0b: the silent re-check must treat ANOTHER session as a session change. Reproducer: session A is past due
+// by the browser clock, «Вийти» is pressed and its answer held; the re-check confirms another session B; then A's
+// late 204 arrives — it must not end B. Also: a new session of the same user remounts the private area.
+const sessionOf = (id: string, email: string, role: 'admin' | 'viewer', csrf: string, expiresAt: string) => ({
+  user: { id, email, role }, csrfToken: csrf.repeat(43), expiresAt,
+  permissions: role === 'admin' ? ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage'] : ['monitoring:read'],
+});
+
+async function switching(page: Page, second: ReturnType<typeof sessionOf>) {
+  const first = sessionOf('11111111-1111-4111-8111-111111111111', 'admin@example.test', 'admin', 'a', EXPIRES);
+  let me = 0;
+  let releaseLogout: () => void = () => undefined;
+  const logoutHeld = new Promise<void>((r) => { releaseLogout = r; });
+  await page.route('**/api/**', async (route) => {
+    const p = new URL(route.request().url()).pathname;
+    const now = new Date().toISOString();
+    if (p === '/api/auth/logout') { await logoutHeld; await route.fulfill({ status: 204 }); return; }
+    if (p === '/api/auth/me') { me += 1; await route.fulfill({ json: me === 1 ? first : second }); return; }
+    if (p === '/api/alerts/status') { await route.fulfill({ json: { engine: { enabled: true, running: true, lastEvaluationAt: now, lastEvaluationOk: true }, delivery: { enabled: true }, activeCount: 0, admin: null } }); return; }
+    if (p === '/api/alerts') { await route.fulfill({ json: { items: [], nextBefore: null } }); return; }
+    await route.fulfill({ status: 404, json: {} });
+  });
+  return { me: () => me, releaseLogout };
+}
+
+test('a late logout of the previous session does not end the session the re-check confirmed (another user)', async ({ page }) => {
+  const b = sessionOf('22222222-2222-4222-8222-222222222222', 'viewer@example.test', 'viewer', 'b', new Date(Date.now() + 3_600_000).toISOString());
+  const s = await switching(page, b);
+  await page.goto('/alerts');
+  await expect(page.getByText('admin@example.test', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Вийти', exact: true }).click();
+  await expect(page.getByText('viewer@example.test', { exact: true })).toBeVisible(); // the re-check brought B
+  expect(s.me()).toBe(2);
+  s.releaseLogout();
+  // The held logout of A is answered now: B stays signed in.
+  await expect(page.getByRole('button', { name: 'Вийти', exact: true })).toBeEnabled();
+  await expect(page.getByText('viewer@example.test', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Увійти', exact: true })).toHaveCount(0);
+});
+
+test('a new session of the same user remounts the private area (unsaved input of the old session is gone)', async ({ page }) => {
+  const a2 = sessionOf('11111111-1111-4111-8111-111111111111', 'admin@example.test', 'admin', 'c', new Date(Date.now() + 3_600_000).toISOString());
+  const s = await switching(page, a2);
+  await page.goto('/alerts');
+  const search = page.getByLabel('Пошук на цій сторінці');
+  await search.fill('typed in the old session');
+  await expect.poll(() => s.me()).toBe(2);
+  await expect(page.getByLabel('Пошук на цій сторінці')).toHaveValue('');
+  await expect(page.getByText('admin@example.test', { exact: true })).toBeVisible();
+});

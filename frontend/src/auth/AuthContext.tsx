@@ -38,6 +38,12 @@ export interface SessionBinding { current: () => boolean }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 const MAX_TIMER_MS = 2 ** 31 - 1;
+/**
+ * Identity of one server session as the API exposes it: the user, the CSRF token (an HMAC of the session token, so
+ * unique per session and stable for its lifetime) and the absolute expiry (never extended). Two sessions of the same
+ * user differ in the token and the expiry; a successful answer alone says nothing about which session it is.
+ */
+export const sessionIdentity = (s: SessionInfo) => `${s.user.id}:${s.csrfToken}:${s.expiresAt}`;
 /** A session the server confirmed although its expiry is past by this browser's clock (clock skew): re-check rarely. */
 const PAST_DUE_RECHECK_MS = 60_000;
 
@@ -48,6 +54,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // that schedules another re-check after a transient failure.
   const pastDue = useRef(false);
   const [recheckTick, setRecheckTick] = useState(0);
+  // Only the latest re-check may change the state (an older one answering late is ignored).
+  const recheckSeq = useRef(0);
   const inflight = useRef(new Set<AbortController>());
 
   /** Starts a new epoch: aborts every request of the previous one. */
@@ -146,17 +154,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // same session never remounts pages (selection, drafts, open dialogs survive). 401 → expired. When the server still
   // confirms a session that is past due by this browser's clock (client/server clock skew), it is re-checked once a
   // minute instead of every second; a transient failure is retried the same way.
-  const recheck = useCallback(() => {
+  // The answer keeps the epoch only when it is the SAME session (sessionIdentity). Another session — another user or
+  // a new session of the same user, e.g. after a sign-in in another tab — is a session change like a new login: a new
+  // epoch (pending operations and bindings of the old session are void, so e.g. its late logout cannot end the new
+  // one) and the private area remounts (its key is the session identity).
+  const recheck = useCallback((current: SessionInfo) => {
     const mine = epoch.current;
+    const seq = ++recheckSeq.current;
     const { controller, done } = track();
     authApi.me(controller.signal).then(
       (session) => {
-        if (epoch.current !== mine) return;
+        if (epoch.current !== mine || seq !== recheckSeq.current) return;
+        if (sessionIdentity(session) !== sessionIdentity(current)) nextEpoch();
         pastDue.current = Date.parse(session.expiresAt) <= Date.now();
         setState({ status: 'authenticated', session });
       },
       (error: unknown) => {
-        if (epoch.current !== mine || !(error instanceof ApiError) || error.kind === 'aborted') return;
+        if (epoch.current !== mine || seq !== recheckSeq.current || !(error instanceof ApiError) || error.kind === 'aborted') return;
         if (error.kind === 'unauthorized') { nextEpoch(); setState({ status: 'anonymous', reason: 'expired' }); return; }
         pastDue.current = true;
         setRecheckTick((t) => t + 1);
@@ -168,7 +182,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (state.status !== 'authenticated') { pastDue.current = false; return undefined; }
     const remaining = Date.parse(state.session.expiresAt) - Date.now();
     const delay = remaining > 0 ? remaining + 1000 : pastDue.current ? PAST_DUE_RECHECK_MS : 1000;
-    const timer = setTimeout(recheck, Math.min(delay, MAX_TIMER_MS));
+    const { session } = state;
+    const timer = setTimeout(() => { recheck(session); }, Math.min(delay, MAX_TIMER_MS));
     return () => { clearTimeout(timer); };
   }, [state, recheck, recheckTick]);
 

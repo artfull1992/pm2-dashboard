@@ -1,5 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
-import { AuthProvider, useAuth } from './auth/AuthContext';
+import { AuthProvider, sessionIdentity, useAuth } from './auth/AuthContext';
 import { RequireAuth, RequirePermission } from './auth/guards';
 import { Layout } from './components/Layout';
 import { AccountPage } from './pages/AccountPage';
@@ -14,10 +14,13 @@ import { NotFoundPage } from './pages/SimplePages';
 import { SettingsPage } from './pages/SettingsPage';
 import { UsersPage } from './pages/UsersPage';
 
-/** Remounts the private area per session, so no component state of one session survives into another. */
+/**
+ * Remounts the private area per session, so no component state of one session survives into another — also a new
+ * session of the same user (the identity includes the per-session CSRF token; it is a React key, never rendered).
+ */
 function PrivateArea() {
   const { state } = useAuth();
-  const key = state.status === 'authenticated' ? `${state.session.user.id}:${state.session.expiresAt}` : 'none';
+  const key = state.status === 'authenticated' ? sessionIdentity(state.session) : 'none';
   return (
     <RequireAuth>
       <Layout key={key} />
