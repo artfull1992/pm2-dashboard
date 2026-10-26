@@ -1,5 +1,35 @@
 # Поточний стан проєкту
 
+## Production: деплой `cf44798` — етап 3.3 «Журнал аудиту» з виправленням lookup (2026-10-26, після APPROVED Codex і за прямим дозволом користувача)
+
+Активна code revision — `cf44798` (review-commit APPROVED поверх `9d3be49`). Цей запис — пізніший docs-commit; він не розгортався.
+
+**До деплою.**
+- current `78c827b`, previous `6c741ec`; API active з 2026-10-25, `NRestarts=0`, `nodecontrol`, Node 22.23.2.
+- health 200/200 локально й через HTTPS; попереджень за 2 год — 0; Nginx і PostgreSQL active.
+- Годинник сервера й БД збігається з машиною оператора.
+- `78c827b → cf44798`: backend, міграції, `scripts/deploy`, `deploy/systemd`, `package*.json`, Agent й installer ідентичні.
+
+**Fallback — `78c827b`.** Manifest 87/87 без розбіжностей, `node_modules`, unit збігається, `migrate status` `applied=10 pending=0 unknown=0`. Приватний runbook повернення лежить у захищеному recovery-каталозі на сервері.
+
+**Процедура (штатна).**
+- Збірка: `git archive cf44798` → `build-release.js --from-tree` на одноразовій VM (Node 22.22.1). API `sha256 92d8a7ee33ce794e58c960362ba56bb57031aa84d2563ab37357a24b59e48c21`, 87 файлів. Немає `.env`, source maps, дизайн-матеріалів і секретних шаблонів; `theme-init.js` є. Відносно `78c827b` відрізняються лише 5 файлів `frontend/dist`.
+- На сервері: checksum OK → резервні копії `api.env`, unit і `pg_dump -Fc` (`pg_restore --list` OK) → `prepare` → `config` («kept») → `migrate status` (`pending=0`; `up` не запускався) → unit без змін → `activate` → restart лише `node-control-api`.
+
+**Після деплою.**
+- current `cf44798`, previous `78c827b`; active, `NRestarts=0`, `nodecontrol`, лише `127.0.0.1:3100`.
+- health/live і health/ready — 200 локально й через HTTPS; `/nope` → 404; анонімні `/api/audit`, `/api/alerts`, `/api/auth/me` → 401; SPA `/audit` → 200.
+- Попереджень за 5 хв — 0; Nginx і PostgreSQL active, failed units — 0.
+- `index.html`, `theme-init.js`, JS і CSS побайтово відповідають артефакту; JS — `application/javascript`.
+- Анонімний smoke (1440 і 390, лише GET): перенаправлення на `/login`, тема зберігається після reload, без переповнення й помилок консолі.
+
+**Не перевірено** (production-облікових даних немає). Перевірити оператору як admin:
+- «Журнал аудиту»: список, «Показати старіші», пошук і фільтри, деталі (Escape, фокус), mobile;
+- operator/viewer не бачать розділ;
+- «Сповіщення» й «Застосунки» без змін.
+
+**Не змінювались:** Agent, broker, exporter, PM2, Slack, користувачі й доступи, PostgreSQL/HBA/firewall, Nginx (CSP-заголовка й далі немає — окреме операційне завдання). Rollback не знадобився.
+
 ## Повторний незалежний review Codex — AUD lookup (`9d3be49`), 2026-10-26 — APPROVED
 
 Перевірено diff від `fc6f2e4`, код, regression-тести та документацію Code → Docs / Docs → Code. P2 з review `fc6f2e4` закрито; етап 3.3 «Журнал аудиту» з виправленням отримує APPROVED у межах проведених перевірок. Нових зауважень не знайдено. Змінені лише auditEvents, його тести й PROJECT_STATUS; backend, parser, права, залежності та геометрія не змінені.
