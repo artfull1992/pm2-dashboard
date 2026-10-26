@@ -274,3 +274,42 @@ test('long target names wrap inside the table, no horizontal scroll at 1024', as
   await noPageOverflow(page);
   await context.close();
 });
+
+// Review fc6f2e4: event codes that match Object.prototype properties are ordinary unknown codes. The journal must
+// stay on screen with them (no TypeError in sorting the «Дія» options), show them as text, filter and open details.
+test('unknown codes such as constructor / toString / __proto__ keep the journal: rows, filter, search and details work; no page error', async ({ browser }) => {
+  const codes = ['constructor', 'toString', '__proto__', 'hasOwnProperty'];
+  const context = await browser.newContext({ viewport: VIEWPORTS.desktop, colorScheme: 'dark', locale: 'uk-UA', timezoneId: 'Europe/Kyiv', baseURL: 'http://127.0.0.1:4175' });
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => { errors.push(e.message); });
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/me') {
+      await route.fulfill({ json: { user: { id: U1, email: 'admin@example.com', role: 'admin' }, csrfToken: 'a'.repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString(), permissions: ['monitoring:read', 'audit:read'] } });
+      return;
+    }
+    if (url.pathname === '/api/audit') {
+      await route.fulfill({ json: { items: [ev('9', { event: 'auth.login' }), ...codes.map((code, k) => ev(String(8 - k), { event: code, details: { action: code, reason: code } }))], nextBeforeId: null } });
+      return;
+    }
+    await route.fulfill({ status: 404, json: {} });
+  });
+  await page.goto('/audit');
+  const table = page.getByRole('table');
+  await expect(table.getByRole('rowheader')).toHaveText(['Вхід', ...codes]);
+  await expect(page.getByRole('navigation', { name: 'Основна навігація' })).toBeVisible();
+  expect(await page.evaluate(() => document.getElementById('root')?.childElementCount ?? 0)).toBeGreaterThan(0);
+  await page.getByLabel('Дія').selectOption('toString');
+  await expect(table.getByRole('rowheader')).toHaveText(['toString']);
+  await page.getByLabel('Дія').selectOption('');
+  await page.getByLabel('Пошук серед завантажених подій').fill('__proto__');
+  await expect(table.getByRole('rowheader')).toHaveText(['__proto__']);
+  await table.getByRole('button', { name: '__proto__' }).click();
+  const dialog = page.getByRole('dialog', { name: '__proto__' });
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  expect(errors).toEqual([]);
+  await context.close();
+});

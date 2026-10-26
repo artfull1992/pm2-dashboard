@@ -2,6 +2,7 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseAuditPage } from '../src/api/types';
+import { detailRows, eventLabel, isKnownEvent, reasonLabel, searchText, targetOf } from '../src/components/auditEvents';
 import { deferred, installFetch, json, noContent, type RecordedRequest, renderApp, session, setViewportWidth } from './support';
 
 // Audit log (AUD-01…05): server order by id is kept (chunks appended, never re-sorted by time), the cursor comes from
@@ -339,5 +340,56 @@ describe('refresh, access and sessions', () => {
     expect(await screen.findByRole('heading', { name: 'Недостатньо прав' })).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Журнал аудиту' })).toBeNull();
     expect(audits(calls)).toEqual([]);
+  });
+});
+
+// Review fc6f2e4: codes are strings from the API; dictionary lookups must use own keys only. A code that matches an
+// Object.prototype property (constructor, toString, __proto__, hasOwnProperty…) is an ordinary unknown code.
+const PROTO_CODES = ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', 'isPrototypeOf'];
+
+describe('unknown codes that match Object.prototype properties', () => {
+  it.each(['future.event_code', ...PROTO_CODES])('%s: label is the exact string, not known; reason/action fall back to the string', (code) => {
+    expect(eventLabel(code)).toBe(code);
+    expect(typeof eventLabel(code)).toBe('string');
+    expect(isKnownEvent(code)).toBe(false);
+    expect(reasonLabel(code)).toBe(code);
+    const parsed = parseAuditPage(page([item('1', { event: code, details: { action: code, reason: code, targetKey: 'svc' } })])).items[0];
+    expect(parsed).toBeDefined();
+    if (!parsed) return;
+    for (const [, value] of detailRows(parsed.details)) expect(typeof value).toBe('string');
+    expect(detailRows(parsed.details)).toEqual(expect.arrayContaining([['Причина', code], ['Дія', code]]));
+    expect(typeof targetOf(parsed).primary).toBe('string');
+    expect(searchText(parsed)).toContain(code.toLocaleLowerCase('uk-UA'));
+    expect([eventLabel('auth.login'), eventLabel(code)].sort((x, y) => x.localeCompare(y, 'uk'))).toHaveLength(2);
+  });
+
+  it('known labels are unchanged', () => {
+    expect(eventLabel('auth.login')).toBe('Вхід');
+    expect(isKnownEvent('auth.login')).toBe(true);
+    expect(reasonLabel('invalid_credentials')).toBe('невірні облікові дані');
+  });
+
+  it('the page keeps the journal: rows, the «Дія» filter, search and the drawer work with such codes', async () => {
+    backend((req) => (req.url === '/api/audit?limit=25' ? json(200, page([
+      item('9', { event: 'auth.login' }),
+      ...PROTO_CODES.map((code, k) => item(String(8 - k), { event: code, details: { action: code, reason: code } })),
+    ])) : undefined));
+    renderApp('/audit');
+    const table = await screen.findByRole('table');
+    expect(within(table).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Вхід', ...PROTO_CODES]);
+    const options = within(screen.getByLabelText('Дія')).getAllByRole('option').map((o) => o.textContent);
+    expect(options).toEqual(expect.arrayContaining(['Усі дії', 'Вхід', ...PROTO_CODES]));
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText('Дія'), 'constructor');
+    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['constructor']);
+    await user.selectOptions(screen.getByLabelText('Дія'), '');
+    await user.type(screen.getByLabelText('Пошук серед завантажених подій'), '__proto__');
+    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['__proto__']);
+    await user.click(within(screen.getByRole('table')).getByRole('button', { name: '__proto__' }));
+    const dialog = await screen.findByRole('dialog', { name: '__proto__' });
+    expect(within(dialog).getByText('Код події').nextElementSibling?.textContent).toBe('__proto__');
+    await user.click(within(dialog).getByRole('button', { name: 'Закрити' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('table')).toBeTruthy();
   });
 });

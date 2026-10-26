@@ -4,8 +4,15 @@ import type { Tone } from './ui';
 // Wording of audit events (AUD-01…05, docs/design/part-01). Everything is derived from the allowlisted fields of the
 // event itself: no user, server or process lookups, no guesses from ids, URLs or the event text. The API has no
 // display names, so people and servers are named by their ids (the full value is in the details).
+//
+// Codes come from the API as arbitrary strings, so every dictionary is a Map built from its own entries: a code such
+// as `constructor` or `__proto__` must never hit an Object.prototype property (review fc6f2e4). An unknown code is
+// returned unchanged as text.
 
-export const EVENT_LABELS: Record<string, string> = {
+/** The label of `key` in `labels`, or `key` itself (always a string). */
+const labelOf = (labels: ReadonlyMap<string, string>, key: string): string => labels.get(key) ?? key;
+
+const EVENT_LABELS: ReadonlyMap<string, string> = new Map(Object.entries({
   'admin.bootstrap': 'Створення адміністратора',
   'auth.login': 'Вхід',
   'auth.logout': 'Вихід',
@@ -37,10 +44,10 @@ export const EVENT_LABELS: Record<string, string> = {
   'integration.slack_removed': 'Відключення Slack',
   'integration.slack_test_requested': 'Тест Slack: запит',
   'integration.slack_test_result': 'Тест Slack: результат',
-};
+}));
 /** A known event shows its label; an unknown code is shown as it is (plain text, no invented translation). */
-export const eventLabel = (event: string) => EVENT_LABELS[event] ?? event;
-export const isKnownEvent = (event: string) => event in EVENT_LABELS;
+export const eventLabel = (event: string) => labelOf(EVENT_LABELS, event);
+export const isKnownEvent = (event: string) => EVENT_LABELS.has(event);
 
 export const OUTCOME: Record<AuditItem['outcome'], { label: string; tone: Tone }> = {
   success: { label: 'Успіх', tone: 'ok' },
@@ -48,16 +55,16 @@ export const OUTCOME: Record<AuditItem['outcome'], { label: string; tone: Tone }
   denied: { label: 'Відмовлено', tone: 'warn' },
 };
 
-const REASON_LABELS: Record<string, string> = {
+const REASON_LABELS: ReadonlyMap<string, string> = new Map(Object.entries({
   invalid_credentials: 'невірні облікові дані', inactive_user: 'неактивний користувач', stale_credentials: 'облікові дані змінено паралельно',
   invalid_current_password: 'невірний поточний пароль', email_taken: 'email уже зайнятий', self_change: 'зміна власного облікового запису',
   last_admin: 'останній активний адміністратор', not_dispatched: 'не передано агенту вчасно', no_result: 'агент не повідомив результат',
-};
+}));
 /** A known reason code reads as text; another one is shown as the code itself. */
-export const reasonLabel = (reason: string) => REASON_LABELS[reason] ?? reason;
+export const reasonLabel = (reason: string) => labelOf(REASON_LABELS, reason);
 
-const ACTION_LABELS: Record<string, string> = { start: 'Запуск', stop: 'Зупинка', restart: 'Перезапуск' };
-const actionLabel = (action: string) => ACTION_LABELS[action] ?? action;
+const ACTION_LABELS: ReadonlyMap<string, string> = new Map(Object.entries({ start: 'Запуск', stop: 'Зупинка', restart: 'Перезапуск' }));
+const actionLabel = (action: string) => labelOf(ACTION_LABELS, action);
 
 /** First 8 characters of an id for the compact list (the whole id is in the details and the tooltip). */
 export const shortId = (id: string) => (id.length > 12 ? `${id.slice(0, 8)}…` : id);
