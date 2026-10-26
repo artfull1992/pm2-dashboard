@@ -27,9 +27,11 @@ test.describe('admin', () => {
 
     await page.getByRole('link', { name: 'Журнал аудиту' }).click();
     await expect(page.getByRole('heading', { name: 'Журнал аудиту' })).toBeVisible();
-    await expect(page.getByRole('table')).toBeVisible();
-    await expect(page.getByText('Створення адміністратора')).toBeVisible();
-    await expect(page.getByText('Вхід').first()).toBeVisible();
+    const journal = page.getByRole('table');
+    await expect(journal).toBeVisible();
+    // Event names are also options of the «Дія» filter: look in the journal itself.
+    await expect(journal.getByRole('button', { name: 'Створення адміністратора' })).toBeVisible();
+    await expect(journal.getByRole('button', { name: 'Вхід' }).first()).toBeVisible();
 
     await page.getByRole('button', { name: 'Вийти' }).click();
     await expect(page.getByText('Ви вийшли з системи.')).toBeVisible();

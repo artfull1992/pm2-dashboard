@@ -535,9 +535,9 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 
 /* Flat statuses (DS-01): dot + coloured text, 12 px — the Applications workspace, the stage 3.1 pages (.ds:
    overview, servers, server detail) and alerts with their drawer (stage 3.2). Pages not yet moved keep the stage-1 chips. */
-:where(.app-list, .app-detail, .ds, .alerts, .dialog--drawer) .status { font-size: var(--font-xs); font-weight: 400; padding: 0; background: none; border-radius: 0; }
-:where(.app-list, .app-detail, .ds, .alerts, .dialog--drawer) .status--ok { color: var(--success); }
-:where(.app-list, .app-detail, .ds, .alerts, .dialog--drawer) .status::before { width: 6px; height: 6px; }
+:where(.app-list, .app-detail, .ds, .alerts, .audit, .dialog--drawer) .status { font-size: var(--font-xs); font-weight: 400; padding: 0; background: none; border-radius: 0; }
+:where(.app-list, .app-detail, .ds, .alerts, .audit, .dialog--drawer) .status--ok { color: var(--success); }
+:where(.app-list, .app-detail, .ds, .alerts, .audit, .dialog--drawer) .status::before { width: 6px; height: 6px; }
 
 /* Centred message inside a panel (empty, nothing selected, loading). */
 .panel-message { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: var(--space-5); text-align: center; }
@@ -750,27 +750,27 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
    the header, tabs, filters and notices leave, its rows scroll inside it, caption and pager stay in view. A short
    window keeps the card at a useful minimum and lets the page scroll by that bounded amount — never by the length of
    the list (review 73bfd84). */
-.alerts { --alerts-chrome: calc(2 * var(--space-5)); display: flex; flex-direction: column; gap: var(--space-3); height: calc(100dvh - var(--alerts-chrome)); }
-@media (min-width: 601px) and (max-width: 1400px) { .alerts { --alerts-chrome: 40px; } }
+:is(.alerts, .audit) { --alerts-chrome: calc(2 * var(--space-5)); display: flex; flex-direction: column; gap: var(--space-3); height: calc(100dvh - var(--alerts-chrome)); }
+@media (min-width: 601px) and (max-width: 1400px) { :is(.alerts, .audit) { --alerts-chrome: 40px; } }
 /* Phones: content padding 2 × 16 px + the sticky top bar (6 px + 44 px control + 6 px + 1 px border). */
-@media (max-width: 600px) { .alerts { --alerts-chrome: calc(2 * var(--space-4) + 57px); } }
-.alerts > * { flex: none; }
-.alerts > .incidents-card { flex: 1 1 0; min-height: 280px; display: flex; flex-direction: column; }
+@media (max-width: 600px) { :is(.alerts, .audit) { --alerts-chrome: calc(2 * var(--space-4) + 57px); } }
+:is(.alerts, .audit) > * { flex: none; }
+:is(.alerts, .audit) > .incidents-card { flex: 1 1 0; min-height: 280px; display: flex; flex-direction: column; }
 /* Phones and short windows (incl. 200 % zoom of a laptop window): header, tabs and filters scroll away with the page,
    the card is as high as the window (minus the same chrome), so the list gets a useful area with the pager at the
    bottom of the card. The page is then taller than the window by the height of those top blocks only. */
 @media (max-width: 600px), (max-height: 640px) {
-  .alerts { height: auto; }
-  .alerts > .incidents-card { flex: none; height: calc(100dvh - var(--alerts-chrome)); }
+  :is(.alerts, .audit) { height: auto; }
+  :is(.alerts, .audit) > .incidents-card { flex: none; height: calc(100dvh - var(--alerts-chrome)); }
 }
-.alerts .page-header { align-items: center; }
+:is(.alerts, .audit) .page-header { align-items: center; }
 .alerts__tabs { padding: 0; }
-.alerts__hint { font-size: var(--font-xs); line-height: 18px; }
+.alerts__hint, .workpanel__hint { font-size: var(--font-xs); line-height: 18px; }
 .incidents-card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .incidents-card > * { flex: none; }
 .incidents-card > .state, .incidents-card > .state--loading { border: 0; border-radius: 0; }
 /* The rows' own scroll (both axes for the table; the head row stays visible). */
-.incidents-card > .incidents__scroll, .incidents-card > .incident-records { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.incidents-card > .incidents__scroll, .incidents-card > .incident-records, .incidents-card > .workpanel__rows { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .incidents thead th { position: sticky; top: 0; z-index: 1; }
 .incidents { table-layout: auto; }
 .incidents tbody tr { height: 72px; }
@@ -813,3 +813,26 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
   .dialog--drawer .facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .dialog--drawer .facts dd { margin-bottom: var(--space-2); }
 }
+
+/* Audit log (AUD-01…05): the same work panel as alerts (list scrolls inside the card, caption and «Показати старіші»
+   outside the rows), compact rows, records on narrow windows, details in the shared drawer. */
+.audit-table tbody tr { height: 56px; }
+@media (min-width: 1280px) and (max-width: 1400px) { .audit-table tbody tr { height: 48px; } }
+.audit-table tbody th { min-width: 10rem; }
+.audit-table thead th { position: sticky; top: 0; z-index: 1; }
+.audit-table .date { white-space: nowrap; }
+.audit-table .status { white-space: normal; }
+.audit-table .cell-meta { max-width: 18rem; white-space: normal; }
+.audit__open { display: inline-flex; align-items: center; min-height: var(--control-sm); text-align: left; font-weight: 500; overflow-wrap: anywhere; }
+.audit__target { display: block; overflow-wrap: anywhere; }
+.audit-records { list-style: none; margin: 0; padding: 0; }
+.audit-records > li + li { border-top: 1px solid var(--border); }
+.audit-record { display: grid; gap: 6px; padding: 12px 14px; min-width: 0; }
+.audit-record__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px var(--space-3); }
+.audit-record__line { font-size: var(--font-sm); line-height: 18px; overflow-wrap: anywhere; }
+.audit-record__line.secondary, .audit-record__meta { color: var(--text-muted); }
+.audit-record__meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px var(--space-3); font-size: var(--font-xs); line-height: 18px; }
+.audit .audit__pager .pager__page { overflow-wrap: anywhere; }
+/* Groups of a definition list keep the two-column grid. */
+.facts__row { display: contents; }
+.audit__ids .facts { font-size: var(--font-xs); }

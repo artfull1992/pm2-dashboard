@@ -23,6 +23,8 @@ export interface AuditItem {
   details: {
     reason?: string; permission?: string; route?: string; serverId?: string; targetKey?: string; commandId?: string; action?: string;
     targetUserId?: string; role?: string; fromRole?: string; toRole?: string; rotated?: boolean; revoked?: boolean; sessionsRevoked?: number;
+    // Alert settings and Slack integration (ADR-022); the API's own response schema allowlists them as well.
+    revision?: number; generation?: number; changed?: string; cancelledItems?: number; replaced?: boolean; operationId?: string; code?: string; stale?: boolean;
   };
 }
 
@@ -63,8 +65,11 @@ export function parseSessionInfo(value: unknown): SessionInfo {
   };
 }
 
-const DETAIL_KEYS = ['reason', 'permission', 'route', 'serverId', 'targetKey', 'commandId', 'action', 'targetUserId', 'role', 'fromRole', 'toRole'] as const;
-const DETAIL_FLAGS = ['rotated', 'revoked'] as const;
+// The allowlist mirrors the API's response schema for audit details (backend/src/auth/plugin.ts); anything else is
+// dropped, never rendered.
+const DETAIL_KEYS = ['reason', 'permission', 'route', 'serverId', 'targetKey', 'commandId', 'action', 'targetUserId', 'role', 'fromRole', 'toRole', 'changed', 'operationId', 'code'] as const;
+const DETAIL_FLAGS = ['rotated', 'revoked', 'replaced', 'stale'] as const;
+const DETAIL_COUNTS = ['sessionsRevoked', 'revision', 'generation', 'cancelledItems'] as const;
 
 function parseAuditItem(value: unknown): AuditItem {
   expect(isObject(value) && isObject(value.details));
@@ -87,9 +92,11 @@ function parseAuditItem(value: unknown): AuditItem {
     expect(typeof flag === 'boolean');
     safeDetails[key] = flag;
   }
-  if (details.sessionsRevoked !== undefined) {
-    expect(typeof details.sessionsRevoked === 'number' && Number.isInteger(details.sessionsRevoked) && details.sessionsRevoked >= 0);
-    safeDetails.sessionsRevoked = details.sessionsRevoked;
+  for (const key of DETAIL_COUNTS) {
+    const count = details[key];
+    if (count === undefined) continue;
+    expect(typeof count === 'number' && Number.isSafeInteger(count) && count >= 0);
+    safeDetails[key] = count;
   }
   return { id, occurredAt, event, outcome, actorUserId, requestId, details: safeDetails };
 }
