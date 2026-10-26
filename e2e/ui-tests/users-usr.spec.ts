@@ -232,3 +232,109 @@ test('coarse pointer at 1440: menu triggers, menu items, drawer controls and pag
   for (const h of await heights('[role="dialog"] .button, [role="dialog"] select')) expect(h).toBeGreaterThanOrEqual(44);
   await context.close();
 });
+
+// Review 390ee8b: both P2 reproduced in a real browser against a stateful synthetic fixture (POST stores the user in
+// memory; nothing leaves the test). (1) The server creates the user but the connection drops before the answer: the
+// drawer says «Результат невідомий», offers a GET-only re-read that finds the account on page 2 and opens it; one POST.
+// (2) «Показати» under a role filter that hides the new user: page 2 opens, the filter is cleared, the row is visible.
+async function stateful(browser: Browser, o: { scheme: 'light' | 'dark'; viewport: { width: number; height: number }; dropCreateAnswer: boolean }) {
+  const { context, page } = await open(browser, { scheme: o.scheme, viewport: o.viewport });
+  await page.unroute('**/api/**');
+  const base = { isActive: true, createdAt: '2026-10-20T09:00:00.000Z', updatedAt: '2026-10-20T09:00:00.000Z' };
+  const all = Array.from({ length: 100 }, (_, n) => ({ ...base, id: n === 0 ? id(0) : id(10 + n), email: n === 0 ? 'admin@example.com' : `user${String(n).padStart(3, '0')}@example.com`, role: n === 0 ? 'admin' : 'operator' }));
+  const seen: string[] = [];
+  await page.route('**/api/**', async (route) => {
+    const req = route.request();
+    const url = new URL(req.url());
+    seen.push(`${req.method()} ${url.pathname}${url.search}${req.postData() ?? ''}`);
+    if (url.pathname === '/api/auth/me') {
+      await route.fulfill({ json: { user: { id: id(0), email: 'admin@example.com', role: 'admin' }, csrfToken: 'a'.repeat(43), expiresAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+        permissions: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage'] } });
+      return;
+    }
+    if (url.pathname === '/api/users' && req.method() === 'POST') {
+      const body = JSON.parse(req.postData() ?? '{}') as { email: string; role: string };
+      const made = { ...base, id: id(500), email: body.email, role: body.role };
+      all.push(made);
+      if (o.dropCreateAnswer) await route.abort('connectionreset');
+      else await route.fulfill({ status: 201, json: made });
+      return;
+    }
+    if (url.pathname === '/api/users') {
+      const after = url.searchParams.get('after');
+      const start = after === null ? 0 : all.findIndex((u) => u.id === after) + 1;
+      const items = all.slice(start, start + 100);
+      await route.fulfill({ json: { items, nextAfter: start + 100 < all.length ? items.at(-1)?.id ?? null : null } });
+      return;
+    }
+    await route.fulfill({ status: 404, json: {} });
+  });
+  await page.goto('/users');
+  await expect(page.locator('.users__email').first()).toBeVisible();
+  const posts = () => seen.filter((s) => s.startsWith('POST /api/users')).length;
+  return { context, page, all, seen, posts };
+}
+const PASSWORD = 'synthetic-Fresh-Passw0rd';
+async function createFresh(page: Page) {
+  await page.getByRole('button', { name: 'Створити користувача' }).click();
+  const form = page.getByRole('form', { name: 'Створення користувача' });
+  await form.getByLabel('Email').fill('fresh@example.com');
+  await form.getByLabel('Початковий пароль').fill(PASSWORD);
+  await form.getByRole('button', { name: 'Створити', exact: true }).click();
+  return form;
+}
+
+for (const [scheme, v] of [['dark', 'desktop'], ['light', 'mobile']] as const) {
+  test(`review 390ee8b P2-1 ${scheme} ${v}: lost create answer → unknown, GET-only re-read finds it on page 2 and opens it; one POST`, async ({ browser }) => {
+    const { context, page, all, seen, posts } = await stateful(browser, { scheme, viewport: VIEWPORTS[v], dropCreateAnswer: true });
+    const form = await createFresh(page);
+    const alert = form.getByRole('alert');
+    await expect(alert.getByText('Результат невідомий')).toBeVisible();
+    await expect(form.getByText('Не вдалося створити користувача')).toHaveCount(0);
+    expect(all.some((u) => u.email === 'fresh@example.com')).toBe(true); // created on the server
+    await expect(form.getByLabel('Початковий пароль')).toHaveValue('');
+    await expect(form.getByLabel('Email')).toHaveValue('fresh@example.com');
+    const reread = alert.getByRole('button', { name: 'Перечитати стан' });
+    await inViewport(page, reread);
+    await noPageOverflow(page);
+    if (shots) await page.screenshot({ path: `${shots}/USR-07-unknown--${scheme}--${v}.png` });
+    const before = seen.length;
+    await reread.click();
+    await expect(form.getByText('Обліковий запис fresh@example.com існує')).toBeVisible();
+    const after = seen.slice(before);
+    expect(after.every((s) => s.startsWith('GET /api/users?') && !s.includes(PASSWORD))).toBe(true);
+    expect(after).toHaveLength(2); // page 1 had no match; found on page 2
+    expect(posts()).toBe(1);
+    const openIt = form.getByRole('button', { name: 'Відкрити fresh@example.com у списку' });
+    await openIt.scrollIntoViewIfNeeded();
+    await inViewport(page, openIt);
+    await inViewport(page, page.getByRole('dialog').getByRole('button', { name: 'Створити', exact: true }));
+    if (shots) await page.screenshot({ path: `${shots}/USR-07-unknown-found--${scheme}--${v}.png` });
+    await openIt.click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByText('Сторінка 2', { exact: true })).toBeVisible();
+    const row = page.locator('.users__email', { hasText: 'fresh@example.com' });
+    await expect(row).toBeFocused();
+    await inViewport(page, row);
+    expect(posts()).toBe(1);
+    await context.close();
+  });
+
+  test(`review 390ee8b P2-2 ${scheme} ${v}: «Показати» under a hiding role filter opens page 2, clears the filter, the row is visible and focused`, async ({ browser }) => {
+    const { context, page, posts } = await stateful(browser, { scheme, viewport: VIEWPORTS[v], dropCreateAnswer: false });
+    await page.getByLabel('Роль', { exact: true }).selectOption('operator');
+    await createFresh(page); // a viewer: hidden by «Оператор»
+    await page.getByRole('button', { name: 'Показати fresh@example.com' }).click();
+    await expect(page.getByText('Сторінка 2', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Роль', { exact: true })).toHaveValue('');
+    await expect(page.getByText('Фільтр «Роль» скинуто, щоб показати fresh@example.com.')).toBeVisible();
+    await expect(page.getByText('На цій сторінці збігів немає')).toHaveCount(0);
+    const row = page.locator('.users__email', { hasText: 'fresh@example.com' });
+    await expect(row).toBeFocused();
+    await inViewport(page, row);
+    await noPageOverflow(page);
+    if (shots) await page.screenshot({ path: `${shots}/USR-01-reveal--${scheme}--${v}.png` });
+    expect(posts()).toBe(1);
+    await context.close();
+  });
+}

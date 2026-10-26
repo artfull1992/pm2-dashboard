@@ -38,6 +38,9 @@ Object.defineProperty(window, 'matchMedia', {
   for (const fn of [...listeners]) fn();
 };
 
+// jsdom has no layout, so no Element.scrollIntoView (every browser has it): a no-op; tests may replace it to observe calls.
+if (typeof Element.prototype.scrollIntoView !== 'function') Element.prototype.scrollIntoView = function scrollIntoView() { /* no layout */ };
+
 afterEach(() => {
   cleanup();
   viewport.width = 1440;
