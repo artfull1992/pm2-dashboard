@@ -3,7 +3,7 @@ import { ApiError, fetchAuditPage } from '../api/client';
 import type { AuditItem } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
-import { actorOf, detailRows, eventLabel, fullTime, isKnownEvent, listTime, OUTCOME, reasonLabel, searchText, targetOf } from '../components/auditEvents';
+import { actionText, actorOf, contextRows, detailRows, eventLabel, fullTime, isKnownEvent, listTime, OUTCOME, reasonLabel, searchText, targetOf, technicalRows } from '../components/auditEvents';
 import { Dialog } from '../components/Dialog';
 import { EmptyState, ErrorState, formatRetry, LoadingState } from '../components/StatusMessage';
 import { formatClock } from '../components/time';
@@ -49,8 +49,9 @@ function Outcome({ item }: { item: AuditItem }) {
   return <StatusIndicator tone={o.tone}>{o.label}</StatusIndicator>;
 }
 
-function EventName({ item }: { item: AuditItem }) {
-  return isKnownEvent(item.event) ? <>{eventLabel(item.event)}</> : <span className="mono">{item.event}</span>;
+/** The action in words; an unknown event code stays visibly a code (plain text). */
+function ActionName({ item }: { item: AuditItem }) {
+  return isKnownEvent(item.event) ? <>{actionText(item)}</> : <span className="mono">{actionText(item)}</span>;
 }
 
 type RowsRef = (el: HTMLElement | null) => void;
@@ -70,9 +71,9 @@ function AuditTable({ items, onOpen, rowsRef }: { items: AuditItem[]; onOpen: (i
             return (
               <tr key={item.id}>
                 <td className="date"><time dateTime={item.occurredAt}>{listTime(item.occurredAt)}</time></td>
-                <td><span title={a.full ?? undefined}>{a.label}</span></td>
+                <td><span className="audit__actor" title={a.full ?? undefined}>{a.label}</span>{a.note ? <span className="cell-meta">{a.note}</span> : null}</td>
                 <th scope="row">
-                  <button type="button" className="link-button audit__open" aria-haspopup="dialog" onClick={() => { onOpen(item); }}><EventName item={item} /></button>
+                  <button type="button" className="link-button audit__open" aria-haspopup="dialog" onClick={() => { onOpen(item); }}><ActionName item={item} /></button>
                 </th>
                 <td><span className="audit__target">{t.primary}</span>{t.secondary ? <span className="cell-meta">{t.secondary}</span> : null}</td>
                 <td><Outcome item={item} />{item.details.reason ? <span className="cell-meta">{reasonLabel(item.details.reason)}</span> : null}</td>
@@ -93,14 +94,15 @@ function AuditRecords({ items, onOpen, rowsRef }: { items: AuditItem[]; onOpen: 
         const t = targetOf(item);
         return (
           <li key={item.id}>
-            <article className="audit-record" aria-label={`${eventLabel(item.event)}: ${OUTCOME[item.outcome].label}`}>
+            <article className="audit-record" aria-label={`${actionText(item)}: ${OUTCOME[item.outcome].label}`}>
               <div className="audit-record__head">
-                <button type="button" className="link-button audit__open" aria-haspopup="dialog" onClick={() => { onOpen(item); }}><EventName item={item} /></button>
+                <button type="button" className="link-button audit__open" aria-haspopup="dialog" onClick={() => { onOpen(item); }}><ActionName item={item} /></button>
                 <Outcome item={item} />
               </div>
               <p className="audit-record__line">{t.secondary ? `${t.primary} · ${t.secondary}` : t.primary}</p>
               {item.details.reason ? <p className="audit-record__line secondary">{reasonLabel(item.details.reason)}</p> : null}
-              <p className="audit-record__meta"><span>{a.label}</span><time dateTime={item.occurredAt}>{listTime(item.occurredAt)}</time></p>
+              <p className="audit-record__meta"><span className="audit__actor">{a.label}</span><time dateTime={item.occurredAt}>{listTime(item.occurredAt)}</time></p>
+              {a.note ? <p className="audit-record__line secondary">{a.note}</p> : null}
             </article>
           </li>
         );
@@ -115,12 +117,8 @@ function AuditDrawer({ item, onClose, fallbackFocus }: { item: AuditItem; onClos
   const rows = detailRows(item.details);
   const d = item.details;
   const control = item.event.startsWith('process.command_') && item.outcome === 'success';
-  const ids: [string, string | null | undefined][] = [
-    ['Подія (ID)', item.id], ['Код події', item.event], ['Ініціатор (ID)', item.actorUserId], ['Запит (ID)', item.requestId],
-    ['Сервер (ID)', d.serverId], ['Команда (ID)', d.commandId], ['Користувач-ціль (ID)', d.targetUserId], ['Операція (ID)', d.operationId],
-  ];
   return (
-    <Dialog title={eventLabel(item.event)} eyebrow="Подія аудиту" className="dialog--drawer" onClose={onClose} fallbackFocus={fallbackFocus}
+    <Dialog title={actionText(item)} eyebrow="Подія аудиту" className="dialog--drawer" onClose={onClose} fallbackFocus={fallbackFocus}
       headerAction={<button type="button" className="button button--ghost icon-button" aria-label="Закрити деталі" onClick={onClose}>✕</button>}
       actions={<button type="button" className="button" onClick={onClose}>Закрити</button>}>
       <section className="drawer-section" aria-labelledby="audit-result">
@@ -133,10 +131,17 @@ function AuditDrawer({ item, onClose, fallbackFocus }: { item: AuditItem; onClos
         <h3 id="audit-who" className="drawer-section__title">Хто, коли й над чим</h3>
         <dl className="facts">
           <dt>Час</dt><dd><time dateTime={item.occurredAt}>{fullTime(item.occurredAt)}</time></dd>
-          <dt>Ініціатор</dt><dd>{a.full ? <>{a.label}<span className="cell-meta mono">{a.full}</span></> : a.label}</dd>
+          <dt>Ініціатор</dt><dd>{a.label}{a.note ? <span className="cell-meta">{a.note}</span> : null}</dd>
           <dt>Ціль</dt><dd>{t.primary}</dd>
           <dt>Контекст</dt><dd>{t.secondary ?? '—'}</dd>
         </dl>
+      </section>
+      <section className="drawer-section" aria-labelledby="audit-origin">
+        <h3 id="audit-origin" className="drawer-section__title">Учасники й походження назв</h3>
+        <dl className="facts">
+          {contextRows(item).map((r) => <div key={r.label} className="facts__row"><dt>{r.label}</dt><dd>{r.value}<span className="cell-meta">{r.origin}</span></dd></div>)}
+        </dl>
+        <p className="hint">Email і назви серверів — поточні на момент перегляду, а не знімок на момент події.</p>
       </section>
       <section className="drawer-section" aria-labelledby="audit-details">
         <h3 id="audit-details" className="drawer-section__title">Подробиці</h3>
@@ -147,7 +152,7 @@ function AuditDrawer({ item, onClose, fallbackFocus }: { item: AuditItem; onClos
       <details className="disclosure audit__ids">
         <summary>Технічні ідентифікатори</summary>
         <dl className="facts mono">
-          {ids.filter(([, v]) => v !== undefined).map(([label, v]) => <div key={label} className="facts__row"><dt>{label}</dt><dd>{v ?? '—'}</dd></div>)}
+          {technicalRows(item).map(([label, v]) => <div key={label} className="facts__row"><dt>{label}</dt><dd>{v}</dd></div>)}
         </dl>
       </details>
       <p className="hint">Показано лише дозволені поля події. Секрети й сирі дані не виводяться.</p>

@@ -174,7 +174,7 @@ npm run backend:start     # node backend/dist/main.js
 | `POST /api/auth/login` `{"email","password"}` | public + Origin | `200 {user:{id,email,role}, permissions[], csrfToken, expiresAt}` + `Set-Cookie: __Host-nc_session=…` | 400 validation, 401 `Invalid email or password` (однаково для будь-якої причини), 403 `Request origin not allowed`, 429 + `Retry-After`, 503 + `Retry-After` |
 | `GET /api/auth/me` | сесія | `200` — той самий об'єкт, що й login | 401 `Authentication required` (+ очищення cookie, якщо вона була), 503 |
 | `POST /api/auth/logout` (без тіла) | сесія + Origin + `x-csrf-token` | `204`, cookie очищено | 401, 403 (Origin/CSRF), 503 |
-| `GET /api/audit?limit=1..100&beforeId=<id>` | `audit:read` (admin) | `200 {items:[{id,occurredAt,event,outcome,actorUserId,requestId,details}], nextBeforeId}` — `id DESC`, keyset | 400, 401, 403 `Insufficient permissions`, 503 |
+| `GET /api/audit?limit=1..100&beforeId=<id>` | `audit:read` (admin) | `200 {items:[{id,occurredAt,event,outcome,actorUserId,requestId,details,context:{actorEmail,serverName,targetUserEmail,command:{requestedBy,requestedByEmail,serviceName}\|null}}], nextBeforeId}` — `id DESC`, keyset; `context` (ADR-033) — поточні email і назви пов'язаних записів на момент перегляду, один запит на сторінку | 400, 401, 403 `Insufficient permissions`, 503 |
 
 ### Сповіщення (Task 013, ADR-021) — вимкнено за замовчуванням
 

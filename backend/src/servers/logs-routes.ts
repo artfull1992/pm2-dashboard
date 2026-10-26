@@ -127,7 +127,8 @@ export function registerLogRoutes(app: FastifyInstance, options: LogRoutesOption
       throw new PublicHttpError(409, CONFLICTS[result]);
     }
     // Opening a viewer is audited, its 5-second auto-refresh is not (throttled per actor/server/target).
-    if (result.audit) await audit(request.log, { event: 'logs.view_opened', outcome: 'success', details: { serverId: id, targetKey } }, context);
+    // serviceName is the name of the authorized, reported target (never taken from the request body).
+    if (result.audit) await audit(request.log, { event: 'logs.view_opened', outcome: 'success', details: { serverId: id, targetKey, ...(serviceName ? { serviceName } : {}) } }, context);
     return reply.code(202).send({ requestId: result.request.requestId, deadlineAt: result.request.deadlineAt });
   });
 

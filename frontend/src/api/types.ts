@@ -25,7 +25,18 @@ export interface AuditItem {
     targetUserId?: string; role?: string; fromRole?: string; toRole?: string; rotated?: boolean; revoked?: boolean; sessionsRevoked?: number;
     // Alert settings and Slack integration (ADR-022); the API's own response schema allowlists them as well.
     revision?: number; generation?: number; changed?: string; cancelledItems?: number; replaced?: boolean; operationId?: string; code?: string; stale?: boolean;
+    /** Verified service name stored with command / log events (ADR-033). */
+    serviceName?: string;
   };
+  /** Read-time context of the API (ADR-033: current names of linked rows); null when the API does not send it. */
+  context: AuditContext | null;
+}
+
+export interface AuditContext {
+  actorEmail: string | null;
+  serverName: string | null;
+  targetUserEmail: string | null;
+  command: { requestedBy: string; requestedByEmail: string | null; serviceName: string | null } | null;
 }
 
 export interface AuditPage {
@@ -67,7 +78,7 @@ export function parseSessionInfo(value: unknown): SessionInfo {
 
 // The allowlist mirrors the API's response schema for audit details (backend/src/auth/plugin.ts); anything else is
 // dropped, never rendered.
-const DETAIL_KEYS = ['reason', 'permission', 'route', 'serverId', 'targetKey', 'commandId', 'action', 'targetUserId', 'role', 'fromRole', 'toRole', 'changed', 'operationId', 'code'] as const;
+const DETAIL_KEYS = ['reason', 'permission', 'route', 'serverId', 'targetKey', 'commandId', 'action', 'targetUserId', 'role', 'fromRole', 'toRole', 'changed', 'operationId', 'code', 'serviceName'] as const;
 const DETAIL_FLAGS = ['rotated', 'revoked', 'replaced', 'stale'] as const;
 const DETAIL_COUNTS = ['sessionsRevoked', 'revision', 'generation', 'cancelledItems'] as const;
 
@@ -98,7 +109,22 @@ function parseAuditItem(value: unknown): AuditItem {
     expect(typeof count === 'number' && Number.isSafeInteger(count) && count >= 0);
     safeDetails[key] = count;
   }
-  return { id, occurredAt, event, outcome, actorUserId, requestId, details: safeDetails };
+  return { id, occurredAt, event, outcome, actorUserId, requestId, details: safeDetails, context: parseAuditContext(value.context) };
+}
+
+/** The additive read-time context: absent (older API) → null; present → every field checked, nothing else kept. */
+function parseAuditContext(v: unknown): AuditContext | null {
+  if (v === undefined) return null;
+  expect(isObject(v));
+  const { actorEmail, serverName, targetUserEmail, command } = v;
+  const text = (x: unknown, max: number): x is string | null => x === null || isString(x, max);
+  expect(text(actorEmail, 254) && text(serverName, 100) && text(targetUserEmail, 254));
+  let linked: AuditContext['command'] = null;
+  if (command !== null) {
+    expect(isObject(command) && isString(command.requestedBy, 36) && text(command.requestedByEmail, 254) && text(command.serviceName, 128));
+    linked = { requestedBy: command.requestedBy, requestedByEmail: command.requestedByEmail, serviceName: command.serviceName };
+  }
+  return { actorEmail, serverName, targetUserEmail, command: linked };
 }
 
 export function parseAuditPage(value: unknown): AuditPage {

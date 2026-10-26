@@ -120,7 +120,7 @@ const sessionInfoSchema = {
 } as const;
 const auditItemSchema = {
   type: 'object', additionalProperties: false,
-  required: ['id', 'occurredAt', 'event', 'outcome', 'actorUserId', 'requestId', 'details'],
+  required: ['id', 'occurredAt', 'event', 'outcome', 'actorUserId', 'requestId', 'details', 'context'],
   properties: {
     id: { type: 'string' }, occurredAt: { type: 'string' }, event: { type: 'string' }, outcome: { type: 'string' },
     actorUserId: { type: ['string', 'null'] }, requestId: { type: ['string', 'null'] },
@@ -135,6 +135,18 @@ const auditItemSchema = {
         sessionsRevoked: { type: 'integer' },
         revision: { type: 'integer' }, generation: { type: 'integer' }, changed: { type: 'string' }, cancelledItems: { type: 'integer' },
         replaced: { type: 'boolean' }, operationId: { type: 'string' }, code: { type: 'string' }, stale: { type: 'boolean' },
+        serviceName: { type: 'string' },
+      },
+    },
+    // Read-time context (ADR-033): current names/e-mails of linked rows; admin data (audit:read) — no secrets.
+    context: {
+      type: 'object', additionalProperties: false, required: ['actorEmail', 'serverName', 'targetUserEmail', 'command'],
+      properties: {
+        actorEmail: { type: ['string', 'null'] }, serverName: { type: ['string', 'null'] }, targetUserEmail: { type: ['string', 'null'] },
+        command: {
+          type: ['object', 'null'], additionalProperties: false, required: ['requestedBy', 'requestedByEmail', 'serviceName'],
+          properties: { requestedBy: { type: 'string' }, requestedByEmail: { type: ['string', 'null'] }, serviceName: { type: ['string', 'null'] } },
+        },
       },
     },
   },

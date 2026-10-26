@@ -155,7 +155,7 @@ describe('request lifecycle', () => {
     expect(view.json()).toMatchObject({ requestId: id, serverId: n.serverId, targetKey: 'api', status: 'done', result: { outcome: 'ok', stdout: { text: `hello\n${SECRET}` } } });
     expect(view.headers['cache-control']).toBe('no-store');
     expect((await getReq(admin, id)).statusCode).toBe(404); // not the requester
-    expect(auth.audit.filter((a) => a.event === 'logs.view_opened')).toEqual([expect.objectContaining({ details: { serverId: n.serverId, targetKey: 'api' } })]);
+    expect(auth.audit.filter((a) => a.event === 'logs.view_opened')).toEqual([expect.objectContaining({ details: { serverId: n.serverId, targetKey: 'api', serviceName: 'api' } })]); // the verified, reported service name (ADR-033)
     noSecrets();
   });
 

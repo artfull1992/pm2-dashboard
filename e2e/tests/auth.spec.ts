@@ -30,8 +30,10 @@ test.describe('admin', () => {
     const journal = page.getByRole('table');
     await expect(journal).toBeVisible();
     // Event names are also options of the «Дія» filter: look in the journal itself.
-    await expect(journal.getByRole('button', { name: 'Створення адміністратора' })).toBeVisible();
-    await expect(journal.getByRole('button', { name: 'Вхід' }).first()).toBeVisible();
+    await expect(journal.getByRole('button', { name: 'Створено адміністратора' })).toBeVisible();
+    await expect(journal.getByRole('button', { name: 'Увійшов' }).first()).toBeVisible();
+    // ADR-033: the real API resolves the actor's e-mail for the row (no per-row requests from the browser).
+    await expect(journal.getByRole('row').filter({ has: page.getByRole('button', { name: 'Увійшов' }) }).first()).toContainText(credentials('admin').email);
 
     await page.getByRole('button', { name: 'Вийти' }).click();
     await expect(page.getByText('Ви вийшли з системи.')).toBeVisible();

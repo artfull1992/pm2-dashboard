@@ -37,7 +37,8 @@ const rowOf = async (text: string) => (await within(await screen.findByRole('tab
 const cursorOf = (req: RecordedRequest) => new URL(req.url, 'http://x').searchParams.get('beforeId');
 
 describe('AUD-01 list: actor, action, target, result', () => {
-  it('known and unknown events, outcome as text, actor ids, system / unknown / missing initiators, targets from fields only', async () => {
+  // These fixtures carry no `context`, as an older API: people are named by id, nothing is guessed.
+  it('older API (no context): readable actions, actor ids, system / unknown / missing initiators, no name guessed from a key', async () => {
     backend((req) => (req.url === '/api/audit?limit=25' ? json(200, page([
       item('9', { event: 'process.command_requested', actorUserId: U1, details: { serverId: S1, commandId: 'c-1', targetKey: 'api-service', action: 'restart' } }),
       item('8', { event: 'process.command_succeeded', actorUserId: null, requestId: null, details: { serverId: S1, commandId: 'c-1', targetKey: 'api-service', action: 'restart' } }),
@@ -47,14 +48,16 @@ describe('AUD-01 list: actor, action, target, result', () => {
       item('4', { event: 'user.role_changed', details: { targetUserId: U2, fromRole: 'viewer', toRole: 'operator', sessionsRevoked: 0 } }),
     ])) : undefined));
     renderApp('/audit');
-    const req = await rowOf('Команда: запит');
+    const req = await rowOf('Запросив перезапуск');
     expect(within(req).getByText('Користувач 0a1b2c3d…').getAttribute('title')).toBe(U1);
-    expect(within(req).getByText('api-service')).toBeTruthy();
-    expect(within(req).getByText('Перезапуск · сервер 5e1f0000…')).toBeTruthy();
+    // No stored service name and no linked command: the key is not shown as a name (it is in the technical ids).
+    expect(within(req).getByText('Назву застосунку не збережено')).toBeTruthy();
+    expect(within(req).queryByText('api-service')).toBeNull();
+    expect(within(req).getByText('сервер 5e1f0000…')).toBeTruthy();
     expect(within(req).getByText('Успіх')).toBeTruthy();
-    const done = await rowOf('Команда: виконана');
+    const done = await rowOf('Перезапуск виконано');
     expect(within(done).getByText('Система')).toBeTruthy(); // a lifecycle step the server records itself
-    const login = await rowOf('Вхід');
+    const login = await rowOf('Невдала спроба входу');
     expect(within(login).getByText('Обліковий запис не встановлено')).toBeTruthy();
     expect(within(login).getByText('Невдача')).toBeTruthy();
     expect(within(login).getByText('невірні облікові дані')).toBeTruthy();
@@ -62,11 +65,12 @@ describe('AUD-01 list: actor, action, target, result', () => {
     expect(within(denied).getByText('/api/audit')).toBeTruthy();
     expect(within(denied).getByText('потрібен дозвіл audit:read')).toBeTruthy();
     expect(within(denied).getByText('Відмовлено')).toBeTruthy();
-    // Unknown code: shown as it is; no actor → «Не передано», never «Система»; no target → «Не передано».
+    // Unknown code: shown as it is; no actor → «Ініціатора не встановлено», never «Система»; no target → «Не передано».
     const unknown = await rowOf('future.event_code');
-    expect(within(unknown).getAllByText('Не передано')).toHaveLength(2);
+    expect(within(unknown).getByText('Ініціатора не встановлено')).toBeTruthy();
+    expect(within(unknown).getByText('Не передано')).toBeTruthy();
     expect(within(unknown).queryByText('Система')).toBeNull();
-    const role = await rowOf('Зміна ролі');
+    const role = await rowOf('Змінив роль');
     expect(within(role).getByText('Користувач 0a1b2c3d…', { selector: '.audit__target' })).toBeTruthy();
     expect(within(role).getByText('viewer → operator')).toBeTruthy();
     // The request id is not repeated in every row (it is in the details).
@@ -94,8 +98,8 @@ describe('AUD-01 list: actor, action, target, result', () => {
     setViewportWidth(390);
     backend((req) => (req.url === '/api/audit?limit=25' ? json(200, page([item('3', { event: 'logs.view_opened', details: { serverId: S1, targetKey: 'report-worker' } })])) : undefined));
     renderApp('/audit');
-    const record = await screen.findByRole('article', { name: 'Перегляд логів: Успіх' });
-    expect(within(record).getByText('report-worker · сервер 5e1f0000…')).toBeTruthy();
+    const record = await screen.findByRole('article', { name: 'Переглянув логи: Успіх' });
+    expect(within(record).getByText('Назву застосунку не збережено · сервер 5e1f0000…')).toBeTruthy();
     expect(within(record).getByText('Користувач 0a1b2c3d…')).toBeTruthy();
     expect(within(record).getByText(/^23\.10 · /)).toBeTruthy();
     expect(screen.queryByRole('table')).toBeNull();
@@ -113,12 +117,12 @@ describe('order, cursor and older chunks', () => {
       return undefined;
     });
     renderApp('/audit');
-    await rowOf('Вихід');
+    await rowOf('Вийшов');
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Показати старіші' }));
-    await rowOf('Створення адміністратора');
+    await rowOf('Створено адміністратора');
     const order = within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent);
-    expect(order).toEqual(['Вихід', 'Вхід', 'Створення адміністратора']); // not re-sorted by time
+    expect(order).toEqual(['Вийшов', 'Увійшов', 'Створено адміністратора']); // not re-sorted by time
     expect(audits(calls)).toEqual(['/api/audit?limit=25', `/api/audit?limit=25&beforeId=${big}`]);
     expect(screen.getByText('Старіших подій немає')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Показати старіші' })).toBeNull();
@@ -132,7 +136,7 @@ describe('order, cursor and older chunks', () => {
       return undefined;
     });
     renderApp('/audit');
-    await rowOf('Вихід');
+    await rowOf('Вийшов');
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Показати старіші' }));
     expect(await screen.findByText(/Не вдалося завантажити старіші події\. Завантажені записи збережено\. Спробуйте через 5 с\./)).toBeTruthy();
@@ -140,8 +144,8 @@ describe('order, cursor and older chunks', () => {
     expect(screen.queryByText('Подій ще немає')).toBeNull();
     fail = false;
     await user.click(screen.getByRole('button', { name: 'Повторити' }));
-    await rowOf('Створення адміністратора');
-    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Вихід', 'Вхід', 'Створення адміністратора']);
+    await rowOf('Створено адміністратора');
+    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Вийшов', 'Увійшов', 'Створено адміністратора']);
     expect(calls.filter((c) => cursorOf(c) === '29')).toHaveLength(2);
   });
 });
@@ -160,7 +164,7 @@ describe('search and filters among loaded events', () => {
       return undefined;
     });
     renderApp('/audit');
-    await rowOf('Перегляд логів');
+    await rowOf('Переглянув логи');
     expect(screen.getByText('Пошук і фільтри діють лише серед завантажених подій.')).toBeTruthy();
     const user = userEvent.setup();
     await user.type(screen.getByLabelText('Пошук серед завантажених подій'), 'REPORT');
@@ -170,7 +174,7 @@ describe('search and filters among loaded events', () => {
     expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Відмова в доступі']);
     await user.selectOptions(screen.getByLabelText('Результат'), '');
     await user.selectOptions(screen.getByLabelText('Дія'), 'auth.login');
-    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Вхід']);
+    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Невдала спроба входу']);
     await user.type(screen.getByLabelText('Пошук серед завантажених подій'), 'nothing-here');
     expect(await screen.findByRole('heading', { name: 'Серед завантажених подій збігів немає' })).toBeTruthy();
     const older = screen.getByRole<HTMLButtonElement>('button', { name: 'Показати старіші' });
@@ -199,7 +203,7 @@ describe('AUD-03…05 states', () => {
     expect(screen.getByText(/це не означає, що подій немає\. Спробуйте через 10 с\./)).toBeTruthy();
     expect(screen.queryByText('Подій ще немає')).toBeNull();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Спробувати ще раз' }));
-    expect(await rowOf('Вхід')).toBeTruthy();
+    expect(await rowOf('Увійшов')).toBeTruthy();
   });
 
   it('an empty journal (successful) is said as such', async () => {
@@ -219,14 +223,14 @@ describe('AUD-02 details drawer', () => {
     ])) : undefined));
     renderApp('/audit');
     const user = userEvent.setup();
-    const opener = within(await rowOf('Команда: виконана')).getByRole('button', { name: 'Команда: виконана' });
+    const opener = within(await rowOf('Перезапуск виконано')).getByRole('button', { name: 'Перезапуск виконано' });
     const before = calls.length;
     await user.click(opener);
-    const dialog = await screen.findByRole('dialog', { name: 'Команда: виконана' });
+    const dialog = await screen.findByRole('dialog', { name: 'Перезапуск виконано' });
     expect(dialog.getAttribute('aria-modal')).toBe('true');
     expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Закрити деталі' }));
     expect(within(dialog).getByText(/^23\.10\.2026, \d\d:21:48 · .+/)).toBeTruthy(); // year, local time, zone
-    expect(within(dialog).getByText('Система')).toBeTruthy();
+    expect(within(dialog).getByText('Автор запису').nextElementSibling?.textContent).toMatch(/^Система/);
     expect(within(dialog).getByText(/Успіх керуючої дії не означає, що процес зараз працює справно/)).toBeTruthy();
     expect(within(dialog).getByText('Перезапуск (restart)')).toBeTruthy();
     expect(within(dialog).getByText('Запит (ID)').nextElementSibling?.textContent).toBe('—');
@@ -236,15 +240,14 @@ describe('AUD-02 details drawer', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(opener);
     // 0 and false are values, not «absent».
-    await user.click(within(await rowOf('Видача ключа агента')).getByRole('button', { name: 'Видача ключа агента' }));
+    await user.click(within(await rowOf('Видав ключ агента')).getByRole('button', { name: 'Видав ключ агента' }));
     let d = await screen.findByRole('dialog');
     expect(within(d).getByText('Ключ замінено').nextElementSibling?.textContent).toBe('ні');
-    expect(within(d).getByText('перший ключ')).toBeTruthy();
     await user.click(within(d).getByRole('button', { name: 'Закрити' }));
-    await user.click(within(await rowOf('Зміна власного пароля')).getByRole('button', { name: 'Зміна власного пароля' }));
+    await user.click(within(await rowOf('Змінив власний пароль')).getByRole('button', { name: 'Змінив власний пароль' }));
     d = await screen.findByRole('dialog');
     expect(within(d).getByText('Завершено сесій').nextElementSibling?.textContent).toBe('0');
-    expect(within(d).getByText('Ініціатор (ID)').nextElementSibling?.textContent).toBe(U1);
+    expect(within(d).getByText('Автор запису (ID)').nextElementSibling?.textContent).toBe(U1);
     expect(calls.slice(before)).toEqual([]);
   });
 });
@@ -263,14 +266,14 @@ describe('refresh, access and sessions', () => {
       return undefined;
     });
     renderApp('/audit');
-    await rowOf('Вихід');
+    await rowOf('Вийшов');
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Показати старіші' }));
-    await rowOf('Вхід');
+    await rowOf('Увійшов');
     await user.selectOptions(screen.getByLabelText('Результат'), 'success');
     await user.click(screen.getByRole('button', { name: 'Оновити' }));
-    await rowOf('Створення адміністратора');
-    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Створення адміністратора', 'Вихід']);
+    await rowOf('Створено адміністратора');
+    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Створено адміністратора', 'Вийшов']);
     expect(screen.getByLabelText<HTMLSelectElement>('Результат').value).toBe('success');
     await user.click(screen.getByRole('button', { name: 'Оновити' }));
     expect(await screen.findByText(/Не вдалося оновити журнал\. Показано раніше завантажені події/)).toBeTruthy();
@@ -284,11 +287,11 @@ describe('refresh, access and sessions', () => {
       return undefined;
     });
     renderApp('/audit');
-    await rowOf('Вихід');
+    await rowOf('Вийшов');
     await userEvent.setup().click(screen.getByRole('button', { name: 'Показати старіші' }));
     expect(await screen.findByRole('heading', { name: 'Недостатньо прав' })).toBeTruthy();
     expect(screen.queryByRole('table')).toBeNull();
-    expect(screen.queryByRole('rowheader', { name: 'Вихід' })).toBeNull();
+    expect(screen.queryByRole('rowheader', { name: 'Вийшов' })).toBeNull();
   });
 
   it('401 on an older chunk: the session ends, the journal is gone', async () => {
@@ -298,7 +301,7 @@ describe('refresh, access and sessions', () => {
       return undefined;
     });
     renderApp('/audit');
-    await rowOf('Вихід');
+    await rowOf('Вийшов');
     await userEvent.setup().click(screen.getByRole('button', { name: 'Показати старіші' }));
     expect(await screen.findByText('Сесія завершилась. Увійдіть знову.')).toBeTruthy();
     expect(screen.queryByRole('table')).toBeNull();
@@ -313,14 +316,14 @@ describe('refresh, access and sessions', () => {
       return undefined;
     });
     renderApp('/audit');
-    await rowOf('Вихід');
+    await rowOf('Вийшов');
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Показати старіші' }));
     await user.click(screen.getByRole('button', { name: 'Оновити' }));
-    await rowOf('Створення адміністратора');
+    await rowOf('Створено адміністратора');
     await act(async () => { older.resolve(json(200, page([item('1', { event: 'auth.login' })]))); await new Promise((r) => setTimeout(r, 20)); });
-    expect(within(screen.getByRole('table')).queryByText('Вхід')).toBeNull();
-    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Створення адміністратора']);
+    expect(within(screen.getByRole('table')).queryByText('Увійшов')).toBeNull();
+    expect(within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Створено адміністратора']);
   });
 
   it('a first chunk answered after logout is never shown', async () => {
@@ -376,7 +379,7 @@ describe('unknown codes that match Object.prototype properties', () => {
     ])) : undefined));
     renderApp('/audit');
     const table = await screen.findByRole('table');
-    expect(within(table).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Вхід', ...PROTO_CODES]);
+    expect(within(table).getAllByRole('rowheader').map((th) => th.textContent)).toEqual(['Увійшов', ...PROTO_CODES]);
     const options = within(screen.getByLabelText('Дія')).getAllByRole('option').map((o) => o.textContent);
     expect(options).toEqual(expect.arrayContaining(['Усі дії', 'Вхід', ...PROTO_CODES]));
     const user = userEvent.setup();
@@ -391,5 +394,88 @@ describe('unknown codes that match Object.prototype properties', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Закрити' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByRole('table')).toBeTruthy();
+  });
+});
+
+// ADR-033: the API's read-time context makes rows readable — who (e-mail), what (the concrete action), on which
+// application and server; a system step names the requester of its command, apart from the author of the row.
+describe('readable context (ADR-033)', () => {
+  const LONG = 'operator.with.a.rather.long.address.for.layout@example.test';
+  const ctx = (over: Record<string, unknown> = {}) => ({ actorEmail: null, serverName: null, targetUserEmail: null, command: null, ...over });
+  const command = { requestedBy: U1, requestedByEmail: 'admin@example.test', serviceName: 'orders-api' };
+  const rows = [
+    item('9', { event: 'process.command_requested', details: { serverId: S1, commandId: 'c-1', targetKey: 'api', action: 'restart', serviceName: 'orders-api' }, context: ctx({ actorEmail: 'admin@example.test', serverName: 'node-a', command }) }),
+    item('8', { event: 'process.command_succeeded', actorUserId: null, requestId: null, details: { serverId: S1, commandId: 'c-1', targetKey: 'api', action: 'restart' }, context: ctx({ serverName: 'node-a', command }) }),
+    item('7', { event: 'logs.view_opened', actorUserId: U2, details: { serverId: S1, targetKey: 'n-0123456789abcdef01234567' }, context: ctx({ actorEmail: LONG, serverName: 'node-a' }) }),
+    item('6', { event: 'user.role_changed', details: { targetUserId: U2, fromRole: 'viewer', toRole: 'operator', sessionsRevoked: 0 }, context: ctx({ actorEmail: 'admin@example.test', targetUserEmail: LONG }) }),
+    item('5', { event: 'auth.logout', actorUserId: U2, context: ctx() }), // the account is not found any more
+  ];
+
+  it('who / what / application / server are visible in the row; a system step names the requester apart', async () => {
+    backend((req) => (req.url === '/api/audit?limit=25' ? json(200, page(rows)) : undefined));
+    renderApp('/audit');
+    const req = await rowOf('Запросив перезапуск');
+    expect(within(req).getByText('admin@example.test')).toBeTruthy();
+    expect(within(req).getByText('orders-api')).toBeTruthy();
+    expect(within(req).getByText('node-a')).toBeTruthy();
+    const done = await rowOf('Перезапуск виконано');
+    expect(within(done).getByText('admin@example.test')).toBeTruthy(); // the requester of the command
+    expect(within(done).getByText('Системна подія · за запитом користувача')).toBeTruthy();
+    expect(within(done).getByText('orders-api')).toBeTruthy(); // from the linked command (the row itself has no name)
+    const logs = await rowOf('Переглянув логи');
+    expect(within(logs).getByText(LONG)).toBeTruthy();
+    expect(within(logs).getByText('Назву застосунку не збережено')).toBeTruthy(); // the opaque key is not decoded
+    expect(within(logs).queryByText(/n-0123456789/)).toBeNull();
+    const role = await rowOf('Змінив роль');
+    expect(within(role).getByText(LONG, { selector: '.audit__target' })).toBeTruthy();
+    expect(within(await rowOf('Вийшов')).getByText('Користувача не знайдено')).toBeTruthy();
+  });
+
+  it('details: author of the row and requester of the command apart, origin of each name, ids and the key only in the technical part', async () => {
+    backend((req) => (req.url === '/api/audit?limit=25' ? json(200, page(rows)) : undefined));
+    renderApp('/audit');
+    const user = userEvent.setup();
+    await user.click(within(await rowOf('Перезапуск виконано')).getByRole('button', { name: 'Перезапуск виконано' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Перезапуск виконано' });
+    const row = (label: string) => within(dialog).getByText(label).nextElementSibling?.textContent ?? '';
+    expect(row('Автор запису')).toMatch(/^Система/);
+    expect(row('Замовник команди')).toMatch(/^admin@example\.test/);
+    expect(row('Застосунок')).toBe('orders-apiз пов’язаної команди (збережено під час запиту)');
+    expect(row('Сервер')).toBe('node-aпоточна назва на момент перегляду');
+    expect(within(dialog).getByText(/Email і назви серверів — поточні на момент перегляду/)).toBeTruthy();
+    expect(row('Замовник команди (ID)')).toBe(U1);
+    expect(row('Ключ цілі')).toBe('api');
+    await user.keyboard('{Escape}');
+    await user.click(within(await rowOf('Переглянув логи')).getByRole('button', { name: 'Переглянув логи' }));
+    const logs = await screen.findByRole('dialog', { name: 'Переглянув логи' });
+    expect(within(logs).getByText('Застосунок').nextElementSibling?.textContent).toMatch(/^Назву застосунку не збережено/);
+    expect(within(logs).getByText('Ключ цілі').nextElementSibling?.textContent).toBe('n-0123456789abcdef01234567');
+  });
+
+  it('local search finds e-mails, server, application, target user and the readable action', async () => {
+    backend((req) => (req.url === '/api/audit?limit=25' ? json(200, page(rows)) : undefined));
+    renderApp('/audit');
+    await rowOf('Запросив перезапуск');
+    const user = userEvent.setup();
+    const search = screen.getByLabelText('Пошук серед завантажених подій');
+    const found = () => within(screen.getByRole('table')).getAllByRole('rowheader').map((th) => th.textContent);
+    for (const [q, expected] of [
+      ['orders-api', ['Запросив перезапуск', 'Перезапуск виконано']],
+      ['rather.long', ['Переглянув логи', 'Змінив роль']],
+      ['NODE-A', ['Запросив перезапуск', 'Перезапуск виконано', 'Переглянув логи']],
+      ['переглянув', ['Переглянув логи']],
+    ] as const) {
+      await user.clear(search);
+      await user.type(search, q);
+      expect(found()).toEqual(expected);
+    }
+  });
+
+  it('the parser: context absent → null (older API); present → every field checked', () => {
+    expect(parseAuditPage(page([item('1')])).items[0]?.context).toBeNull();
+    expect(parseAuditPage(page([item('1', { context: ctx({ serverName: 'node-a', command }) })])).items[0]?.context).toEqual(ctx({ serverName: 'node-a', command }));
+    expect(() => parseAuditPage(page([item('1', { context: ctx({ serverName: 42 }) })]))).toThrow();
+    expect(() => parseAuditPage(page([item('1', { context: ctx({ command: { requestedBy: U1 } }) })]))).toThrow();
+    expect(() => parseAuditPage(page([item('1', { context: 'x' })]))).toThrow();
   });
 });

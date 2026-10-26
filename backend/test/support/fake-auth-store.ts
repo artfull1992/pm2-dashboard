@@ -12,10 +12,13 @@ type FakeUser = LoginUser & { createdAt: Date; updatedAt: Date };
 type Method = keyof AuthStore | keyof UserStore;
 
 /** Also implements UserStore (ADR-019) on the same users/sessions, with the same all-or-nothing semantics. */
+type StoredAudit = Omit<AuditItem, 'context'>;
+
 export class FakeAuthStore implements AuthStore, UserStore {
   readonly users = new Map<string, FakeUser>();
   readonly sessions: FakeSession[] = [];
-  readonly audit: AuditItem[] = [];
+  /** Stored rows: the read-time context is resolved by listAudit (as the SQL join does). */
+  readonly audit: StoredAudit[] = [];
   /** Methods listed here throw (simulated database outage). */
   readonly failing = new Set<Method>();
   /** Audit inserts throw (inside and outside transactions). */
@@ -38,7 +41,7 @@ export class FakeAuthStore implements AuthStore, UserStore {
     return user;
   }
 
-  private appendAudit(entry: AuditEvent, context: AuditContext): AuditItem {
+  private appendAudit(entry: AuditEvent, context: AuditContext): StoredAudit {
     if (this.failAuditWrites) throw new Error('audit insert failed (synthetic)');
     return {
       id: String(this.nextAuditId++), occurredAt: new Date().toISOString(), event: entry.event, outcome: entry.outcome,
@@ -158,7 +161,7 @@ export class FakeAuthStore implements AuthStore, UserStore {
     if (!d.changed) return Promise.resolve({ status: 'updated', user: this.view(t), changed: false });
     const sessionsRevoked = this.activeSessions(t.id);
     const context = { actorUserId: input.actor.userId, requestId: input.requestId };
-    const audits: AuditItem[] = [];
+    const audits: StoredAudit[] = [];
     if (d.role !== t.role) audits.push(this.appendAudit({ event: 'user.role_changed', outcome: 'success', details: { targetUserId: t.id, fromRole: t.role, toRole: d.role, sessionsRevoked } }, context));
     if (d.isActive !== t.isActive) audits.push(this.appendAudit({ event: d.isActive ? 'user.activated' : 'user.deactivated', outcome: 'success', details: { targetUserId: t.id, sessionsRevoked } }, context));
     t.role = d.role;
@@ -180,7 +183,10 @@ export class FakeAuthStore implements AuthStore, UserStore {
     this.enter('listAudit');
     const sorted = [...this.audit].sort((a, b) => Number(b.id) - Number(a.id))
       .filter((a) => input.beforeId === null || Number(a.id) < Number(input.beforeId));
-    const items = sorted.slice(0, input.limit);
+    // Stored rows carry no read-time context; the fake resolves only the actor's e-mail (like the LEFT JOIN).
+    const items = sorted.slice(0, input.limit).map((a) => ({
+      ...a, context: { actorEmail: a.actorUserId === null ? null : this.users.get(a.actorUserId)?.email ?? null, serverName: null, targetUserEmail: null, command: null },
+    }));
     return Promise.resolve({ items, nextBeforeId: sorted.length > input.limit ? (items.at(-1)?.id ?? null) : null });
   }
 

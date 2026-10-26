@@ -16,19 +16,27 @@ const U3 = '0a1b2c3d-0000-4000-8000-000000000003';
 const SA = '5e1f0000-0000-4000-8000-0000000000aa';
 const SB = '5e1f0000-0000-4000-8000-0000000000bb';
 const LONG = 'worker-with-a-very-long-name-for-reports-and-exports-v2';
+const ADMIN = 'admin@example.com';
+const OPERATOR = 'operator.with.a.rather.long.address.for.layout@example.com';
 type State = 'list' | 'loading' | 'error' | 'empty' | 'chain';
 
-const ev = (id: string, over: Record<string, unknown>) => ({ id, occurredAt: at('10:21:48'), event: 'auth.login', outcome: 'success', actorUserId: U1, requestId: `req-${id}`, details: {}, ...over });
+// Read-time context of the API (ADR-033): current e-mails / server names and the linked command.
+const ctx = (over: Record<string, unknown> = {}) => ({ actorEmail: null, serverName: null, targetUserEmail: null, command: null, ...over });
+const ev = (id: string, over: Record<string, unknown>) => ({ id, occurredAt: at('10:21:48'), event: 'auth.login', outcome: 'success', actorUserId: U1, requestId: `req-${id}`, details: {}, context: ctx({ actorEmail: ADMIN }), ...over });
 // The same kinds of events as the reference, in the shapes the API really sends.
 const LIST = [
-  ev('108', { event: 'process.command_requested', occurredAt: at('10:21:48'), details: { serverId: SA, commandId: 'c-1', targetKey: 'api-service', action: 'restart' } }),
-  ev('107', { event: 'logs.view_opened', occurredAt: at('10:20:15'), actorUserId: U2, details: { serverId: SB, targetKey: 'report-worker' } }),
-  ev('106', { event: 'process.command_rejected', outcome: 'failure', occurredAt: at('10:18:03'), actorUserId: null, requestId: null, details: { serverId: SB, commandId: 'c-2', targetKey: 'scheduled-worker', action: 'stop', reason: 'not_allowed' } }),
-  ev('105', { event: 'access.updated', occurredAt: at('10:14:29'), details: { targetUserId: U3, revision: 4 } }),
-  ev('104', { event: 'auth.login', outcome: 'failure', occurredAt: at('10:10:02'), actorUserId: null, details: { reason: 'invalid_credentials' } }),
+  ev('108', { event: 'process.command_requested', occurredAt: at('10:21:48'), details: { serverId: SA, commandId: 'c-1', targetKey: 'api', action: 'restart', serviceName: 'api-service' },
+    context: ctx({ actorEmail: ADMIN, serverName: 'node-a', command: { requestedBy: U1, requestedByEmail: ADMIN, serviceName: 'api-service' } }) }),
+  ev('107', { event: 'logs.view_opened', occurredAt: at('10:20:15'), actorUserId: U2, details: { serverId: SB, targetKey: 'n-0123456789abcdef01234567', serviceName: 'report-worker' }, context: ctx({ actorEmail: OPERATOR, serverName: 'node-b' }) }),
+  ev('106', { event: 'process.command_rejected', outcome: 'failure', occurredAt: at('10:18:03'), actorUserId: null, requestId: null, details: { serverId: SB, commandId: 'c-2', targetKey: 'scheduled', action: 'stop', reason: 'not_allowed', serviceName: 'scheduled-worker' },
+    context: ctx({ serverName: 'node-b', command: { requestedBy: U2, requestedByEmail: OPERATOR, serviceName: 'scheduled-worker' } }) }),
+  ev('105', { event: 'access.updated', occurredAt: at('10:14:29'), details: { targetUserId: U3, revision: 4 }, context: ctx({ actorEmail: ADMIN, targetUserEmail: 'viewer@example.com' }) }),
+  ev('104', { event: 'auth.login', outcome: 'failure', occurredAt: at('10:10:02'), actorUserId: null, details: { reason: 'invalid_credentials' }, context: ctx() }),
   ev('103', { event: 'auth.login', occurredAt: at('09:59:41') }),
   ev('102', { event: 'settings.alerts_changed', occurredAt: at('09:42:18'), details: { revision: 7, changed: 'rules' } }),
-  ev('101', { event: 'logs.view_opened', occurredAt: at('19:35:04', '2026-10-22'), actorUserId: U2, details: { serverId: SB, targetKey: LONG } }),
+  ev('101', { event: 'logs.view_opened', occurredAt: at('19:35:04', '2026-10-22'), actorUserId: U2, details: { serverId: SB, targetKey: 'logs-target', serviceName: LONG }, context: ctx({ actorEmail: OPERATOR, serverName: 'node-b' }) }),
+  // An old log row: no stored name, an opaque key — shown as «Назву застосунку не збережено», never decoded.
+  ev('100', { event: 'logs.view_opened', occurredAt: at('19:30:00', '2026-10-22'), actorUserId: U2, details: { serverId: SB, targetKey: 'n-aaaaaaaaaaaaaaaaaaaaaaaa' }, context: ctx({ actorEmail: OPERATOR, serverName: 'node-b' }) }),
 ];
 
 /** Chains of 25 newest-first by id; `total` events in all. */
@@ -36,8 +44,10 @@ function chain(beforeId: string | null, total: number) {
   const start = beforeId === null ? total : Number(beforeId) - 1;
   const items = Array.from({ length: Math.min(25, start) }, (_, k) => {
     const id = start - k;
+    const name = `svc-${String(id).padStart(3, '0')}`;
     return ev(String(id), { event: id % 3 ? 'logs.view_opened' : 'process.command_succeeded', actorUserId: id % 3 ? U2 : null, occurredAt: new Date(NOW.getTime() - (total - id) * 60_000).toISOString(),
-      details: { serverId: SA, targetKey: `svc-${String(id).padStart(3, '0')}`, ...(id % 3 ? {} : { commandId: `c-${String(id)}`, action: 'restart' }) } });
+      details: { serverId: SA, targetKey: `k-${String(id)}`, serviceName: name, ...(id % 3 ? {} : { commandId: `c-${String(id)}`, action: 'restart' }) },
+      context: ctx({ actorEmail: id % 3 ? OPERATOR : null, serverName: 'node-a', command: id % 3 ? null : { requestedBy: U1, requestedByEmail: ADMIN, serviceName: name } }) });
   });
   const last = items.at(-1);
   return { items, nextBeforeId: last && Number(last.id) > 1 ? last.id : null };
@@ -59,7 +69,7 @@ async function api(page: Page, state: State, total = 25) {
       if (state === 'loading') return; // never answered
       if (state === 'error') { await route.fulfill({ status: 503, headers: { 'retry-after': '10' }, json: {} }); return; }
       if (state === 'empty') { await route.fulfill({ json: { items: [], nextBeforeId: null } }); return; }
-      if (state === 'list') { await route.fulfill({ json: { items: LIST, nextBeforeId: '101' } }); return; }
+      if (state === 'list') { await route.fulfill({ json: { items: LIST, nextBeforeId: '100' } }); return; }
       await route.fulfill({ json: chain(url.searchParams.get('beforeId'), total) });
       return;
     }
@@ -297,7 +307,7 @@ test('unknown codes such as constructor / toString / __proto__ keep the journal:
   });
   await page.goto('/audit');
   const table = page.getByRole('table');
-  await expect(table.getByRole('rowheader')).toHaveText(['Вхід', ...codes]);
+  await expect(table.getByRole('rowheader')).toHaveText(['Увійшов', ...codes]);
   await expect(page.getByRole('navigation', { name: 'Основна навігація' })).toBeVisible();
   expect(await page.evaluate(() => document.getElementById('root')?.childElementCount ?? 0)).toBeGreaterThan(0);
   await page.getByLabel('Дія').selectOption('toString');
@@ -311,5 +321,43 @@ test('unknown codes such as constructor / toString / __proto__ keep the journal:
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   expect(errors).toEqual([]);
+  await context.close();
+});
+
+// ADR-033: the row itself says who did what on which application and server; a system step names the requester.
+test('readable rows (1440 table, 390 records): who / action / application / server without opening details; old rows fall back; long e-mails fit', async ({ browser }) => {
+  for (const v of ['desktop', 'mobile'] as const) {
+    const { context, page } = await open(browser, { viewport: VIEWPORTS[v] });
+    await show(page, 'AUD-01');
+    const row = (action: string) => (v === 'desktop' ? page.locator('tbody tr', { has: page.getByRole('button', { name: action, exact: true }) }) : page.getByRole('article', { name: new RegExp(`^${action}:`) })).first();
+    const req = row('Запросив перезапуск');
+    for (const text of [ADMIN, 'api-service', 'node-a']) await expect(req).toContainText(text);
+    const rejected = row('Зупинку відхилено');
+    await expect(rejected).toContainText(OPERATOR);
+    await expect(rejected).toContainText('Системна подія · за запитом користувача');
+    await expect(rejected).toContainText('scheduled-worker');
+    await expect(row('Змінив доступи')).toContainText('viewer@example.com');
+    const logs = page.getByRole(v === 'desktop' ? 'row' : 'article').filter({ hasText: 'Назву застосунку не збережено' });
+    await expect(logs).toHaveCount(1);
+    await expect(logs).not.toContainText('n-aaaaaaaa');
+    await noPageOverflow(page);
+    expect(await rows(page).evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    if (shots) await page.screenshot({ path: `${shots}/aud-readable-${v}.png` });
+    await context.close();
+  }
+});
+
+test('details of a system step: author of the row («Система») and the requester apart, names with their origin', async ({ browser }) => {
+  const { context, page } = await open(browser, { viewport: VIEWPORTS.desktop });
+  await show(page, 'AUD-01');
+  await page.getByRole('button', { name: 'Зупинку відхилено', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Зупинку відхилено' });
+  await expect(dialog).toContainText('Автор запису');
+  await expect(dialog).toContainText('Замовник команди');
+  await expect(dialog).toContainText(OPERATOR);
+  await expect(dialog).toContainText('поточна назва на момент перегляду');
+  await expect(dialog).toContainText('збережено в події під час операції');
+  if (shots) await page.screenshot({ path: `${shots}/aud-readable-drawer-desktop.png` });
+  await page.keyboard.press('Escape');
   await context.close();
 });

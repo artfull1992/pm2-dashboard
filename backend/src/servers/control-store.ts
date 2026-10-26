@@ -70,10 +70,12 @@ function toView(r: CommandRow): CommandView {
 
 const UNIQUE_VIOLATION = '23505';
 
-async function audit(tx: QueryClient, event: ProcessCommandEvent, outcome: 'success' | 'failure' | 'denied', c: { id: string; server_id: string; target_key: string; action: string }, reason: string | null, actorUserId: string | null, requestId: string | null) {
+// serviceName: the command's verified service name (stored with the command at request time), so the audit row keeps
+// a readable name even after the target key is reused (ADR-033).
+async function audit(tx: QueryClient, event: ProcessCommandEvent, outcome: 'success' | 'failure' | 'denied', c: { id: string; server_id: string; target_key: string; action: string; service_name: string | null }, reason: string | null, actorUserId: string | null, requestId: string | null) {
   await insertAudit(tx, {
     event, outcome,
-    details: { serverId: c.server_id, commandId: c.id, targetKey: c.target_key, action: c.action, ...(reason ? { reason } : {}) },
+    details: { serverId: c.server_id, commandId: c.id, targetKey: c.target_key, action: c.action, ...(reason ? { reason } : {}), ...(c.service_name ? { serviceName: c.service_name } : {}) },
   }, { actorUserId, requestId });
 }
 

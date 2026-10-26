@@ -33,8 +33,8 @@ export type AuditEvent =
   | { event: 'agent.credential_revoked'; outcome: 'success'; details: { serverId: string; revoked: boolean } }
   // PM2 process control lifecycle (ADR-017). reason is a server-defined code; never PM2 output.
   | { event: ProcessCommandEvent; outcome: AuditOutcome; details: ProcessCommandDetails }
-  // Log viewing (ADR-018): metadata only — never log text.
-  | { event: 'logs.view_opened'; outcome: 'success'; details: { serverId: string; targetKey: string } }
+  // Log viewing (ADR-018): metadata only — never log text. serviceName: the verified service name of the target.
+  | { event: 'logs.view_opened'; outcome: 'success'; details: { serverId: string; targetKey: string; serviceName?: string } }
   | { event: 'logs.view_denied'; outcome: 'denied'; details: { serverId: string; targetKey: string; reason: string } };
 
 export type ProcessCommandEvent =
@@ -46,6 +46,8 @@ export interface ProcessCommandDetails {
   targetKey: string;
   action: string;
   reason?: string;
+  /** The command's service name as verified when it was requested (control_commands.service_name), when known. */
+  serviceName?: string;
 }
 
 export interface AuditContext {
@@ -79,6 +81,22 @@ export interface AuditItem {
   actorUserId: string | null;
   requestId: string | null;
   details: Record<string, unknown>;
+  context: AuditReadContext;
+}
+
+/**
+ * Readable context of an audit row, resolved when the page is READ (ADR-033): current values of linked rows, not a
+ * snapshot of the moment of the event. Missing or unparsable links are null; the row itself is never dropped.
+ */
+export interface AuditReadContext {
+  /** Current e-mail of actorUserId. */
+  actorEmail: string | null;
+  /** Current name of details.serverId. */
+  serverName: string | null;
+  /** Current e-mail of details.targetUserId. */
+  targetUserEmail: string | null;
+  /** The control command of details.commandId — only when its server and target match the event. */
+  command: { requestedBy: string; requestedByEmail: string | null; serviceName: string | null } | null;
 }
 
 export interface AuthStore {
@@ -107,6 +125,8 @@ export interface AuthStore {
 }
 
 const PRUNE_AFTER = '1 day';
+/** A well-formed UUID (case-insensitive regex for SQL `~*`): only such detail values are cast to uuid. */
+const UUID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 
 export async function insertAudit(client: QueryClient, entry: AuditEvent, context: AuditContext): Promise<void> {
   await client.query(
@@ -204,20 +224,49 @@ export function createPgAuthStore(db: Database): AuthStore {
     },
 
     async listAudit({ limit, beforeId }) {
-      // Keyset pagination on the identity PK: stable order, no OFFSET scans, never the whole table.
+      // Keyset pagination on the identity PK: stable order, no OFFSET scans, never the whole table. The page is cut
+      // FIRST (CTE), then enriched with one LEFT JOIN per link, each on a primary key: no duplicated or dropped rows,
+      // one query per page (no N+1). Ids from details are cast only when they are well-formed UUIDs (CASE), so a
+      // damaged value yields null instead of an SQL error. A command is linked only when its id, server AND target
+      // match the event. Nothing is written.
       const { rows } = await db.query<{
         id: string; occurred_at: Date; event: string; outcome: AuditOutcome; actor_user_id: string | null; request_id: string | null; details: Record<string, unknown>;
+        actor_email: string | null; server_name: string | null; target_user_email: string | null;
+        command_requested_by: string | null; command_requested_by_email: string | null; command_service_name: string | null;
       }>(
-        `SELECT id::text AS id, occurred_at, event, outcome, actor_user_id, request_id, details
-           FROM audit_log WHERE ($1::bigint IS NULL OR id < $1::bigint)
-          ORDER BY id DESC LIMIT $2`,
-        [beforeId, limit + 1],
+        `WITH page AS (
+           SELECT id, occurred_at, event, outcome, actor_user_id, request_id, details
+             FROM audit_log WHERE ($1::bigint IS NULL OR id < $1::bigint)
+            ORDER BY id DESC LIMIT $2
+         ), ids AS (
+           SELECT p.*,
+                  CASE WHEN p.details->>'serverId' ~* $3 THEN (p.details->>'serverId')::uuid END AS server_uuid,
+                  CASE WHEN p.details->>'targetUserId' ~* $3 THEN (p.details->>'targetUserId')::uuid END AS target_user_uuid,
+                  CASE WHEN p.details->>'commandId' ~* $3 THEN (p.details->>'commandId')::uuid END AS command_uuid
+             FROM page p
+         )
+         SELECT i.id::text AS id, i.occurred_at, i.event, i.outcome, i.actor_user_id, i.request_id, i.details,
+                au.email AS actor_email, s.name AS server_name, tu.email AS target_user_email,
+                c.requested_by AS command_requested_by, cu.email AS command_requested_by_email, c.service_name AS command_service_name
+           FROM ids i
+           LEFT JOIN users au ON au.id = i.actor_user_id
+           LEFT JOIN servers s ON s.id = i.server_uuid
+           LEFT JOIN users tu ON tu.id = i.target_user_uuid
+           LEFT JOIN control_commands c ON c.id = i.command_uuid AND c.server_id = i.server_uuid AND c.target_key = i.details->>'targetKey'
+           LEFT JOIN users cu ON cu.id = c.requested_by
+          ORDER BY i.id DESC`,
+        [beforeId, limit + 1, UUID_PATTERN],
       );
       const page = rows.slice(0, limit);
       return {
         items: page.map((r) => ({
           id: r.id, occurredAt: r.occurred_at.toISOString(), event: r.event, outcome: r.outcome,
           actorUserId: r.actor_user_id, requestId: r.request_id, details: r.details,
+          context: {
+            actorEmail: r.actor_email, serverName: r.server_name, targetUserEmail: r.target_user_email,
+            command: r.command_requested_by === null ? null
+              : { requestedBy: r.command_requested_by, requestedByEmail: r.command_requested_by_email, serviceName: r.command_service_name },
+          },
         })),
         nextBeforeId: rows.length > limit ? (page.at(-1)?.id ?? null) : null,
       };

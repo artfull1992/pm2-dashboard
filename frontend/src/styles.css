@@ -836,3 +836,6 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 /* Groups of a definition list keep the two-column grid. */
 .facts__row { display: contents; }
 .audit__ids .facts { font-size: var(--font-xs); }
+/* Readable initiators (ADR-033): long e-mails wrap instead of widening the table. */
+.audit__actor { display: block; overflow-wrap: anywhere; }
+.audit-table td:nth-child(2) { max-width: 18rem; }

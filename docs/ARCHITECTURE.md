@@ -23,7 +23,7 @@ ES modules, залежності `pg` і `fastify`, npm scripts. Скрипти 
 | `backend/src/main.ts` | Точка входу: `.env` + process env, fatal handlers, виклик `runServer`, exit code |
 | `backend/src/migrations.ts`, `migrate-cli.ts`, `migrate.ts` | node-pg-migrate: `status` (read-only), `up` (advisory lock, одна транзакція, timeouts); окремий CLI, API міграції не запускає |
 | `backend/migrations/` | Версійні SQL-міграції: `1791900000000_create-users`, `1791900000001_auth-foundation` (role, sessions, audit_log) |
-| `backend/src/auth/` | `password` (scrypt, limiter), `tokens` (session/CSRF/cookie), `rbac`, `rate-limit`, `email`, `store` (SQL + транзакції з audit), `plugin` (hooks + `/api/auth/*`, `/api/audit`), `bootstrap` |
+| `backend/src/auth/` | `password` (scrypt, limiter), `tokens` (session/CSRF/cookie), `rbac`, `rate-limit`, `email`, `store` (SQL + транзакції з audit), `plugin` (hooks + `/api/auth/*`, `/api/audit` з читабельним `context`, ADR-033), `bootstrap` |
 | `backend/src/bootstrap-cli.ts`, `bootstrap-admin.ts` | CLI створення першого адміністратора (без HTTP) |
 | `frontend/src/api/` | API-клієнт (timeout, cancel, runtime-валідація) і типи контракту |
 | `frontend/src/auth/` | `AuthContext` (сесія в пам'яті, епохи проти гонок), guards (`RequireAuth`, `RequirePermission`, безпечний redirect) |
