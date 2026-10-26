@@ -1,5 +1,21 @@
 # Поточний стан проєкту
 
+## Повторний незалежний review Codex — AUD lookup (`9d3be49`), 2026-10-26 — APPROVED
+
+Перевірено diff від `fc6f2e4`, код, regression-тести та документацію Code → Docs / Docs → Code. P2 з review `fc6f2e4` закрито; етап 3.3 «Журнал аудиту» з виправленням отримує APPROVED у межах проведених перевірок. Нових зауважень не знайдено. Змінені лише auditEvents, його тести й PROJECT_STATUS; backend, parser, права, залежності та геометрія не змінені.
+
+Підтверджено: словники подій, причин і дій — приватні ReadonlyMap із власних записів; спільний lookup повертає рядковий fallback, `isKnownEvent` використовує Map.has. Відомі переклади збережені, контракт не звужений. Попередній незалежний browser-reproducer повторено на новій production-збірці для `constructor`, `toString`, `__proto__`: у кожному випадку errors=[], tableCount=1, rootChildren=1. Нові component/browser regression додатково перевіряють невідомі коди, фільтр, пошук, drawer та fallback причин/дій.
+
+**Поточні незалежні перевірки:**
+- `check:local` — exit 0: node:test 147/147, backend 525/525, smoke 10/10, Agent 176/176 (+3 opt-in пропущені), frontend 374/374, installer 295/295; typecheck, lint, збірки успішні.
+- Повна UI-матриця на завершеній збірці без паралельної перебудови dist — 226/226.
+- Початковий E2E зупинено preflight до тестів: годинник ізольованої тестової БД відставав на 965 с. Codex перевірив hostname одноразової VM `nc-acc-db` та синхронізував лише її годинник з хостом. Повторний повний E2E — 19 passed / 2 real-PM2/broker opt-in skipped, exit 0. Паролі, ролі, HBA, production і годинник ноутбука не змінювались; preflight не послаблено.
+- `git diff --check`, `check:secrets` — успішні; 93/93 checksum оригінального design/part-01 відповідають.
+
+Справжній zoom, screenshot-порівняння та screen reader цього разу не повторювались: верстка не змінювалась; застосовні AUD-01…05 та попередні візуальні результати й обмеження збережені. Окремі DB-suite і реальні PM2-сценарії не запускались. Спостереження про lookup поза auditEvents залишається окремим боргом, не частиною цього виправлення.
+
+Артефакти поза Git: `/tmp/nc-aud-fix-review-*.log`, `/tmp/nc-aud-unknown-review.cjs`. Codex не змінював функціональний код або production; untracked оригінали користувача збережено. Production-стан цього разу не перевірявся; за звітом Claude нову реалізацію не розгорнуто. APPROVED не означає виконаний деплой етапу 3.3.
+
 ## Виправлення P2 за review `fc6f2e4` (етап 3.3) — готово до повторного review Codex (НЕ розгорнуто), 2026-10-26
 
 База — `fc6f2e4`. Зміни: `frontend/src/components/auditEvents.ts`, тести, цей запис. Backend, parser, компонування, права й залежності не змінювались. Production не змінювався: `78c827b`, previous `6c741ec`.
