@@ -1,5 +1,39 @@
 # Поточний стан проєкту
 
+## Production: деплой `2d9d856` — читабельний журнал аудиту ADR-033 (2026-10-26, після APPROVED Codex і за прямим дозволом користувача)
+
+Активна code revision — `2d9d856` (review-commit APPROVED поверх `aa6b5c2`). Цей запис — пізніший docs-commit; він не розгортався.
+
+**До деплою.**
+- current `cf44798`, previous `78c827b`; API active, `NRestarts=0`, `nodecontrol`.
+- health 200/200 локально й через HTTPS; попереджень за 2 год — 0; Nginx і PostgreSQL active.
+- Годинник сервера й БД збігається з машиною оператора.
+- `cf44798 → 2d9d856`: змінені 4 backend-модулі (`auth/plugin`, `auth/store`, `servers/control-store`, `servers/logs-routes`) і `frontend/dist`. Міграції, `scripts/deploy`, `deploy/systemd`, `package*.json`, Agent й installer ідентичні; схема й env без змін.
+
+**Fallback — `cf44798`.** Manifest 87/87, `node_modules`, unit збігається, `applied=10 pending=0 unknown=0`. Сумісний зі схемою: старий API не віддає `context`, нове `details.serviceName` старий frontend ігнорує; audit-записи не видаляються. Приватний runbook — у захищеному recovery-каталозі сервера.
+
+**Процедура (штатна).**
+- Збірка `build-release.js --from-tree` з `git archive 2d9d856` на одноразовій VM (Node 22.22.1). `/tmp` VM (tmpfs) був заповнений, тому збірку виконано з `TMPDIR` і npm-кешем у каталозі збірки; нічого не видалялось.
+- API `sha256 32bf8c23ad989f9a0a6cd797088e5e29833a40b564aef59540fd485a5a1646e9`, 87 файлів. Немає `.env`, source maps, дизайн-матеріалів і секретів. Відносно `cf44798` відрізняються 9 файлів (4 backend + 5 frontend).
+- На сервері: checksum OK → резервні копії `api.env`, unit і `pg_dump -Fc` (`pg_restore --list` OK) → `prepare` → `config` («kept») → `migrate status` (`pending=0`; `up` не запускався) → unit без змін → `activate` → restart лише `node-control-api`.
+
+**Після деплою.**
+- current `2d9d856`, previous `cf44798`; active, `NRestarts=0`, `nodecontrol`, лише `127.0.0.1:3100`.
+- health/live і health/ready — 200 локально й через HTTPS; `/nope` → 404; анонімні `/api/audit`, `/api/alerts`, `/api/auth/me` → 401; SPA `/audit` → 200.
+- Попереджень за 5 хв — 0; Nginx і PostgreSQL active, failed units — 0.
+- `index.html`, `theme-init.js`, JS і CSS побайтово відповідають артефакту; JS — `application/javascript`.
+- Анонімний smoke (1440 і 390, лише GET): `/login`, тема зберігається після reload, без переповнення й помилок консолі.
+
+**Не перевірено** (production-облікових даних немає; production-аудит не читався). Перевірити оператору як admin у «Журналі аудиту»:
+- email ініціатора, дія, застосунок і сервер у рядках;
+- системні кроки команд — замовник із поясненням;
+- старі записи — «Назву застосунку не збережено»;
+- деталі й пошук.
+
+Після першого відкриття журналу варто переглянути журнал API (`journalctl -u node-control-api -p warning`) на помилки запиту контексту.
+
+**Не змінювались:** Agent, broker, exporter, PM2, Slack, користувачі й доступи, PostgreSQL/HBA/firewall, Nginx (CSP-заголовка й далі немає). Rollback не знадобився.
+
 ## Новий дизайн-пакет — частина 2, Користувачі та доступи, 2026-10-26
 
 Користувач додав `Node-Control-Part-02-Users-Access-v1.zip`. Codex прочитав README, SPEC, QA і REVIEW-STATUS, переглянув оглядові аркуші USR/ACL та зіставив вимоги з UsersPage, AccessDialog, API-клієнтом і типами. Пакет містить USR-01…09 і ACL-01…15 (24 стани), 116 PNG; усі 134 записи SHA256SUMS перевірені за вмістом архіву, без розбіжностей. Це аналіз джерел дизайну, не review реалізації чи підтвердження QA прототипа.
