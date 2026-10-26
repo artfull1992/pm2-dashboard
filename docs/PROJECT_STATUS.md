@@ -1,5 +1,29 @@
 # Поточний стан проєкту
 
+## Етап 3.4 — «Користувачі» за USR-01…09 (ADR-034) — готово до незалежного review Codex (НЕ розгорнуто), 2026-10-26
+
+База `1d71702`. Лише frontend, тести й документація. Backend, API, SQL, міграції, RBAC, Agent, installer і залежності не змінювались. Production не підключався й не змінювався (за останнім звітом — `2d9d856`, previous `cf44798`). ACL-01…15, INT/RUL, PRF/AUTH не розпочато.
+
+**Пакет.** `Node-Control-Part-02-Users-Access-v1.zip` скопійовано без змін у `docs/design/part-02/` (135 файлів; 134 записи SHA256SUMS збігаються; символьних посилань немає). Застосування, таблиця USR-ID → реалізація → перевірки і відхилення — [PART-02-ADOPTION](design/PART-02-ADOPTION.md); рішення — ADR-034. Прототип не запускався й у `frontend/dist` не потрапляє (перевірено пошуком).
+
+**Реалізація** (`UsersPage.tsx`, `Dialog.tsx`, `styles.css`):
+- Список за USR-01: «Пошук на цій сторінці» і «Роль» лише серед поточної сторінки (до 100), з підписом; keyset, «Далі/Назад» і «Показати» без змін. Колонка «Доступ»: admin — «Повний доступ», інші — «За наданими доступами», без N+1. Таблиця 56/48 px із закріпленою шапкою; до 760 px — записи. Скелет завантаження, окремі помилки першого завантаження й оновлення.
+- Меню рядка: «Роль і активність», «Сервери та сервіси» (чинний `AccessDialog`). Для власного запису — лише перегляд «Ваш обліковий запис».
+- Drawer створення: `{email, password, role}`, «Новий користувач створюється активним»; після помилки пароль очищується, email і роль лишаються.
+- Drawer «Роль і активність»: один `PATCH` лише зі зміненими полями, підсумок змін, попередження про завершення сесій; мережа/тайм-аут — «Результат невідомий» і «Перечитати стан» без автоповтору.
+- `FormDialog`: необов'язкові `className`, `eyebrow`, кнопка ✕ (`closeButton`), `submitDisabled`; у drawer кнопки внизу панелі. Pending блокує ✕, Escape, «Скасувати» й повторний submit.
+
+**Перевірки (локально, exit 0):**
+- `check:local`: node:test 147/147, backend 525/525, smoke 10/10, agent 176 passed / 3 opt-in skipped, frontend 392/392 (нові `users-usr.test.tsx` — 7, оновлені `users`, `users-paging`, `access`), installer 295/295; typecheck, lint, збірки, check:secrets.
+- Повна UI-матриця на актуальній збірці — 251/251, зокрема новий `e2e/ui-tests/users-usr.spec.ts` (23): USR-01…09 у двох темах на 1440×900 / 1366×768 / 1024×768 / 390×844 без переповнення, ширина drawer 540/520/повний екран, меню-overlay (висота рядка, viewport, hit-test), клавіатура і focus trap, довгий email, вікно 1280×600 зі 150 користувачами, coarse pointer ≥ 44 px, одна вибірка на сторінку.
+- `test:e2e` на ізольованій тестовій БД — 19 passed / 2 real-PM2/broker opt-in skipped (годинник тестової VM синхронізовано перед прогоном).
+- Справжній browser zoom 200 % (Chromium 156, `chrome.tabs.setZoom`, 1440×900 → CSS 720×450, DPR 2), темна й світла теми — 7/7 кожна.
+- Попарні порівняння 44 кадрів USR і двох reflow 200 % з PNG пакета. Під час порівняння виправлено: кнопки drawer тепер притиснуті донизу панелі, як в еталоні.
+
+Артефакти поза Git: скріншоти `/private/tmp/claude-501/-Users-user-Documents-git-artfull-pm2-dashboard/d6d2712e-fe72-429b-9615-3092c064c3da/scratchpad/usr-shots`, порівняння `/private/tmp/claude-501/-Users-user-Documents-git-artfull-pm2-dashboard/d6d2712e-fe72-429b-9615-3092c064c3da/scratchpad/usr-compare` і `/private/tmp/claude-501/-Users-user-Documents-git-artfull-pm2-dashboard/d6d2712e-fe72-429b-9615-3092c064c3da/scratchpad/usr-zoomcmp`, zoom `/private/tmp/claude-501/-Users-user-Documents-git-artfull-pm2-dashboard/d6d2712e-fe72-429b-9615-3092c064c3da/scratchpad/zoom/out-usr`, логи `/private/tmp/claude-501/-Users-user-Documents-git-artfull-pm2-dashboard/d6d2712e-fe72-429b-9615-3092c064c3da/scratchpad/check-local-usr.log`, `ui-usr-full.log`, `e2e-usr.log`.
+
+**Межі.** Попіксельної відповідності не заявляємо; відхилення перелічені в PART-02-ADOPTION. Скринрідер і ручне Ctrl/Cmd + не перевірялись. `test:backend:db` не запускався: backend не змінювався. Untracked оригінали користувача (ZIP/MD) не змінено й до commit не додано.
+
 ## Production: деплой `2d9d856` — читабельний журнал аудиту ADR-033 (2026-10-26, після APPROVED Codex і за прямим дозволом користувача)
 
 Активна code revision — `2d9d856` (review-commit APPROVED поверх `aa6b5c2`). Цей запис — пізніший docs-commit; він не розгортався.

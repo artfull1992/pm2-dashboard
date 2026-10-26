@@ -535,9 +535,9 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 
 /* Flat statuses (DS-01): dot + coloured text, 12 px — the Applications workspace, the stage 3.1 pages (.ds:
    overview, servers, server detail) and alerts with their drawer (stage 3.2). Pages not yet moved keep the stage-1 chips. */
-:where(.app-list, .app-detail, .ds, .alerts, .audit, .dialog--drawer) .status { font-size: var(--font-xs); font-weight: 400; padding: 0; background: none; border-radius: 0; }
-:where(.app-list, .app-detail, .ds, .alerts, .audit, .dialog--drawer) .status--ok { color: var(--success); }
-:where(.app-list, .app-detail, .ds, .alerts, .audit, .dialog--drawer) .status::before { width: 6px; height: 6px; }
+:where(.app-list, .app-detail, .ds, .alerts, .audit, .users, .dialog--drawer) .status { font-size: var(--font-xs); font-weight: 400; padding: 0; background: none; border-radius: 0; }
+:where(.app-list, .app-detail, .ds, .alerts, .audit, .users, .dialog--drawer) .status--ok { color: var(--success); }
+:where(.app-list, .app-detail, .ds, .alerts, .audit, .users, .dialog--drawer) .status::before { width: 6px; height: 6px; }
 
 /* Centred message inside a panel (empty, nothing selected, loading). */
 .panel-message { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: var(--space-5); text-align: center; }
@@ -750,20 +750,20 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
    the header, tabs, filters and notices leave, its rows scroll inside it, caption and pager stay in view. A short
    window keeps the card at a useful minimum and lets the page scroll by that bounded amount — never by the length of
    the list (review 73bfd84). */
-:is(.alerts, .audit) { --alerts-chrome: calc(2 * var(--space-5)); display: flex; flex-direction: column; gap: var(--space-3); height: calc(100dvh - var(--alerts-chrome)); }
-@media (min-width: 601px) and (max-width: 1400px) { :is(.alerts, .audit) { --alerts-chrome: 40px; } }
+:is(.alerts, .audit, .users) { --alerts-chrome: calc(2 * var(--space-5)); display: flex; flex-direction: column; gap: var(--space-3); height: calc(100dvh - var(--alerts-chrome)); }
+@media (min-width: 601px) and (max-width: 1400px) { :is(.alerts, .audit, .users) { --alerts-chrome: 40px; } }
 /* Phones: content padding 2 × 16 px + the sticky top bar (6 px + 44 px control + 6 px + 1 px border). */
-@media (max-width: 600px) { :is(.alerts, .audit) { --alerts-chrome: calc(2 * var(--space-4) + 57px); } }
-:is(.alerts, .audit) > * { flex: none; }
-:is(.alerts, .audit) > .incidents-card { flex: 1 1 0; min-height: 280px; display: flex; flex-direction: column; }
+@media (max-width: 600px) { :is(.alerts, .audit, .users) { --alerts-chrome: calc(2 * var(--space-4) + 57px); } }
+:is(.alerts, .audit, .users) > * { flex: none; }
+:is(.alerts, .audit, .users) > .incidents-card { flex: 1 1 0; min-height: 280px; display: flex; flex-direction: column; }
 /* Phones and short windows (incl. 200 % zoom of a laptop window): header, tabs and filters scroll away with the page,
    the card is as high as the window (minus the same chrome), so the list gets a useful area with the pager at the
    bottom of the card. The page is then taller than the window by the height of those top blocks only. */
 @media (max-width: 600px), (max-height: 640px) {
-  :is(.alerts, .audit) { height: auto; }
-  :is(.alerts, .audit) > .incidents-card { flex: none; height: calc(100dvh - var(--alerts-chrome)); }
+  :is(.alerts, .audit, .users) { height: auto; }
+  :is(.alerts, .audit, .users) > .incidents-card { flex: none; height: calc(100dvh - var(--alerts-chrome)); }
 }
-:is(.alerts, .audit) .page-header { align-items: center; }
+:is(.alerts, .audit, .users) .page-header { align-items: center; }
 .alerts__tabs { padding: 0; }
 .alerts__hint, .workpanel__hint { font-size: var(--font-xs); line-height: 18px; }
 .incidents-card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
@@ -839,3 +839,34 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 /* Readable initiators (ADR-033): long e-mails wrap instead of widening the table. */
 .audit__actor { display: block; overflow-wrap: anywhere; }
 .audit-table td:nth-child(2) { max-width: 18rem; }
+
+/* Users (USR-01…09): the same work panel as alerts / audit; one-line e-mails (full on hover and keyboard focus);
+   records on narrow windows; create / edit forms in the shared drawer with the form buttons kept in view. */
+.users-table { table-layout: fixed; }
+.users-table tbody tr { height: 56px; }
+@media (min-width: 1280px) and (max-width: 1400px) { .users-table tbody tr { height: 48px; } }
+.users-table thead th { position: sticky; top: 0; z-index: 1; }
+.users-table th:nth-child(1) { width: 38%; }
+.users-table th:nth-child(5), .users-table td:nth-child(5) { width: 7.5rem; text-align: right; }
+.users-table tbody th { min-width: 0; }
+.users__email { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 4px; }
+.users__email:focus-visible { white-space: normal; overflow-wrap: anywhere; overflow: visible; }
+.users__skeleton { width: 70%; }
+.users-records { list-style: none; margin: 0; padding: 0; }
+.users-records > li + li { border-top: 1px solid var(--border); }
+.users-record { display: grid; gap: 6px; padding: 12px 14px; min-width: 0; }
+.users-record__email { font-weight: 600; min-width: 0; }
+.users-record__line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px var(--space-3); font-size: var(--font-sm); }
+.users-record .secondary { color: var(--text-muted); }
+.users__readonly { margin: 0; padding: 8px 0; overflow-wrap: anywhere; font-weight: 500; }
+.users__changes { margin: 4px 0; padding-left: 1.2em; font-size: var(--font-xs); line-height: 18px; }
+.field__label { font-weight: 600; font-size: var(--font-sm); line-height: 18px; }
+.field--check .hint { padding-left: 26px; }
+/* Form drawers: the form scrolls inside the drawer body, its buttons stay at the bottom. */
+/* The drawer body fills the height: its grid rows (and a form's) start at the top instead of stretching controls. */
+.dialog--drawer > .dialog__body, .dialog--drawer > .dialog__body > form, .dialog--drawer > .dialog__body > form > .form-grid { align-content: start; }
+.dialog--drawer > .dialog__body > form { gap: var(--space-4); display: flex; flex-direction: column; flex: 1 0 auto; }
+.dialog--drawer > .dialog__body:has(> form) { display: flex; flex-direction: column; }
+.dialog--drawer > .dialog__body > form > .form-actions { margin-top: auto; }
+.dialog--drawer .form-actions { position: sticky; bottom: calc(-1 * var(--space-4)); z-index: 1; margin: 0 calc(-1 * var(--space-5)) calc(-1 * var(--space-4)); padding: var(--space-3) var(--space-5); background: var(--elevated); border-top: 1px solid var(--border); justify-content: flex-end; }
+@media (max-width: 600px) { .dialog--drawer .form-actions { margin-left: calc(-1 * var(--space-4)); margin-right: calc(-1 * var(--space-4)); padding-left: var(--space-4); padding-right: var(--space-4); } }

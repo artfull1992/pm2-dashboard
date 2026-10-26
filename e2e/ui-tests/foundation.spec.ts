@@ -203,11 +203,11 @@ for (const theme of ['dark', 'light'] as const) {
       const trigger = page.getByRole('button', { name: 'Дії: operator@example.com' });
       await trigger.focus();
       await page.keyboard.press('Enter');
-      await expect(page.getByRole('menuitem', { name: 'Доступи' })).toBeFocused();
+      await expect(page.getByRole('menuitem', { name: 'Роль і активність' })).toBeFocused();
       await page.keyboard.press('Escape');
       await expect(trigger).toBeFocused();
       await page.keyboard.press('Space');
-      await page.getByRole('menuitem', { name: 'Доступи' }).press('Enter');
+      await page.getByRole('menuitem', { name: 'Сервери та сервіси' }).press('Enter');
       const dialog = page.getByRole('dialog', { name: 'Доступи: operator@example.com' });
       const box = dialog.getByRole('checkbox', { name: /^billing-api/ });
       await expect(box).toBeVisible();
@@ -280,12 +280,12 @@ for (const theme of ['dark', 'light'] as const) {
         const trigger = page.getByRole('button', { name: 'Дії: operator@example.com' });
         await expect(trigger).toBeVisible();
         expect(await height(page, trigger)).toBe(m.compact);
-        expect(await height(page, page.getByRole('button', { name: 'Новий користувач' }))).toBe(m.regular);
+        expect(await height(page, page.getByRole('button', { name: 'Створити користувача' }))).toBe(m.regular);
         const pager = page.getByRole('navigation', { name: 'Сторінки користувачів' }).getByRole('button', { name: 'Назад' });
         expect(await height(page, pager)).toBe(m.compact);
         if (m.viewport.width > 760) expect(await height(page, page.getByRole('navigation', { name: 'Основна навігація' }).getByRole('link', { name: 'Користувачі' }))).toBe(m.regular);
         await trigger.click();
-        const item = page.getByRole('menuitem', { name: 'Доступи' });
+        const item = page.getByRole('menuitem', { name: 'Сервери та сервіси' });
         expect(await height(page, item)).toBeGreaterThanOrEqual(m.regular);
         await item.click();
         const dialog = page.getByRole('dialog', { name: 'Доступи: operator@example.com' });

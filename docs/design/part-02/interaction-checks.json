@@ -1,0 +1,42 @@
+[
+  {
+    "theme": "dark",
+    "width": 1440,
+    "independentScopes": true,
+    "selectionAcrossSearch": true,
+    "newServerNeverAll": true,
+    "emptySelectedNotSaved": true,
+    "escape": true,
+    "noHttp": true
+  },
+  {
+    "theme": "dark",
+    "width": 390,
+    "independentScopes": true,
+    "selectionAcrossSearch": true,
+    "newServerNeverAll": true,
+    "emptySelectedNotSaved": true,
+    "escape": true,
+    "noHttp": true
+  },
+  {
+    "theme": "light",
+    "width": 1440,
+    "independentScopes": true,
+    "selectionAcrossSearch": true,
+    "newServerNeverAll": true,
+    "emptySelectedNotSaved": true,
+    "escape": true,
+    "noHttp": true
+  },
+  {
+    "theme": "light",
+    "width": 390,
+    "independentScopes": true,
+    "selectionAcrossSearch": true,
+    "newServerNeverAll": true,
+    "emptySelectedNotSaved": true,
+    "escape": true,
+    "noHttp": true
+  }
+]

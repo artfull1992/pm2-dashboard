@@ -126,7 +126,7 @@ for (const theme of THEMES) {
         const mutations = await api(page, { role: 'admin' });
         await page.goto('/users');
         await page.getByRole('button', { name: /^Дії: operator/ }).click();
-        await page.getByRole('menuitem', { name: 'Доступи' }).click();
+        await page.getByRole('menuitem', { name: 'Сервери та сервіси' }).click();
         const dialog = page.getByRole('dialog', { name: /^Доступи:/ });
         await expect(dialog.getByRole('checkbox', { name: /^catalog-api/ })).toBeVisible();
         // catalog-api is already in the granted list (/access); the picker list comes with a second request

@@ -128,17 +128,18 @@ const controlHeights = async (page: Page, selector: string) => page.evaluate((se
   const els = [...document.querySelectorAll<HTMLElement>(sel)].filter((el) => el.offsetParent !== null && !el.closest('.log-toolbar'));
   return [...new Set(els.map((el) => Math.round(el.getBoundingClientRect().height)))];
 }, selector);
-const REGULAR = '.button:not(.button--small):not(.action-menu__trigger):not(.rules-form__limits), .field input:not([type="checkbox"]), .field select';
-const COMPACT = '.button--small, .action-menu__trigger';
+// Icon-only buttons (e.g. a drawer's ✕) use the compact size token (--control-sm), so they are checked as compact.
+const REGULAR = '.button:not(.button--small):not(.action-menu__trigger):not(.rules-form__limits):not(.icon-button), .field input:not([type="checkbox"]), .field select';
+const COMPACT = '.button--small, .action-menu__trigger, .icon-button';
 
 const PAGES = [
   { name: 'overview', path: '/', heading: 'Огляд', ready: (p: Page) => expect(p.getByRole('region', { name: 'Потребують уваги' })).toBeVisible() },
   { name: 'server-services', path: `/servers/${SERVER}`, heading: 'app-server', ready: (p: Page) => expect(p.getByRole('rowheader', { name: LONG })).toBeVisible() },
   { name: 'alerts', path: '/alerts', heading: 'Сповіщення', ready: (p: Page) => expect(p.getByRole('tabpanel').getByRole('button', { name: /^(PM2-процес не працює|Сервер не звітує)$/ })).toHaveCount(2) },
   { name: 'users-create', path: '/users', heading: 'Користувачі', ready: async (p: Page) => {
-    await expect(p.getByRole('rowheader', { name: /admin@example.com/ })).toBeVisible();
-    await p.getByRole('button', { name: 'Новий користувач' }).click();
-    await expect(p.getByRole('dialog', { name: 'Новий користувач' })).toBeVisible();
+    await expect(p.locator('.users__email', { hasText: 'admin@example.com' })).toBeVisible(); // table row or phone record
+    await p.getByRole('button', { name: 'Створити користувача' }).click();
+    await expect(p.getByRole('dialog', { name: 'Створення користувача' })).toBeVisible();
   } },
   { name: 'settings', path: '/settings/integrations', heading: 'Налаштування', ready: (p: Page) => expect(p.getByRole('heading', { name: 'Slack' })).toBeVisible() },
 ] as const;
@@ -214,7 +215,7 @@ test('create dialog: background is inert, Escape with input asks first, focus re
 
 for (const form of [
   { path: '/servers', opener: 'Додати сервер', title: 'Новий сервер', field: 'Назва нового сервера', value: 'draft-server' },
-  { path: '/users', opener: 'Новий користувач', title: 'Новий користувач', field: 'Email', value: 'draft@example.com' },
+  { path: '/users', opener: 'Створити користувача', title: 'Створення користувача', field: 'Email', value: 'draft@example.com' },
 ]) {
   test(`${form.title}: discarding hides the fields, nothing can be submitted, "back" restores data and focus`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });

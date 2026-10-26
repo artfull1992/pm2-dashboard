@@ -153,20 +153,42 @@ describe('user administration', () => {
     expect(calls.some((c) => c.url.startsWith('/api/users'))).toBe(false);
   });
 
-  it('admin: one table; own row marked without actions; other rows have a "Дії" menu', async () => {
-    backend('admin');
+  it('admin: one table; own row marked «Ви» with a read-only menu; access is said without guessing; no per-row requests', async () => {
+    const calls = backend('admin');
     renderApp('/');
     await userEvent.setup().click(await screen.findByRole('link', { name: 'Користувачі' }));
     const table = await screen.findByRole('table');
     const own = within(table).getByRole('rowheader', { name: /admin@example\.test/ }).closest('tr') as HTMLElement;
     expect(within(own).getByText('Ви')).toBeTruthy();
-    expect(within(own).getByText(/Власний обліковий запис/)).toBeTruthy();
-    expect(within(own).queryByRole('button', { name: /^Дії/ })).toBeNull();
-    expect(within(table).getByRole('button', { name: 'Дії: other@example.test' })).toBeTruthy();
-    expect(within(table).getAllByRole('columnheader').map((c) => c.textContent)).toEqual(['Email', 'Роль', 'Доступ', 'Активність', 'Створено', 'Дії']);
+    expect(within(own).getByText('Повний доступ')).toBeTruthy();
+    const other = within(table).getByRole('rowheader', { name: /other@example\.test/ }).closest('tr') as HTMLElement;
+    expect(within(other).getByText('За наданими доступами')).toBeTruthy(); // no grant summary is invented
+    expect(within(other).getByText('Активний')).toBeTruthy();
+    expect(within(table).getAllByRole('columnheader').map((c) => c.textContent)).toEqual(['Email', 'Роль', 'Доступ', 'Активність', 'Дії']);
+    // One list request; nothing per row (no access summaries are fetched).
+    expect(calls.filter((c) => c.url.startsWith('/api/users'))).toHaveLength(1); // one page
+    expect(calls.some((c) => c.url.includes('/access'))).toBe(false);
   });
 
-  it('create: validation, CSRF + exact body, password cleared, list reloaded; duplicate → conflict message', async () => {
+  it('own account: «Роль і активність» opens read-only details (no form, no request); no access editor in the menu', async () => {
+    const calls = backend('admin');
+    renderApp('/users');
+    const u = userEvent.setup();
+    await u.click(await screen.findByRole('button', { name: 'Дії: admin@example.test' }));
+    expect(screen.queryByRole('menuitem', { name: 'Сервери та сервіси' })).toBeNull();
+    await u.click(screen.getByRole('menuitem', { name: 'Роль і активність' }));
+    const dialog = screen.getByRole('dialog', { name: 'Ваш обліковий запис' });
+    expect(within(dialog).getByText('Власну роль та активність змінює інший адміністратор')).toBeTruthy();
+    expect(within(dialog).queryByRole('combobox')).toBeNull();
+    expect(within(dialog).queryByRole('checkbox')).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Зберегти' })).toBeNull();
+    await u.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Дії: admin@example.test' }));
+    expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
+  });
+
+  it('create: validation, CSRF + exact body {email, password, role} (no isActive), password cleared, list reloaded; duplicate keeps email and role', async () => {
     let created = 0;
     const calls = backend('admin', (req) => {
       if (req.url === '/api/users' && req.method === 'POST') {
@@ -177,85 +199,139 @@ describe('user administration', () => {
     });
     renderApp('/users');
     const u = userEvent.setup();
-    await u.click(await screen.findByRole('button', { name: 'Новий користувач' }));
-    const form = screen.getByRole('form', { name: 'Новий користувач' });
-    await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
+    await u.click(await screen.findByRole('button', { name: 'Створити користувача' }));
+    const form = screen.getByRole('form', { name: 'Створення користувача' });
+    expect(within(form).getByText('Новий користувач створюється активним')).toBeTruthy();
+    expect(within(form).getByLabelText<HTMLSelectElement>('Роль').value).toBe('viewer'); // safe default
+    expect(within(form).getByLabelText<HTMLInputElement>('Початковий пароль').type).toBe('password');
+    await u.click(within(form).getByRole('button', { name: 'Створити' }));
     expect(within(form).getByText('Введіть коректний email.')).toBeTruthy();
     expect(posts(calls, '/api/users')).toHaveLength(0);
     await u.type(within(form).getByLabelText('Email'), 'new@example.test');
     await u.type(within(form).getByLabelText('Початковий пароль'), NEXT);
     await u.selectOptions(within(form).getByLabelText('Роль'), 'operator');
     const listsBefore = calls.filter((c) => c.url.startsWith('/api/users?')).length;
-    await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
-    expect(await screen.findByText('Користувача new@example.test створено (Оператор).')).toBeTruthy();
+    await u.click(within(form).getByRole('button', { name: 'Створити' }));
+    expect(await screen.findByText('Користувача new@example.test створено (Оператор, активний).')).toBeTruthy();
     const sent = posts(calls, '/api/users')[0];
     expect(sent?.headers.get('x-csrf-token')).toBe(CSRF);
     expect(JSON.parse(sent?.body ?? '{}')).toEqual({ email: 'new@example.test', password: NEXT, role: 'operator' });
     expect(screen.queryByRole('dialog')).toBeNull(); // closed on success: the password left the page with the form
     expect(document.body.innerHTML).not.toContain(NEXT);
     await waitFor(() => { expect(calls.filter((c) => c.url.startsWith('/api/users?')).length).toBeGreaterThan(listsBefore); });
-    await u.click(screen.getByRole('button', { name: 'Новий користувач' }));
-    const again = screen.getByRole('form', { name: 'Новий користувач' });
+    await u.click(screen.getByRole('button', { name: 'Створити користувача' }));
+    const again = screen.getByRole('form', { name: 'Створення користувача' });
     expect(within(again).getByLabelText<HTMLInputElement>('Початковий пароль').value).toBe('');
     await u.type(within(again).getByLabelText('Email'), 'new@example.test');
     await u.type(within(again).getByLabelText('Початковий пароль'), NEXT);
-    await u.click(within(again).getByRole('button', { name: 'Створити користувача' }));
-    expect(await within(again).findByText('Користувач із таким email уже існує.')).toBeTruthy();
+    await u.selectOptions(within(again).getByLabelText('Роль'), 'operator');
+    await u.click(within(again).getByRole('button', { name: 'Створити' }));
+    expect(await within(again).findByText(/Користувач із таким email уже існує\./)).toBeTruthy();
     expect(within(again).getByLabelText<HTMLInputElement>('Початковий пароль').value).toBe(''); // cleared after a failed request too
+    expect(within(again).getByLabelText<HTMLInputElement>('Email').value).toBe('new@example.test');
+    expect(within(again).getByLabelText<HTMLSelectElement>('Роль').value).toBe('operator');
     expect(document.body.innerHTML).not.toContain(NEXT);
   });
 
-  it('role change: menu → dialog → PATCH {role} with CSRF; success explained; Escape cancels without a request', async () => {
-    const calls = backend('admin', (req) => (req.method === 'PATCH' ? json(200, user(OTHER_ID, 'other@example.test', 'operator')) : undefined));
+  async function openEdit(u: ReturnType<typeof userEvent.setup>, email = 'other@example.test') {
+    await u.click(await screen.findByRole('button', { name: `Дії: ${email}` }));
+    await u.click(screen.getByRole('menuitem', { name: 'Роль і активність' }));
+    return screen.getByRole('form', { name: 'Роль і активність' });
+  }
+  const patches = (calls: RecordedRequest[]) => calls.filter((c) => c.method === 'PATCH');
+
+  it.each([
+    ['role only', async (u: ReturnType<typeof userEvent.setup>, f: HTMLElement) => { await u.selectOptions(within(f).getByLabelText('Роль'), 'operator'); }, { role: 'operator' }, user(OTHER_ID, 'other@example.test', 'operator'), /other@example\.test: роль — «Оператор»\. Усі його сесії завершено\./],
+    ['activity only', async (u: ReturnType<typeof userEvent.setup>, f: HTMLElement) => { await u.click(within(f).getByLabelText('Активний користувач')); }, { isActive: false }, user(OTHER_ID, 'other@example.test', 'viewer', false), /other@example\.test: деактивовано\. Усі його сесії завершено\./],
+    ['both in ONE request', async (u: ReturnType<typeof userEvent.setup>, f: HTMLElement) => { await u.selectOptions(within(f).getByLabelText('Роль'), 'admin'); await u.click(within(f).getByLabelText('Активний користувач')); }, { role: 'admin', isActive: false }, user(OTHER_ID, 'other@example.test', 'admin', false), /роль — «Адміністратор», деактивовано/],
+  ])('edit — %s: the change is listed before saving; one PATCH with only the changed fields and CSRF', async (_n, change, body, answer, text) => {
+    const calls = backend('admin', (req) => (req.method === 'PATCH' ? json(200, answer) : undefined));
     renderApp('/users');
     const u = userEvent.setup();
-    await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Змінити роль' }));
-    expect(screen.getByRole('dialog', { name: 'Змінити роль: other@example.test' })).toBeTruthy();
+    const form = await openEdit(u);
+    expect(within(form).getByText('other@example.test')).toBeTruthy(); // the target, read-only
+    expect(within(form).getByRole<HTMLButtonElement>('button', { name: 'Зберегти' }).disabled).toBe(true); // unchanged
+    expect(within(form).getByText('Змін немає.')).toBeTruthy();
+    await change(u, form);
+    expect(within(form).getByText('Буде змінено для other@example.test')).toBeTruthy();
+    if ('isActive' in body) expect(within(form).getByText(/деактивувати — користувач не зможе увійти/)).toBeTruthy();
+    expect(within(form).getByText('Усі сесії користувача буде завершено одразу після збереження.')).toBeTruthy();
+    await u.click(within(form).getByRole('button', { name: 'Зберегти' }));
+    expect(await screen.findByText(text)).toBeTruthy();
+    expect(patches(calls)).toHaveLength(1);
+    expect(patches(calls)[0]?.url).toBe(`/api/users/${OTHER_ID}`);
+    expect(patches(calls)[0]?.headers.get('x-csrf-token')).toBe(CSRF);
+    expect(JSON.parse(patches(calls)[0]?.body ?? '{}')).toEqual(body);
+  });
+
+  it('edit: clean Escape closes without a request; a dirty close asks first and «Повернутися до форми» keeps the values', async () => {
+    const calls = backend('admin');
+    renderApp('/users');
+    const u = userEvent.setup();
+    await openEdit(u);
     await u.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).toBeNull();
-    await u.click(screen.getByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Змінити роль' }));
-    const dialog = screen.getByRole('dialog', { name: 'Змінити роль: other@example.test' });
-    expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Змінити роль' }).disabled).toBe(true); // unchanged role
-    await u.selectOptions(within(dialog).getByLabelText('Нова роль'), 'operator');
-    await u.click(within(dialog).getByRole('button', { name: 'Змінити роль' }));
-    expect(await screen.findByText(/Роль other@example\.test змінено на «Оператор»\. Усі його сесії завершено\./)).toBeTruthy();
-    const sent = calls.filter((c) => c.method === 'PATCH');
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.url).toBe(`/api/users/${OTHER_ID}`);
-    expect(sent[0]?.headers.get('x-csrf-token')).toBe(CSRF);
-    expect(JSON.parse(sent[0]?.body ?? '{}')).toEqual({ role: 'operator' });
+    const form = await openEdit(u);
+    await u.selectOptions(within(form).getByLabelText('Роль'), 'operator');
+    await u.keyboard('{Escape}');
+    expect(screen.getByText(/Введені дані не збережено/)).toBeTruthy();
+    await u.click(screen.getByRole('button', { name: 'Повернутися до форми' }));
+    expect(within(screen.getByRole('form', { name: 'Роль і активність' })).getByLabelText<HTMLSelectElement>('Роль').value).toBe('operator');
+    expect(patches(calls)).toHaveLength(0);
   });
 
   it.each([
-    ['last admin', () => json(409, {}), 'Не можна залишити систему без активного адміністратора.'],
-    ['network error', () => Promise.reject(new TypeError('fetch failed')), /дія могла виконатися/],
-  ])('deactivate with confirmation; %s is explained and never retried', async (_n, reply, text) => {
+    ['last admin (409)', () => json(409, {}), 'Не вдалося зберегти', /Не можна залишити систему без активного адміністратора\./],
+    ['self change (403)', () => json(403, {}), 'Не вдалося зберегти', /Власну роль чи активність змінює лише інший адміністратор\./],
+    ['rate limit (429)', () => json(429, {}, { 'retry-after': '30' }), 'Не вдалося зберегти', /Забагато змін поспіль\. Спробуйте через 30 с\./],
+  ])('edit — %s: explained in the form, the draft kept, never retried', async (_n, reply, title, text) => {
     const calls = backend('admin', (req) => (req.method === 'PATCH' ? reply() : undefined));
     renderApp('/users');
     const u = userEvent.setup();
-    await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Деактивувати' }));
-    const dialog = screen.getByRole('dialog', { name: 'Деактивувати: other@example.test' });
-    expect(within(dialog).getByText(/Усі сесії користувача буде завершено/)).toBeTruthy();
-    await u.click(within(dialog).getByRole('button', { name: 'Деактивувати' }));
-    expect(await within(dialog).findByText(text)).toBeTruthy();
+    const form = await openEdit(u);
+    await u.click(within(form).getByLabelText('Активний користувач'));
+    await u.click(within(form).getByRole('button', { name: 'Зберегти' }));
+    expect(await within(form).findByText(title)).toBeTruthy();
+    expect(within(form).getByText(text)).toBeTruthy();
+    expect(within(form).getByLabelText<HTMLInputElement>('Активний користувач').checked).toBe(false);
     await new Promise((r) => setTimeout(r, 50));
-    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
-    expect(JSON.parse(calls.find((c) => c.method === 'PATCH')?.body ?? '{}')).toEqual({ isActive: false });
+    expect(patches(calls)).toHaveLength(1);
   });
 
-  it('pending mutation: buttons locked, dialog cannot be dismissed; leaving the page ignores the late answer', async () => {
+  it('edit — no answer (network): the result is unknown, not a failure; «Перечитати стан» re-reads the list; nothing is resent', async () => {
+    let lists = 0;
+    const calls = backend('admin', (req) => {
+      if (req.method === 'PATCH') return Promise.reject(new TypeError('fetch failed'));
+      if (req.url.startsWith('/api/users?')) {
+        lists += 1;
+        return json(200, page([user(ADMIN_ID, 'admin@example.test', 'admin'), user(OTHER_ID, 'other@example.test', 'viewer', lists < 2)]));
+      }
+      return undefined;
+    });
+    renderApp('/users');
+    const u = userEvent.setup();
+    const form = await openEdit(u);
+    await u.click(within(form).getByLabelText('Активний користувач'));
+    await u.click(within(form).getByRole('button', { name: 'Зберегти' }));
+    expect(await within(form).findByText('Результат невідомий')).toBeTruthy();
+    expect(within(form).getByText(/дія могла виконатися/)).toBeTruthy();
+    await u.click(within(form).getByRole('button', { name: 'Перечитати стан' }));
+    expect(await within(form).findByText('За останнім списком: Спостерігач, неактивний.')).toBeTruthy();
+    expect(patches(calls)).toHaveLength(1);
+  });
+
+  it('pending mutation: fields and buttons locked, Escape and ✕ do not close; leaving the page ignores the late answer', async () => {
     const answer = deferred<Response>();
     const calls = backend('admin', (req) => (req.method === 'PATCH' ? answer.promise : undefined));
     renderApp('/users');
     const u = userEvent.setup();
-    await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Деактивувати' }));
-    const dialog = screen.getByRole('dialog');
-    await u.click(within(dialog).getByRole('button', { name: 'Деактивувати' }));
-    expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Збереження…' }).disabled).toBe(true);
+    const form = await openEdit(u);
+    await u.click(within(form).getByLabelText('Активний користувач'));
+    await u.click(within(form).getByRole('button', { name: 'Зберегти' }));
+    expect(within(form).getByRole<HTMLButtonElement>('button', { name: 'Збереження…' }).disabled).toBe(true);
+    expect(within(form).getByLabelText<HTMLSelectElement>('Роль').disabled).toBe(true);
+    expect(within(form).getByLabelText<HTMLInputElement>('Активний користувач').disabled).toBe(true);
+    expect(within(screen.getByRole('dialog')).getByRole<HTMLButtonElement>('button', { name: 'Закрити' }).disabled).toBe(true);
     await u.keyboard('{Escape}');
     expect(screen.getByRole('dialog')).toBeTruthy();
     await u.click(screen.getByRole('link', { name: 'Огляд' }));
@@ -268,10 +344,22 @@ describe('user administration', () => {
     backend('admin', (req) => (req.method === 'PATCH' ? json(401, {}) : undefined));
     renderApp('/users');
     const u = userEvent.setup();
-    await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Деактивувати' }));
-    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Деактивувати' }));
+    const form = await openEdit(u);
+    await u.click(within(form).getByLabelText('Активний користувач'));
+    await u.click(within(form).getByRole('button', { name: 'Зберегти' }));
     expect(await screen.findByText('Сесія завершилась. Увійдіть знову.')).toBeTruthy();
+  });
+
+  it('«Сервери та сервіси» opens the existing access editor; closing it keeps the page', async () => {
+    backend('admin', (req) => (req.url === `/api/users/${OTHER_ID}/access` ? json(200, { userId: OTHER_ID, email: 'other@example.test', role: 'viewer', isActive: true, global: false, revision: 1, servers: [] }) : undefined));
+    renderApp('/users');
+    const u = userEvent.setup();
+    await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
+    await u.click(screen.getByRole('menuitem', { name: 'Сервери та сервіси' }));
+    expect(await screen.findByRole('dialog', { name: /^Доступи: other@example\.test/ })).toBeTruthy();
+    await u.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByText('Сторінка 1')).toBeTruthy();
   });
 });
 
@@ -342,14 +430,16 @@ describe('stale responses across sessions', () => {
     });
     renderApp('/users');
     const u = userEvent.setup();
-    await u.click(await screen.findByRole('button', { name: 'Новий користувач' }));
-    const form = screen.getByRole('form', { name: 'Новий користувач' });
+    await u.click(await screen.findByRole('button', { name: 'Створити користувача' }));
+    const form = screen.getByRole('form', { name: 'Створення користувача' });
     await u.type(within(form).getByLabelText('Email'), 'late@example.test');
     await u.type(within(form).getByLabelText('Початковий пароль'), NEXT);
-    await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
+    await u.click(within(form).getByRole('button', { name: 'Створити' }));
     await u.click(screen.getByRole('button', { name: 'Дії: other@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Деактивувати' }));
-    await u.click(within(screen.getByRole('dialog', { name: 'Деактивувати: other@example.test' })).getByRole('button', { name: 'Деактивувати' }));
+    await u.click(screen.getByRole('menuitem', { name: 'Роль і активність' }));
+    const edit = screen.getByRole('form', { name: 'Роль і активність' });
+    await u.click(within(edit).getByLabelText('Активний користувач'));
+    await u.click(within(edit).getByRole('button', { name: 'Зберегти' }));
     await u.click(screen.getByRole('link', { name: 'Огляд' }));
     const lists = calls.filter((c) => c.url.startsWith('/api/users?')).length;
     await act(async () => {

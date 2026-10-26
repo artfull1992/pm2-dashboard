@@ -35,15 +35,18 @@ test('admin creates a user → the user changes the password → every session e
   await expect(admin.getByRole('heading', { name: 'Користувачі' })).toBeVisible();
   const ownRow = admin.getByRole('row').filter({ hasText: ADMIN.email });
   await expect(ownRow.getByText('Ви', { exact: true })).toBeVisible();
-  await expect(ownRow.getByRole('button', { name: /^Дії/ })).toHaveCount(0);
+  // Own account: a read-only menu (details only) — no access editor, no mutation possible from here.
+  await ownRow.getByRole('button', { name: `Дії: ${ADMIN.email}` }).click();
+  await expect(admin.getByRole('menuitem')).toHaveText(['Роль і активність']);
+  await admin.keyboard.press('Escape');
 
-  await admin.getByRole('button', { name: 'Новий користувач' }).click();
-  const form = admin.getByRole('form', { name: 'Новий користувач' });
+  await admin.getByRole('button', { name: 'Створити користувача' }).click();
+  const form = admin.getByRole('form', { name: 'Створення користувача' });
   await form.getByLabel('Email').fill(MEMBER.email);
   await form.getByLabel('Початковий пароль').fill(MEMBER.first);
   await form.getByLabel('Роль', { exact: true }).selectOption('operator');
-  await form.getByRole('button', { name: 'Створити користувача' }).click();
-  await expect(admin.getByText(`Користувача ${MEMBER.email} створено (Оператор).`)).toBeVisible();
+  await form.getByRole('button', { name: 'Створити', exact: true }).click();
+  await expect(admin.getByText(`Користувача ${MEMBER.email} створено (Оператор, активний).`)).toBeVisible();
   await expect(admin.getByRole('dialog')).toHaveCount(0); // closed on success; the password left the page with the form
   await expect(admin.getByRole('row').filter({ hasText: MEMBER.email })).toContainText('Оператор');
 
@@ -79,11 +82,11 @@ test('admin creates a user → the user changes the password → every session e
 
   // Role change by the admin ends the user's session.
   await admin.getByRole('button', { name: `Дії: ${MEMBER.email}` }).click();
-  await admin.getByRole('menuitem', { name: 'Змінити роль' }).click();
-  const roleDialog = admin.getByRole('dialog', { name: `Змінити роль: ${MEMBER.email}` });
-  await roleDialog.getByLabel('Нова роль').selectOption('viewer');
-  await roleDialog.getByRole('button', { name: 'Змінити роль' }).click();
-  await expect(admin.getByText(`Роль ${MEMBER.email} змінено на «Спостерігач». Усі його сесії завершено.`)).toBeVisible();
+  await admin.getByRole('menuitem', { name: 'Роль і активність' }).click();
+  const roleForm = admin.getByRole('form', { name: 'Роль і активність' });
+  await roleForm.getByLabel('Роль', { exact: true }).selectOption('viewer');
+  await roleForm.getByRole('button', { name: 'Зберегти' }).click();
+  await expect(admin.getByText(`${MEMBER.email}: роль — «Спостерігач». Усі його сесії завершено.`)).toBeVisible();
   await first.reload();
   await expect(first.getByLabel('Email')).toBeVisible();
   await signIn(first, MEMBER.email, MEMBER.second);
@@ -91,10 +94,13 @@ test('admin creates a user → the user changes the password → every session e
 
   // Deactivation ends it again; the account cannot be used.
   await admin.getByRole('button', { name: `Дії: ${MEMBER.email}` }).click();
-  await admin.getByRole('menuitem', { name: 'Деактивувати' }).click();
-  await admin.getByRole('dialog').getByRole('button', { name: 'Деактивувати' }).click();
-  await expect(admin.getByText(`${MEMBER.email} деактивовано. Усі його сесії завершено.`)).toBeVisible();
-  await expect(admin.getByRole('row').filter({ hasText: MEMBER.email })).toContainText('Деактивований');
+  await admin.getByRole('menuitem', { name: 'Роль і активність' }).click();
+  const activeForm = admin.getByRole('form', { name: 'Роль і активність' });
+  await activeForm.getByLabel('Активний користувач').uncheck();
+  await expect(activeForm).toContainText('деактивувати — користувач не зможе увійти');
+  await activeForm.getByRole('button', { name: 'Зберегти' }).click();
+  await expect(admin.getByText(`${MEMBER.email}: деактивовано. Усі його сесії завершено.`)).toBeVisible();
+  await expect(admin.getByRole('row').filter({ hasText: MEMBER.email })).toContainText('Неактивний');
   await first.reload();
   await expect(first.getByLabel('Email')).toBeVisible();
 
@@ -117,12 +123,13 @@ test('mobile 390 px: users table and account form fit, keyboard menu, Escape clo
   await signIn(page, ADMIN.email, ADMIN.password);
   await page.getByRole('button', { name: 'Меню' }).click();
   await page.getByRole('link', { name: 'Користувачі' }).click();
-  await expect(page.getByRole('table')).toBeVisible();
+  // 390 px: records instead of the table (USR-01 mobile).
+  await expect(page.getByRole('article', { name: MEMBER.email })).toBeVisible();
   expect(await noHorizontalScroll(page)).toBe(true);
   const trigger = page.getByRole('button', { name: `Дії: ${MEMBER.email}` });
   await trigger.focus();
   await page.keyboard.press('Enter');
-  await page.getByRole('menuitem', { name: 'Змінити роль' }).click();
+  await page.getByRole('menuitem', { name: 'Роль і активність' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -147,27 +154,31 @@ test('more than 100 users: keyset pages ("Далі"/"Назад"), a user on pag
     await page.goto('/users');
     const pager = page.getByRole('navigation', { name: 'Сторінки користувачів' });
     await expect(pager.getByText('Сторінка 1')).toBeVisible();
-    await expect(page.getByRole('table').getByRole('rowheader')).toHaveCount(100);
+    // A table on wide windows, records at 390 px (USR-01 mobile).
+    const entries = () => (width > 760 ? page.getByRole('table').getByRole('rowheader') : page.getByRole('article'));
+    await expect(entries()).toHaveCount(100);
     await expect(pager.getByRole('button', { name: 'Назад' })).toBeDisabled();
     await pager.getByRole('button', { name: 'Далі' }).click();
     await expect(pager.getByText('Сторінка 2')).toBeVisible();
-    await expect(page.getByRole('row').filter({ hasText: 'bulk-105@example.test' })).toBeVisible();
+    await expect(entries().filter({ hasText: 'bulk-105@example.test' })).toBeVisible();
     await expect(pager.getByRole('button', { name: 'Далі' })).toBeDisabled();
     expect(await noHorizontalScroll(page)).toBe(true);
     if (width === 1440) {
       await page.getByRole('button', { name: 'Дії: bulk-104@example.test' }).click();
-      await page.getByRole('menuitem', { name: 'Деактивувати' }).click();
-      await page.getByRole('dialog').getByRole('button', { name: 'Деактивувати' }).click();
-      await expect(page.getByText('bulk-104@example.test деактивовано. Усі його сесії завершено.')).toBeVisible();
-      await expect(page.getByRole('row').filter({ hasText: 'bulk-104@example.test' })).toContainText('Деактивований');
+      await page.getByRole('menuitem', { name: 'Роль і активність' }).click();
+      const bulkForm = page.getByRole('form', { name: 'Роль і активність' });
+      await bulkForm.getByLabel('Активний користувач').uncheck();
+      await bulkForm.getByRole('button', { name: 'Зберегти' }).click();
+      await expect(page.getByText('bulk-104@example.test: деактивовано. Усі його сесії завершено.')).toBeVisible();
+      await expect(page.getByRole('row').filter({ hasText: 'bulk-104@example.test' })).toContainText('Неактивний');
       await expect(pager.getByText('Сторінка 2')).toBeVisible();
       await pager.getByRole('button', { name: 'Назад' }).click();
       await expect(pager.getByText('Сторінка 1')).toBeVisible();
-      await page.getByRole('button', { name: 'Новий користувач' }).click();
-      const form = page.getByRole('form', { name: 'Новий користувач' });
+      await page.getByRole('button', { name: 'Створити користувача' }).click();
+      const form = page.getByRole('form', { name: 'Створення користувача' });
       await form.getByLabel('Email').fill('after-bulk@example.test');
       await form.getByLabel('Початковий пароль').fill(pw());
-      await form.getByRole('button', { name: 'Створити користувача' }).click();
+      await form.getByRole('button', { name: 'Створити', exact: true }).click();
       await expect(page.getByText(/after-bulk@example\.test створено.*наприкінці списку/)).toBeVisible();
       await page.getByRole('button', { name: 'Показати after-bulk@example.test' }).click();
       await expect(page.getByRole('row').filter({ hasText: 'after-bulk@example.test' })).toBeVisible();

@@ -66,7 +66,7 @@ const appNames = async (page: Page) => {
 async function openAccess(admin: Page, email: string) {
   await admin.goto('/users');
   await admin.getByRole('button', { name: `Дії: ${email}` }).click();
-  await admin.getByRole('menuitem', { name: 'Доступи' }).click();
+  await admin.getByRole('menuitem', { name: 'Сервери та сервіси' }).click();
   return admin.getByRole('dialog', { name: `Доступи: ${email}` });
 }
 

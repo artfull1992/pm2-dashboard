@@ -40,7 +40,7 @@ const puts = (calls: RecordedRequest[]) => calls.filter((c) => c.method === 'PUT
 async function open(email = 'other@example.test') {
   const u = userEvent.setup();
   await u.click(await screen.findByRole('button', { name: `Дії: ${email}` }));
-  await u.click(screen.getByRole('menuitem', { name: 'Доступи' }));
+  await u.click(screen.getByRole('menuitem', { name: 'Сервери та сервіси' }));
   return u;
 }
 

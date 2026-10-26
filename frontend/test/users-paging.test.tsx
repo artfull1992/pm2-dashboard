@@ -106,7 +106,7 @@ describe('user pages', () => {
     await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
     const u = userEvent.setup();
     await u.click(within(pager()).getByRole('button', { name: 'Далі' }));
-    expect(await screen.findByRole('heading', { name: 'Не вдалося оновити список' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Не вдалося завантажити користувачів' })).toBeTruthy();
     expect(screen.queryByRole('table')).toBeNull();
     expect(within(pager()).getByText('Сторінка 2')).toBeTruthy();
     fail = false;
@@ -121,22 +121,22 @@ describe('user pages', () => {
     const u = userEvent.setup();
     await u.click(within(pager()).getByRole('button', { name: 'Далі' }));
     await waitFor(() => { expect(rows()[0]).toContain('user100@example.test'); });
-    await u.click(screen.getByRole('button', { name: 'Дії: user150@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Деактивувати' }));
-    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Деактивувати' }));
-    expect(await screen.findByText('user150@example.test деактивовано. Усі його сесії завершено.')).toBeTruthy();
+    const edit = async (email: string, change: (form: HTMLElement) => Promise<void>) => {
+      await u.click(screen.getByRole('button', { name: `Дії: ${email}` }));
+      await u.click(screen.getByRole('menuitem', { name: 'Роль і активність' }));
+      const form = screen.getByRole('form', { name: 'Роль і активність' });
+      await change(form);
+      await u.click(within(form).getByRole('button', { name: 'Зберегти' }));
+    };
+    await edit('user150@example.test', async (f) => { await u.click(within(f).getByLabelText('Активний користувач')); });
+    expect(await screen.findByText('user150@example.test: деактивовано. Усі його сесії завершено.')).toBeTruthy();
     expect(calls.find((c) => c.method === 'PATCH')?.url).toBe(`/api/users/${id(150)}`);
-    await waitFor(() => { expect(screen.getByRole('row', { name: /user150@example\.test/ }).textContent).toContain('Деактивований'); });
+    await waitFor(() => { expect(screen.getByRole('row', { name: /user150@example\.test/ }).textContent).toContain('Неактивний'); });
     expect(lists(calls).at(-1)).toBe(id(99));
-    await u.click(screen.getByRole('button', { name: 'Дії: user150@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Активувати' }));
-    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Активувати' }));
-    expect(await screen.findByText(/user150@example\.test знову активний/)).toBeTruthy();
-    await u.click(screen.getByRole('button', { name: 'Дії: user160@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Змінити роль' }));
-    await u.selectOptions(within(screen.getByRole('dialog')).getByLabelText('Нова роль'), 'admin');
-    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Змінити роль' }));
-    expect(await screen.findByText(/Роль user160@example\.test змінено на «Адміністратор»/)).toBeTruthy();
+    await edit('user150@example.test', async (f) => { await u.click(within(f).getByLabelText('Активний користувач')); });
+    expect(await screen.findByText(/user150@example\.test: знову активний/)).toBeTruthy();
+    await edit('user160@example.test', async (f) => { await u.selectOptions(within(f).getByLabelText('Роль'), 'admin'); });
+    expect(await screen.findByText(/user160@example\.test: роль — «Адміністратор»/)).toBeTruthy();
     expect(within(pager()).getByText('Сторінка 2')).toBeTruthy();
   }, MULTI_PAGE_TEST_MS);
 
@@ -145,12 +145,12 @@ describe('user pages', () => {
     renderApp('/users');
     await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
     const u = userEvent.setup();
-    await u.click(screen.getByRole('button', { name: 'Новий користувач' }));
-    const form = screen.getByRole('form', { name: 'Новий користувач' });
+    await u.click(screen.getByRole('button', { name: 'Створити користувача' }));
+    const form = screen.getByRole('form', { name: 'Створення користувача' });
     await u.type(within(form).getByLabelText('Email'), 'fresh@example.test');
     await u.type(within(form).getByLabelText('Початковий пароль'), 'synthetic-Fresh-Passw0rd');
-    await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
-    const notice = await screen.findByText(/Користувача fresh@example\.test створено \(Оператор\)/);
+    await u.click(within(form).getByRole('button', { name: 'Створити' }));
+    const notice = await screen.findByText(/Користувача fresh@example\.test створено \(Оператор, активний\)/);
     expect(notice.textContent).toContain('наприкінці списку');
     expect(rows().some((r) => r.includes('fresh@example.test'))).toBe(false); // nothing invented on page 1
     await u.click(screen.getByRole('button', { name: 'Показати fresh@example.test' }));
@@ -166,27 +166,29 @@ describe('user pages', () => {
     renderApp('/users');
     await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
     const u = userEvent.setup();
-    await u.click(screen.getByRole('button', { name: 'Новий користувач' }));
-    const form = screen.getByRole('form', { name: 'Новий користувач' });
+    await u.click(screen.getByRole('button', { name: 'Створити користувача' }));
+    const form = screen.getByRole('form', { name: 'Створення користувача' });
     await u.type(within(form).getByLabelText('Email'), 'dup@example.test');
     await u.type(within(form).getByLabelText('Початковий пароль'), 'synthetic-Dup-Passw0rd-1');
-    await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
-    expect(await within(form).findByText('Користувач із таким email уже існує.')).toBeTruthy();
+    await u.click(within(form).getByRole('button', { name: 'Створити' }));
+    expect(await within(form).findByText(/Користувач із таким email уже існує\./)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Показати .*@/ })).toBeNull();
     expect(rows().some((r) => r.includes('dup@example.test'))).toBe(false);
   });
 
-  it('own row stays marked without actions; logout and a new session start again on page 1 with no dialog', async () => {
+  it('own row stays marked with a read-only menu; logout and a new session start again on page 1 with no dialog', async () => {
     const { calls } = backend(230);
     renderApp('/users');
     await waitFor(() => { expect(rows()).toHaveLength(PAGE); });
     expect(within(screen.getByRole('row', { name: /admin@example\.test/ })).getByText('Ви')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Дії: admin@example.test' })).toBeNull();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Дії: admin@example.test' }));
+    expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Роль і активність']); // no access editor, no mutation
+    await userEvent.setup().keyboard('{Escape}');
     const u = userEvent.setup();
     await u.click(within(pager()).getByRole('button', { name: 'Далі' }));
     await waitFor(() => { expect(rows()[0]).toContain('user100@example.test'); });
     await u.click(screen.getByRole('button', { name: 'Дії: user120@example.test' }));
-    await u.click(screen.getByRole('menuitem', { name: 'Змінити роль' }));
+    await u.click(screen.getByRole('menuitem', { name: 'Роль і активність' }));
     expect(screen.getByRole('dialog')).toBeTruthy();
     await u.keyboard('{Escape}');
     await u.click(screen.getByRole('button', { name: 'Вийти' }));
@@ -215,11 +217,11 @@ describe('user pages', () => {
 // CURRENT page (its cursor), decide visibility from the current data, and never reload the abandoned cursor.
 describe('create while paging', () => {
   async function startCreate(u: ReturnType<typeof userEvent.setup>, email = 'fresh@example.test') {
-    await u.click(screen.getByRole('button', { name: 'Новий користувач' }));
-    const form = screen.getByRole('form', { name: 'Новий користувач' });
+    await u.click(screen.getByRole('button', { name: 'Створити користувача' }));
+    const form = screen.getByRole('form', { name: 'Створення користувача' });
     await u.type(within(form).getByLabelText('Email'), email);
     await u.type(within(form).getByLabelText('Початковий пароль'), 'synthetic-Fresh-Passw0rd');
-    await u.click(within(form).getByRole('button', { name: 'Створити користувача' }));
+    await u.click(within(form).getByRole('button', { name: 'Створити' }));
   }
   function delayedCreate(total: number, reply: () => Response) {
     const post = deferred<undefined>();
@@ -289,7 +291,7 @@ describe('create while paging', () => {
     const before = lists(api.calls).length;
     api.release(undefined);
     await settle();
-    expect(await screen.findByText('Користувач із таким email уже існує.')).toBeTruthy();
+    expect(await screen.findByText(/Користувач із таким email уже існує\./)).toBeTruthy();
     expect(lists(api.calls).length).toBe(before);
     expect(rows()[0]).toContain('user100@example.test');
     expect(rows().some((r) => r.includes('dup@example.test'))).toBe(false);
@@ -324,7 +326,7 @@ describe('create while paging', () => {
     api.users.push({ ...mk(150), email: 'fresh@example.test', role: 'operator' });
     api.release(undefined);
     await settle();
-    expect(await screen.findByText('Користувача fresh@example.test створено (Оператор).')).toBeTruthy();
+    expect(await screen.findByText('Користувача fresh@example.test створено (Оператор, активний).')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Показати fresh@example.test' })).toBeNull();
     await waitFor(() => { expect(rows().at(-1)).toContain('fresh@example.test'); });
     expect(within(pager()).getByText('Сторінка 2')).toBeTruthy();

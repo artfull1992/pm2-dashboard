@@ -90,9 +90,15 @@ export function Dialog({ title, children, onClose, actions, className, dismissib
  * inert and the form cannot be submitted (not even by Enter or requestSubmit). "Back" returns focus to the field that
  * was focused before the question (or the first field).
  */
-export function FormDialog({ title, submitLabel, pendingLabel, pending, dirty, onSubmit, onClose, children, className }: {
+export function FormDialog({ title, submitLabel, pendingLabel, pending, dirty, onSubmit, onClose, children, className, eyebrow, closeButton = false, submitDisabled = false }: {
   title: string;
   className?: string;
+  /** Small label above the title (drawers). */
+  eyebrow?: string;
+  /** A close button in the header (drawers): the same path as «Скасувати» — asks first when dirty, disabled while pending. */
+  closeButton?: boolean;
+  /** Submit not possible yet (e.g. nothing changed). */
+  submitDisabled?: boolean;
   submitLabel: string;
   pendingLabel: string;
   pending: boolean;
@@ -127,7 +133,8 @@ export function FormDialog({ title, submitLabel, pendingLabel, pending, dirty, o
   }, [discard]);
 
   return (
-    <Dialog title={title} onClose={request} dismissible={!pending} {...(className ? { className } : {})}>
+    <Dialog title={title} onClose={request} dismissible={!pending} {...(className ? { className } : {})} {...(eyebrow ? { eyebrow } : {})}
+      {...(closeButton ? { headerAction: <button type="button" className="button button--ghost icon-button" aria-label="Закрити" disabled={pending || discard} onClick={request}>✕</button> } : {})}>
       <form className="form-grid" aria-label={title} noValidate
         onSubmit={(event) => { if (discard || pending) { event.preventDefault(); return; } onSubmit(event); }}>
         <div ref={fieldsRef} className="form-grid" hidden={discard ? true : undefined} inert={discard ? true : undefined}>{children}</div>
@@ -142,7 +149,7 @@ export function FormDialog({ title, submitLabel, pendingLabel, pending, dirty, o
         ) : (
           <div className="form-actions">
             <button type="button" className="button" onClick={request} disabled={pending}>Скасувати</button>
-            <button type="submit" className="button button--primary" disabled={pending}>{pending ? pendingLabel : submitLabel}</button>
+            <button type="submit" className="button button--primary" disabled={pending || submitDisabled}>{pending ? pendingLabel : submitLabel}</button>
           </div>
         )}
       </form>
