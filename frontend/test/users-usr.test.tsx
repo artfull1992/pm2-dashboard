@@ -56,7 +56,7 @@ describe('USR-01 list: page-local search and role filter', () => {
     expect(listUrls(calls)).toEqual(['/api/users?limit=100', `/api/users?limit=100&after=${id(2)}`]);
   });
 
-  it('page and filters survive the edit drawer and the access editor', async () => {
+  it('page and filters survive the edit drawer and a visit to the access page', async () => {
     backend();
     renderApp('/users');
     await waitFor(() => { expect(rows()).toHaveLength(3); });
@@ -69,10 +69,10 @@ describe('USR-01 list: page-local search and role filter', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: `Дії: ${LONG}` })); // focus returns to the menu
     await u.click(screen.getByRole('button', { name: `Дії: ${LONG}` }));
     await u.click(screen.getByRole('menuitem', { name: 'Сервери та сервіси' }));
-    expect(await screen.findByRole('dialog', { name: new RegExp(`^Доступи: ${LONG.replace(/\./g, '\\.')}`) })).toBeTruthy();
-    await u.keyboard('{Escape}');
+    expect(await screen.findByRole('heading', { name: /^(Доступи користувача|Користувача не знайдено)$/ })).toBeTruthy();
+    await u.click(screen.getByRole('link', { name: '← Користувачі' }));
+    await waitFor(() => { expect(rows()).toEqual([LONG]); });
     expect(screen.getByLabelText<HTMLSelectElement>('Роль').value).toBe('operator');
-    expect(rows()).toEqual([LONG]);
     expect(screen.getByText('Сторінка 1')).toBeTruthy();
   });
 

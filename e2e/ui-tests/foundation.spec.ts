@@ -208,8 +208,9 @@ for (const theme of ['dark', 'light'] as const) {
       await expect(trigger).toBeFocused();
       await page.keyboard.press('Space');
       await page.getByRole('menuitem', { name: 'Сервери та сервіси' }).press('Enter');
-      const dialog = page.getByRole('dialog', { name: 'Доступи: operator@example.com' });
-      const box = dialog.getByRole('checkbox', { name: /^billing-api/ });
+      // The access page (ACL, ADR-035): a page, not a modal — no focus trap; dialogs only for small confirmations.
+      await expect(page.getByRole('heading', { level: 1, name: 'Доступи користувача' })).toBeVisible();
+      const box = page.getByRole('checkbox', { name: /^billing-api/ });
       await expect(box).toBeVisible();
       const size = await box.boundingBox();
       expect([Math.round(size?.width ?? 0), Math.round(size?.height ?? 0)]).toEqual([16, 16]);
@@ -217,12 +218,20 @@ for (const theme of ['dark', 'light'] as const) {
       await page.keyboard.press('Space');
       await expect(box).toBeChecked();
       if (shots) await page.screenshot({ path: `${shots}/foundation-access-${theme}-1366.png` });
-      // Escape with unsaved input asks first (input is never lost silently), "back" keeps it, closing returns focus.
+      // Leaving with unsaved input asks first (input is never lost silently); Escape keeps it and returns focus to
+      // the link; discarding leaves.
+      const back = page.getByRole('link', { name: '← Користувачі' });
+      await back.focus();
+      await page.keyboard.press('Enter');
+      const dialog = page.getByRole('dialog', { name: 'Скасувати зміни?' });
+      await expect(dialog).toBeVisible();
       await page.keyboard.press('Escape');
-      await expect(dialog.getByText(/Введені дані не збережено/)).toBeVisible();
-      await dialog.getByRole('button', { name: 'Закрити без збереження' }).click();
       await expect(dialog).toHaveCount(0);
-      await expect(trigger).toBeFocused();
+      await expect(back).toBeFocused();
+      await expect(box).toBeChecked();
+      await page.keyboard.press('Enter');
+      await dialog.getByRole('button', { name: 'Відкинути зміни' }).click();
+      await expect(page.getByRole('heading', { level: 1, name: 'Користувачі' })).toBeVisible();
       expect(mutations).toEqual([]);
     });
   });
@@ -288,19 +297,20 @@ for (const theme of ['dark', 'light'] as const) {
         const item = page.getByRole('menuitem', { name: 'Сервери та сервіси' });
         expect(await height(page, item)).toBeGreaterThanOrEqual(m.regular);
         await item.click();
-        const dialog = page.getByRole('dialog', { name: 'Доступи: operator@example.com' });
-        const box = dialog.getByRole('checkbox', { name: /^billing-api/ });
+        const editor = page.locator('.acl-editor');
+        const box = editor.getByRole('checkbox', { name: /^billing-api/ });
         await expect(box).toBeVisible();
         expect(await box.evaluate((e) => { const r = e.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; })).toEqual([16, 16]);
         // The label (the real hit area) is at least the compact size and toggles the box.
-        const label = dialog.locator('label.check').filter({ hasText: 'billing-api' });
+        const label = editor.locator('label.acl-service').filter({ hasText: 'billing-api' });
         expect(await height(page, label)).toBeGreaterThanOrEqual(32);
         await (m.touch ? label.tap() : label.click());
         await expect(box).toBeChecked();
-        expect(await height(page, dialog.getByLabel('Пошук сервісу'))).toBe(m.regular);
-        expect(await height(page, dialog.getByRole('button', { name: 'Зберегти доступи' }))).toBe(m.regular);
-        await expect(dialog.getByRole('button', { name: 'Зберегти доступи' })).toBeInViewport();
-        expect(await dialog.evaluate((d) => d.scrollWidth <= d.clientWidth + 1)).toBe(true);
+        expect(await height(page, editor.getByLabel('Пошук сервісів цього сервера'))).toBe(m.regular);
+        const save = page.getByRole('button', { name: 'Зберегти', exact: true });
+        expect(await height(page, save)).toBe(m.regular);
+        await expect(save).toBeInViewport();
+        expect(await editor.evaluate((d) => d.scrollWidth <= d.clientWidth + 1)).toBe(true);
         await noPageOverflow(page);
         if (shots) await page.screenshot({ path: `${shots}/touch-${theme}-${String(m.viewport.width)}-${m.touch ? 'coarse' : 'fine'}.png` });
         expect(mutations).toEqual([]);

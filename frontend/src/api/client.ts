@@ -247,6 +247,8 @@ export type { AuditPage, SessionInfo };
 
 // --- Server registry (Task 007) ------------------------------------------------------------------------------
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** The id format of servers and users (lower-case UUID): checked before any request built from a URL. */
+export const isUuid = (value: string) => UUID_RE.test(value);
 const serverPath = (id: string): `/api/${string}` => {
   if (!UUID_RE.test(id)) throw new ApiError('invalid_request');
   return `/api/servers/${id}`;

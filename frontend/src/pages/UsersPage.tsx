@@ -1,9 +1,9 @@
 import { type SyntheticEvent, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router';
 import { ApiError, USERS_PAGE_SIZE, usersApi } from '../api/client';
 import { KNOWN_ROLES, type Role, type UserView } from '../api/types';
-import { useAuth } from '../auth/AuthContext';
+import { sessionIdentity, useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
-import { AccessDialog } from '../components/AccessDialog';
 import { ActionMenu } from '../components/ActionMenu';
 import { Dialog, FormDialog } from '../components/Dialog';
 import { ROLE_LABELS } from '../components/Layout';
@@ -13,11 +13,13 @@ import { useMediaQuery } from '../components/useMediaQuery';
 import { usePolledResource } from '../components/usePolledResource';
 import { PASSWORD_MAX, PASSWORD_MIN, passwordLength } from './AccountPage';
 import { formatDate } from './ServersPage';
+import { type Cursors, recallUsersView, rememberUsersView, type UsersView, usersViewRestore } from './usersView';
 
 // User administration (ADR-019; design USR-01…09, docs/design/part-02), users:manage only (the API enforces it
 // independently). Keyset pages of 100 (cursor stack); search and role filter work only on the page in hand and say
 // so. A row menu opens «Роль і активність» (one drawer, ONE PATCH with only the changed fields) or «Сервери та
-// сервіси» (the existing access editor). Creating uses the existing contract {email, password, role}: new users are
+// сервіси» (navigates to the access page /users/:id/access, ADR-035; the list's page, cursor stack, search and role go
+// along in the history state, so «← Користувачі» and the browser's Back return to the same view). Creating uses the existing contract {email, password, role}: new users are
 // active. Every mutation is sent once (never retried), nothing is shown as done before the answer, an unknown result
 // (network/timeout) is said as unknown and can be checked by re-reading the list: for an edit the current page, for a
 // create a bounded walk from the first page (GET only; not finding the e-mail never proves it was not created).
@@ -73,7 +75,6 @@ const pagesText = (n: number) => {
 
 /** Bound for every walk over the pages («Показати», checking an unknown create): at most 50 pages (5 000 users). */
 export const MAX_SEEK_PAGES = 50;
-type Cursors = (string | null)[];
 /** Where an unknown create was checked: what was sent (never the password) and what the bounded read found. */
 interface Attempt { email: string; role: Role }
 type Check =
@@ -378,7 +379,12 @@ export function UsersPage() {
   const { state: auth, sessionExpired, bindSession } = useAuth();
   // Keyset pages: the cursor of each visited page (null = first). "Назад" pops, "Далі" pushes nextAfter. The resource
   // is keyed by the cursor, so another page's data is never shown and a late answer for a page we left is dropped.
-  const [cursors, setCursors] = useState<Cursors>([null]);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const sessionKey = auth.status === 'authenticated' ? sessionIdentity(auth.session) : '';
+  // A return from the access page: its validated state, else this history entry as it was left (Back), else page 1.
+  const [initial] = useState<UsersView | null>(() => usersViewRestore(location.state) ?? recallUsersView(location.key, sessionKey));
+  const [cursors, setCursors] = useState<Cursors>(initial?.cursors ?? [null]);
   const cursor = cursors.at(-1) ?? null;
   const load = useCallback((signal: AbortSignal) => usersApi.list(cursor, signal), [cursor]);
   const { state, reload } = usePolledResource(load, `users:${cursor ?? 'first'}`);
@@ -387,13 +393,11 @@ export function UsersPage() {
   const [seeking, setSeeking] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [creating, setCreating] = useState(false);
-  const [accessFor, setAccessFor] = useState<UserView | null>(null);
-  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  const [filters, setFilters] = useState<Filters>(initial ? { q: initial.q, role: initial.role } : NO_FILTERS);
   // The row «Показати» opened: focused and scrolled into view once it is rendered (then forgotten).
   const [revealId, setRevealId] = useState<string | null>(null);
   const rowsRef = useRef<HTMLDivElement>(null);
   const records = useMediaQuery(RECORDS_QUERY);
-  const closeAccess = useCallback(() => { setAccessFor(null); }, []);
   const closeCreate = useCallback(() => { setCreating(false); }, []);
   const closeEdit = useCallback(() => { setEditing(null); }, []);
   const closeOwn = useCallback(() => { setOwn(null); }, []);
@@ -484,12 +488,19 @@ export function UsersPage() {
     reload(); // the same page (same cursor)
   };
 
+  /** The access page of `u`; this view (page, cursors, filters) is remembered for the way back. */
+  const openAccess = (u: UserView) => {
+    const view: UsersView = { cursors, q: filters.q, role: filters.role };
+    rememberUsersView(location.key, sessionKey, view);
+    void navigate(`/users/${u.id}/access`, { state: { from: view } });
+  };
+
   const menu = (u: UserView) => (
     <ActionMenu name={u.email} items={u.id === me
       ? [{ key: 'role', label: 'Роль і активність', disabled: busy, onSelect: () => { setStatus(null); setOwn(u); } }]
       : [
         { key: 'role', label: 'Роль і активність', disabled: busy, onSelect: () => { setStatus(null); setEditing(u); } },
-        { key: 'access', label: 'Сервери та сервіси', disabled: busy, onSelect: () => { setStatus(null); setAccessFor(u); } },
+        { key: 'access', label: 'Сервери та сервіси', disabled: busy, onSelect: () => { openAccess(u); } },
       ]} />
   );
   const email = (u: UserView) => (
@@ -596,14 +607,6 @@ export function UsersPage() {
         <EditUserForm key={editing.id} user={editing} live={items.find((u) => u.id === editing.id) ?? null} onSaved={onSaved} onClose={closeEdit} onReread={reload} />
       ) : null}
       {own ? <OwnAccountDetails user={own} onClose={closeOwn} /> : null}
-      {accessFor ? (
-        <AccessDialog key={accessFor.id} user={accessFor} onClose={closeAccess} onSaved={(a) => {
-          setAccessFor(null);
-          setStatus({ text: a.servers.length === 0
-            ? `Доступи ${a.email} прибрано: користувач не бачить жодного сервера.`
-            : `Доступи ${a.email} збережено: серверів — ${String(a.servers.length)}. Зміни діють з наступного запиту користувача.` });
-        }} />
-      ) : null}
     </section>
   );
 }

@@ -1,7 +1,7 @@
 import { render } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { createMemoryRouter, RouterProvider } from 'react-router';
 import { vi } from 'vitest';
-import { AppRoutes } from '../src/App';
+import { appRoutes } from '../src/App';
 import { AuthProvider } from '../src/auth/AuthContext';
 
 export interface RecordedRequest {
@@ -63,14 +63,18 @@ export function deferred<T>() {
   return { promise, resolve };
 }
 
+/**
+ * The application's route tree in a memory data router (as in production: createBrowserRouter), so navigation
+ * blocking works. `router` drives history in tests (e.g. `router.navigate(-1)` for the browser's Back).
+ */
 export function renderApp(path = '/', state?: unknown) {
-  return render(
+  const router = createMemoryRouter(appRoutes, { initialEntries: [{ pathname: path, state }] });
+  const result = render(
     <AuthProvider>
-      <MemoryRouter initialEntries={[{ pathname: path, state }]}>
-        <AppRoutes />
-      </MemoryRouter>
+      <RouterProvider router={router} />
     </AuthProvider>,
   );
+  return Object.assign(result, { router });
 }
 
 /** Simulated window width for media queries (see setup.ts); reset to 1440 after every test. */

@@ -350,16 +350,17 @@ describe('user administration', () => {
     expect(await screen.findByText('Сесія завершилась. Увійдіть знову.')).toBeTruthy();
   });
 
-  it('«Сервери та сервіси» opens the existing access editor; closing it keeps the page', async () => {
+  it('«Сервери та сервіси» opens the access page of that user (ACL); «← Користувачі» returns to the list', async () => {
     backend('admin', (req) => (req.url === `/api/users/${OTHER_ID}/access` ? json(200, { userId: OTHER_ID, email: 'other@example.test', role: 'viewer', isActive: true, global: false, revision: 1, servers: [] }) : undefined));
     renderApp('/users');
     const u = userEvent.setup();
     await u.click(await screen.findByRole('button', { name: 'Дії: other@example.test' }));
     await u.click(screen.getByRole('menuitem', { name: 'Сервери та сервіси' }));
-    expect(await screen.findByRole('dialog', { name: /^Доступи: other@example\.test/ })).toBeTruthy();
-    await u.keyboard('{Escape}');
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByText('Сторінка 1')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Доступи користувача' })).toBeTruthy();
+    expect(await screen.findByText('other@example.test')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull(); // a page, not a modal
+    await u.click(screen.getByRole('link', { name: '← Користувачі' }));
+    expect(await screen.findByText('Сторінка 1')).toBeTruthy();
   });
 });
 

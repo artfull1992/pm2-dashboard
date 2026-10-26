@@ -63,11 +63,22 @@ const appNames = async (page: Page) => {
   });
 };
 
+// The access page (ACL, ADR-035): opened from the users list; returns the page (no modal).
 async function openAccess(admin: Page, email: string) {
   await admin.goto('/users');
   await admin.getByRole('button', { name: `Дії: ${email}` }).click();
   await admin.getByRole('menuitem', { name: 'Сервери та сервіси' }).click();
-  return admin.getByRole('dialog', { name: `Доступи: ${email}` });
+  await expect(admin.getByRole('heading', { name: 'Доступи користувача' })).toBeVisible();
+  await expect(admin.getByText(email, { exact: true })).toBeVisible();
+  await expect(admin).toHaveURL(/\/users\/[0-9a-f-]{36}\/access$/);
+  return admin.locator('main');
+}
+async function addServer(admin: Page, name: string) {
+  await admin.getByRole('button', { name: /Додати сервер$/ }).first().click();
+  const picker = admin.getByRole('dialog', { name: 'Додати сервер' });
+  await picker.getByLabel('Пошук серверів для призначення').fill(name);
+  await picker.getByRole('button', { name: `Додати ${name}` }).click();
+  await expect(admin.getByRole('heading', { name, level: 2 })).toBeVisible();
 }
 
 test('no grants → nothing; admin grants a server/service in «Доступи»; operator and viewer see exactly that; changes apply; stale editor is refused', async ({ browser }) => {
@@ -86,19 +97,20 @@ test('no grants → nothing; admin grants a server/service in «Доступи»
 
   // Admin: operator → alpha, selected svc-1; viewer → beta, all services.
   const admin = await signIn(browser, ADMIN);
-  let dialog = await openAccess(admin, OPERATOR.email);
-  await expect(dialog.getByText(/Доступів немає/)).toBeVisible();
-  await dialog.getByLabel('Додати сервер').fill(A);
-  await dialog.getByRole('button', { name: `Додати ${A}` }).click();
-  await dialog.getByRole('checkbox', { name: 'svc-1' }).check();
-  await dialog.getByRole('button', { name: 'Зберегти доступи' }).click();
-  await expect(admin.getByText(new RegExp(`Доступи ${OPERATOR.email.replace(/\./g, '\\.')} збережено`))).toBeVisible();
-  dialog = await openAccess(admin, VIEWER.email);
-  await dialog.getByLabel('Додати сервер').fill(B);
-  await dialog.getByRole('button', { name: `Додати ${B}` }).click();
-  await dialog.getByRole('radio', { name: 'Усі сервіси (поточні й майбутні)' }).check();
-  await dialog.getByRole('button', { name: 'Зберегти доступи' }).click();
-  await expect(admin.getByRole('dialog')).toHaveCount(0);
+  let page = await openAccess(admin, OPERATOR.email);
+  await expect(page.getByRole('heading', { name: 'Доступів немає' })).toBeVisible();
+  await addServer(admin, A);
+  await page.getByRole('checkbox', { name: 'svc-1' }).check();
+  await page.getByRole('button', { name: 'Зберегти', exact: true }).click();
+  await expect(page.getByText(/Доступи збережено \(ревізія 1\)/)).toBeVisible();
+  // Reload of the page's own URL: the saved state comes back (direct URL).
+  await admin.reload();
+  await expect(page.getByRole('checkbox', { name: 'svc-1' })).toBeChecked();
+  page = await openAccess(admin, VIEWER.email);
+  await addServer(admin, B);
+  await page.getByRole('radio', { name: /Усі сервіси — поточні й майбутні/ }).check();
+  await page.getByRole('button', { name: 'Зберегти', exact: true }).click();
+  await expect(page.getByText(/Доступи збережено \(ревізія 1\)/)).toBeVisible();
   // Admin editor of an admin: full access, no grants.
   await admin.goto('/users');
   await expect(admin.getByRole('row').filter({ hasText: ADMIN.email }).getByText('Повний доступ')).toBeVisible();
@@ -119,19 +131,27 @@ test('no grants → nothing; admin grants a server/service in «Доступи»
   expect(await apiStatus(viewer, `/api/servers/${ids.a}`)).toBe(404);
 
   // Widen the operator to "all" on alpha: the change applies on the next request.
-  dialog = await openAccess(admin, OPERATOR.email);
-  await dialog.getByRole('radio', { name: 'Усі сервіси (поточні й майбутні)' }).check();
-  await dialog.getByRole('button', { name: 'Зберегти доступи' }).click();
-  await expect(admin.getByRole('dialog')).toHaveCount(0);
+  page = await openAccess(admin, OPERATOR.email);
+  await page.getByRole('radio', { name: /Усі сервіси — поточні й майбутні/ }).check();
+  await page.getByRole('button', { name: 'Зберегти', exact: true }).click();
+  await expect(page.getByText(/Доступи збережено \(ревізія 2\)/)).toBeVisible();
   expect(await appNames(op)).toEqual([`${A}/svc-1`, `${A}/svc-2`, `${A}/svc-3`]);
 
   // A stale editor (someone changed the grants meanwhile) is refused, nothing overwritten.
-  dialog = await openAccess(admin, OPERATOR.email);
-  await expect(dialog.getByRole('button', { name: `Прибрати ${A}` })).toBeVisible();
+  page = await openAccess(admin, OPERATOR.email);
+  await expect(page.getByRole('button', { name: `Прибрати доступ до ${A}` })).toBeVisible();
   await inRunSchema((q) => q('UPDATE users SET access_revision = access_revision + 1 WHERE email = $1', [OPERATOR.email]));
-  await dialog.getByRole('button', { name: `Прибрати ${A}` }).click();
-  await dialog.getByRole('button', { name: 'Зберегти доступи' }).click();
-  await expect(dialog.getByText(/щойно змінив інший адміністратор/)).toBeVisible();
+  await page.getByRole('button', { name: `Прибрати доступ до ${A}` }).click();
+  await admin.getByRole('dialog', { name: 'Прибрати доступ до сервера?' }).getByRole('button', { name: 'Прибрати з чернетки' }).click();
+  await page.getByRole('button', { name: 'Зберегти', exact: true }).click();
+  await expect(page.getByText('Доступи змінилися після відкриття сторінки')).toBeVisible();
+  expect(await appNames(op)).toHaveLength(3);
+  // Reading the stored state is explicit and writes nothing; leaving with the draft asks first.
+  await page.getByRole('button', { name: 'Переглянути актуальний стан' }).click();
+  await expect(page.getByText(/Актуальний збережений стан \(ревізія 3\)/)).toBeVisible();
+  await admin.getByRole('link', { name: '← Користувачі' }).click();
+  await admin.getByRole('dialog', { name: 'Скасувати зміни?' }).getByRole('button', { name: 'Відкинути зміни' }).click();
+  await expect(admin.getByRole('heading', { name: 'Користувачі' })).toBeVisible();
   expect(await appNames(op)).toHaveLength(3);
 
   // Audit: one row per successful change, ids and counts only.

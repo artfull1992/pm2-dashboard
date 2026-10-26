@@ -1,6 +1,6 @@
 import { expect, type Page, test } from '@playwright/test';
 
-// Access dialog, service tables, overview and alerts (frontend task "repair access forms and streamline monitoring
+// Access page (formerly a dialog; ACL, ADR-035), service tables, overview and alerts (frontend task "repair access forms and streamline monitoring
 // views") — real browser, synthetic API data only (no DB, credentials, PM2 or Slack). Measures what screenshots
 // showed: form controls of a text field's size, service names broken into 3–4 letters, repeated row explanations,
 // a half-empty attention block, and delivery semantics. Screenshots only when NC_UI_SHOTS is set (synthetic names).
@@ -122,12 +122,12 @@ for (const theme of THEMES) {
     test.describe(`${theme} ${String(width)}`, () => {
       test.use({ colorScheme: theme, viewport: { width, height: 900 } });
 
-      test('access dialog: compact choices, readable names, selection kept while searching, nothing saved', async ({ page }) => {
+      test('access page: compact choices, readable names, selection kept while searching, nothing saved', async ({ page }) => {
         const mutations = await api(page, { role: 'admin' });
         await page.goto('/users');
         await page.getByRole('button', { name: /^Дії: operator/ }).click();
         await page.getByRole('menuitem', { name: 'Сервери та сервіси' }).click();
-        const dialog = page.getByRole('dialog', { name: /^Доступи:/ });
+        const dialog = page.locator('.acl-editor'); // the editor of the selected server
         await expect(dialog.getByRole('checkbox', { name: /^catalog-api/ })).toBeVisible();
         // catalog-api is already in the granted list (/access); the picker list comes with a second request
         // (/api/access/servers/:id/services). Counting before it arrived saw only the 4 mode radios + 3 granted services
@@ -147,21 +147,25 @@ for (const theme of THEMES) {
         const nb = await name.boundingBox();
         expect(nb?.width ?? 0).toBeGreaterThan(70);
         expect(nb?.height ?? 99).toBeLessThan(26);
-        // The long name wraps inside the dialog and never widens it.
+        // The long name stays on one line inside the editor and never widens it; the full name is its tooltip and
+        // the checkbox's accessible name.
         const dialogBox = await dialog.boundingBox();
-        const longBox = await dialog.getByText(LONG, { exact: true }).boundingBox();
+        const long = dialog.getByText(LONG, { exact: true });
+        const longBox = await long.boundingBox();
         expect((longBox?.x ?? 0) + (longBox?.width ?? 0)).toBeLessThanOrEqual((dialogBox?.x ?? 0) + (dialogBox?.width ?? 0) + 1);
+        await expect(long).toHaveAttribute('title', LONG);
+        await expect(dialog.getByRole('checkbox', { name: LONG })).toHaveCount(1);
         await noPageOverflow(page);
         // Nothing inside the dialog overflows sideways (long e-mail in the title, long server/service names).
         expect(await dialog.evaluate((d) => d.scrollWidth <= d.clientWidth + 1)).toBe(true);
         // Searching does not drop the selection: choose one, search for another, the first is still counted.
         await dialog.getByRole('checkbox', { name: /^orders-api/ }).check();
         await expect(dialog.getByText('Вибрано: 4')).toBeVisible();
-        await dialog.getByLabel('Пошук сервісу').fill('queue-consumer-1');
+        await dialog.getByLabel('Пошук сервісів цього сервера').fill('queue-consumer-1');
         await expect(dialog.getByRole('checkbox', { name: /^queue-consumer-10/ })).toBeVisible();
         await expect(dialog.getByText('Вибрано: 4')).toBeVisible();
         // The save button stays reachable without scrolling the page.
-        const save = dialog.getByRole('button', { name: 'Зберегти доступи' });
+        const save = page.getByRole('button', { name: 'Зберегти', exact: true });
         await expect(save).toBeInViewport();
         expect(mutations).toEqual([]);
       });
