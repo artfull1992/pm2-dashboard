@@ -31,9 +31,9 @@ function PrivateArea() {
 }
 
 /**
- * The route tree. The application runs it in a data router (createBrowserRouter): the access page (ACL, ADR-035)
- * guards unsaved changes with useBlocker, which exists only there. `AppRoutes` renders the same tree in any router
- * (tests that drive a MemoryRouter directly).
+ * The route tree. The application runs it in a data router (createBrowserRouter): the access page (ACL, ADR-035) and
+ * the settings (ADR-022) guard unsaved changes with useBlocker, which exists only there. `AppRoutes` renders the same
+ * tree in any router (tests that drive a MemoryRouter directly; they never open those two pages).
  */
 export const appRoutes = createRoutesFromElements(
   <>

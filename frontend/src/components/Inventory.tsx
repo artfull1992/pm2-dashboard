@@ -13,7 +13,9 @@ export const PROCESS_STATUS_LABELS: Record<ProcessStatus, string> = {
   'one-launch-status': 'Одноразовий запуск', 'waiting restart': 'Очікує перезапуску', unknown: 'Невідомо',
 };
 
-export const REASON_LABELS: Record<string, string> = {
+// Reason codes arrive from the API as strings: a Map of its own entries, so `constructor` or `__proto__` never hits an
+// Object.prototype property; an unknown code reads as «невідома причина».
+const REASON_LABELS: ReadonlyMap<string, string> = new Map(Object.entries({
   daemon_not_running: 'PM2 daemon не запущено',
   permission_denied: 'немає доступу',
   timeout: 'PM2 не відповів вчасно',
@@ -24,9 +26,9 @@ export const REASON_LABELS: Record<string, string> = {
   snapshot_missing: 'файл inventory відсутній',
   snapshot_invalid: 'файл inventory некоректний',
   snapshot_insecure: 'файл inventory має небезпечні права',
-};
+}));
 
-export const reasonLabel = (reason: string | null) => (reason ? REASON_LABELS[reason] ?? 'невідома причина' : '');
+export const reasonLabel = (reason: string | null) => (reason ? REASON_LABELS.get(reason) ?? 'невідома причина' : '');
 
 // Normal is quiet; a process that should be running but is not stands out; transitions/unknown stay neutral.
 const PROCESS_TONES: Record<ProcessStatus, Tone> = {

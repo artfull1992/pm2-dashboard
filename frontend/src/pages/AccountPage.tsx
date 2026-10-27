@@ -59,7 +59,7 @@ export function AccountPage() {
 
   const onSubmit = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (pending) return;
+    if (inflight.current) return; // the handler's own check: two submits can arrive before the re-render
     const found = validate();
     setErrors(found);
     setFormError(null);
@@ -98,7 +98,7 @@ export function AccountPage() {
         <label htmlFor={ids[key]}>{label}</label>
         <input
           ref={refs[key]} id={ids[key]} type={visible ? 'text' : 'password'} autoComplete={autoComplete} value={value} maxLength={1024}
-          onChange={(e) => { set(e.target.value); }} disabled={pending} required spellCheck={false} autoCapitalize="off"
+          onChange={(e) => { if (!inflight.current) set(e.target.value); }} disabled={pending} required spellCheck={false} autoCapitalize="off"
           aria-invalid={errors[key] ? true : undefined} aria-describedby={describedBy || undefined}
         />
         {key === 'next' ? <p id={ids.rule} className="hint">{`Від ${String(PASSWORD_MIN)} до ${String(PASSWORD_MAX)} символів; не збігається з поточним.`}</p> : null}
@@ -108,19 +108,32 @@ export function AccountPage() {
   };
 
   return (
-    <section className="page" aria-labelledby="account-title">
-      <PageHeader title="Обліковий запис" titleId="account-title" meta={<span>{`${user.email} · ${ROLE_LABELS[user.role]}`}</span>} />
-      <form className="panel account-form" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="password-title">
-        <h2 id="password-title" className="section__title">Зміна пароля</h2>
-        <p className="notice notice--warning">Після зміни пароля всі ваші сесії буде завершено, зокрема на інших пристроях. Увійдіть знову з новим паролем.</p>
+    <section className="page account" aria-labelledby="account-title">
+      <PageHeader title="Обліковий запис" titleId="account-title" meta={<span>Ваш профіль і пароль для входу.</span>} />
+      <section className="card account-card" aria-labelledby="profile-title">
+        <h2 id="profile-title" className="card__title">Профіль</h2>
+        <dl className="facts account-facts">
+          <dt>Email</dt><dd>{user.email}</dd>
+          <dt>Роль</dt><dd>{ROLE_LABELS[user.role]}</dd>
+        </dl>
+        <p className="hint">Email не змінюється; роль призначає адміністратор.</p>
+      </section>
+      <form className="card account-card account-form" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="password-title">
+        <div className="account-form__head">
+          <h2 id="password-title" className="card__title">Зміна пароля</h2>
+          <button type="button" className="button button--small" aria-pressed={visible} onClick={() => { setVisible((v) => !v); }}>
+            {visible ? 'Приховати паролі' : 'Показати паролі'}
+          </button>
+        </div>
+        <div className="notice notice--warning">
+          <p className="notice__title">Потрібен повторний вхід</p>
+          <p>Після зміни пароля всі ваші сесії буде завершено, зокрема на інших пристроях і в цьому браузері. Увійдіть знову з новим паролем.</p>
+        </div>
         {formError ? <p className="form-error" role="alert">{formError}</p> : null}
         {field('current', 'Поточний пароль', current, setCurrent, 'current-password')}
         {field('next', 'Новий пароль', next, setNext, 'new-password')}
         {field('confirm', 'Повторіть новий пароль', confirm, setConfirm, 'new-password')}
-        <div className="button-row">
-          <button type="button" className="button" aria-pressed={visible} onClick={() => { setVisible((v) => !v); }}>
-            {visible ? 'Приховати паролі' : 'Показати паролі'}
-          </button>
+        <div className="form-actions account-form__actions">
           <button type="submit" className="button button--primary" disabled={pending}>{pending ? 'Зміна…' : 'Змінити пароль'}</button>
         </div>
       </form>

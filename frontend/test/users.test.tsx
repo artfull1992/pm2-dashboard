@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CSRF, deferred, installFetch, json, noContent, type RecordedRequest, renderApp, session } from './support';
@@ -141,6 +141,46 @@ describe('own account', () => {
     await u.click(screen.getByRole('link', { name: 'Огляд' }));
     await u.click(await screen.findByRole('link', { name: 'Обліковий запис' }));
     expect((await screen.findByLabelText<HTMLInputElement>('Поточний пароль')).value).toBe('');
+  });
+
+  // Final frontend stage: read-only profile context; the handlers refuse a second submit and edits while pending.
+  it.each(['admin', 'operator', 'viewer'] as const)('%s: email and role are read-only context, no edit controls', async (role) => {
+    backend(role);
+    renderApp('/account');
+    const profile = await screen.findByRole('region', { name: 'Профіль' });
+    expect(within(profile).getByText(`${role}@example.test`)).toBeTruthy();
+    expect(within(profile).getByText({ admin: 'Адміністратор', operator: 'Оператор', viewer: 'Спостерігач' }[role])).toBeTruthy();
+    expect(within(profile).queryByRole('textbox')).toBeNull();
+    expect(within(profile).queryByRole('button')).toBeNull();
+    expect(screen.getByText('Потрібен повторний вхід')).toBeTruthy();
+  });
+
+  it('pending change: a second submit and typing are refused by the handlers; one request', async () => {
+    const answer = deferred<Response>();
+    const calls = backend('viewer', (req) => (req.url === '/api/auth/change-password' ? answer.promise : undefined));
+    renderApp('/account');
+    const u = await fillPassword(CURRENT, NEXT);
+    await u.click(screen.getByRole('button', { name: 'Змінити пароль' }));
+    const currentField = screen.getByLabelText<HTMLInputElement>('Поточний пароль');
+    currentField.disabled = false;
+    fireEvent.change(currentField, { target: { value: 'typed-while-pending' } });
+    expect(currentField.value).toBe(CURRENT);
+    fireEvent.submit(currentField.closest('form') as HTMLFormElement);
+    expect(posts(calls, '/api/auth/change-password')).toHaveLength(1);
+    await act(async () => { answer.resolve(json(422, {})); await Promise.resolve(); });
+    expect(await screen.findByText('Поточний пароль невірний.')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByLabelText('Поточний пароль'));
+    for (const label of ['Поточний пароль', 'Новий пароль', 'Повторіть новий пароль']) expect(screen.getByLabelText<HTMLInputElement>(label).value).toBe('');
+  });
+
+  it('a password of 12 code points (astral characters) is accepted as is, without trimming', async () => {
+    const calls = backend('viewer', (req) => (req.url === '/api/auth/change-password' ? noContent() : undefined));
+    renderApp('/account');
+    const astral = ' 😀😀😀😀😀😀😀😀😀😀 '; // 12 code points incl. the spaces (22 UTF-16 units)
+    const u = await fillPassword(CURRENT, astral);
+    await u.click(screen.getByRole('button', { name: 'Змінити пароль' }));
+    expect(await screen.findByText('Пароль змінено. Усі сесії завершено — увійдіть з новим паролем.')).toBeTruthy();
+    expect(JSON.parse(posts(calls, '/api/auth/change-password')[0]?.body ?? '{}')).toEqual({ currentPassword: CURRENT, newPassword: astral });
   });
 });
 

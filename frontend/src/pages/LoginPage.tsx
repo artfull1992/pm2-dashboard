@@ -20,6 +20,15 @@ export function loginErrorMessage(kind: ApiErrorKind, retryAfterSeconds: number 
 
 interface FieldErrors { email?: string; password?: string }
 
+// Why the login page is shown (navigation state). A Map of own entries: an arbitrary `reason` (e.g. `constructor`)
+// never resolves to an Object.prototype member and simply shows no notice.
+const NOTICES: ReadonlyMap<string, string> = new Map(Object.entries({
+  expired: 'Сесія завершилась. Увійдіть знову.',
+  logged_out: 'Ви вийшли з системи.',
+  password_changed: 'Пароль змінено. Усі сесії завершено — увійдіть з новим паролем.',
+}));
+export const loginNotice = (reason: unknown): string | null => (typeof reason === 'string' ? NOTICES.get(reason) ?? null : null);
+
 export function LoginPage() {
   const { state, login } = useAuth();
   const location = useLocation();
@@ -31,6 +40,8 @@ export function LoginPage() {
   const [pending, setPending] = useState(false);
   // Incremented per failed attempt: focus moves to the password field after the re-render that re-enables it.
   const [failureSeq, setFailureSeq] = useState(0);
+  // One login request at a time, checked by the handler itself (two submits can arrive before the re-render).
+  const submitting = useRef(false);
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const ids = { email: useId(), password: useId(), emailError: useId(), passwordError: useId() };
@@ -45,6 +56,7 @@ export function LoginPage() {
 
   const onSubmit = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submitting.current) return;
     const errors: FieldErrors = {};
     if (!/^[^@\s]+@[^@\s]+$/.test(email.trim())) errors.email = 'Введіть коректний email.';
     if (password.length === 0) errors.password = 'Введіть пароль.';
@@ -53,8 +65,10 @@ export function LoginPage() {
     if (errors.email) { emailRef.current?.focus(); return; }
     if (errors.password) { passwordRef.current?.focus(); return; }
 
+    submitting.current = true;
     setPending(true);
     const outcome = await login(email, password);
+    submitting.current = false;
     setPassword(''); // never keep the password after the request completed
     setPending(false);
     if (outcome.ok) {
@@ -66,20 +80,17 @@ export function LoginPage() {
     setFailureSeq((n) => n + 1);
   };
 
-  const NOTICES: Record<string, string> = {
-    expired: 'Сесія завершилась. Увійдіть знову.',
-    logged_out: 'Ви вийшли з системи.',
-    password_changed: 'Пароль змінено. Усі сесії завершено — увійдіть з новим паролем.',
-  };
-  const notice = typeof navState?.reason === 'string' ? NOTICES[navState.reason] ?? null : null;
+  const notice = loginNotice(navState?.reason);
 
   return (
     <main className="login" id="main">
-      <form className="login__card" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="login-title">
-        <div className="login__theme"><ThemeSwitcher /></div>
-        <h1 id="login-title" className="login__title">Node Control</h1>
-        <p className="login__subtitle">Увійдіть, щоб продовжити</p>
-        {notice ? <p className="notice" role="status">{notice}</p> : null}
+      <div className="login__bar"><ThemeSwitcher /></div>
+      <form className="login__card" onSubmit={(e) => { void onSubmit(e); }} noValidate aria-labelledby="login-title" aria-describedby="login-subtitle" aria-busy={pending}>
+        <div className="login__head">
+          <h1 id="login-title" className="login__title">Node Control</h1>
+          <p id="login-subtitle" className="login__subtitle">Увійдіть, щоб продовжити.</p>
+        </div>
+        {notice ? <p className="notice notice--info" role="status">{notice}</p> : null}
         {formError ? <p className="form-error" role="alert">{formError}</p> : null}
 
         <div className="field">

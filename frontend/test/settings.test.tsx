@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CSRF, deferred, installFetch, json, noContent, type RecordedRequest, renderApp, session } from './support';
@@ -204,32 +204,29 @@ describe('rules tab', () => {
     });
   });
 
-  it('409 conflict: explained, edits not applied, "Перечитати стан" reloads', async () => {
+  it('409 conflict: explained, edits kept, no second PATCH; re-reading asks before dropping the draft', async () => {
     const calls = backend('admin', (req) => (req.method === 'PATCH' ? json(409, {}) : undefined));
     renderApp('/settings/rules');
     const u = userEvent.setup();
-    const interval = await screen.findByLabelText(/Інтервал перевірки/);
+    const interval = await screen.findByLabelText<HTMLInputElement>(/Інтервал перевірки/);
     await u.clear(interval);
     await u.type(interval, '60');
     await u.click(screen.getByRole('button', { name: 'Зберегти' }));
     expect(await screen.findByText(/змінив інший адміністратор/)).toBeTruthy();
-    const gets = calls.filter((c) => c.url === '/api/settings/alerts' && c.method === 'GET').length;
+    expect(interval.value).toBe('60');
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Зберегти' }).disabled).toBe(true); // no blind re-send
+    const gets = () => calls.filter((c) => c.url === '/api/settings/alerts' && c.method === 'GET').length;
+    const before = gets();
     await u.click(screen.getByRole('button', { name: 'Перечитати стан' }));
-    await waitFor(() => { expect(calls.filter((c) => c.url === '/api/settings/alerts' && c.method === 'GET').length).toBe(gets + 1); });
+    const dialog = screen.getByRole('dialog', { name: 'Перечитати стан?' });
+    await u.click(within(dialog).getByRole('button', { name: 'Продовжити редагування' }));
+    expect(gets()).toBe(before);
+    expect(interval.value).toBe('60');
+    await u.click(screen.getByRole('button', { name: 'Перечитати стан' }));
+    await u.click(within(screen.getByRole('dialog', { name: 'Перечитати стан?' })).getByRole('button', { name: 'Відкинути й перечитати' }));
+    await waitFor(() => { expect(gets()).toBe(before + 1); });
+    expect((await screen.findByLabelText<HTMLInputElement>(/Інтервал перевірки/)).value).toBe('30');
     expect(sentTo(calls, 'PATCH', '/api/settings/alerts')).toHaveLength(1); // never retried
-  });
-
-  it('leaving the tab with unsaved edits asks first; declining keeps the edits', async () => {
-    backend('admin');
-    renderApp('/settings/rules');
-    const u = userEvent.setup();
-    const interval = await screen.findByLabelText(/Інтервал перевірки/);
-    await u.clear(interval);
-    await u.type(interval, '45');
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    await u.click(screen.getByRole('link', { name: 'Інтеграції' }));
-    expect(confirm).toHaveBeenCalled();
-    expect(screen.getByLabelText<HTMLInputElement>(/Інтервал перевірки/).value).toBe('45');
   });
 
   it('a late settings answer after logout is ignored', async () => {
@@ -242,5 +239,255 @@ describe('rules tab', () => {
     await act(async () => { late.resolve(json(200, view())); await new Promise((r) => setTimeout(r, 20)); });
     expect(screen.queryByText('Правила сповіщень')).toBeNull();
     expect(await screen.findByLabelText('Email')).toBeTruthy();
+  });
+});
+
+// Final frontend stage: one data-router guard for unsaved rules, a typed webhook and requests in flight; re-reading
+// never drops input silently; pending locks the handlers; unknown results are not re-sent; test answers as reported.
+describe('unsaved input, pending and recovery (final frontend stage)', () => {
+  const gets = (calls: RecordedRequest[]) => calls.filter((c) => c.url === '/api/settings/alerts' && c.method === 'GET').length;
+  async function editInterval(value: string) {
+    const u = userEvent.setup();
+    const interval = await screen.findByLabelText<HTMLInputElement>(/Інтервал перевірки/);
+    await u.clear(interval);
+    await u.type(interval, value);
+    return { u, interval };
+  }
+
+  it('without changes, tabs switch without any question', async () => {
+    backend('admin', undefined, () => configured());
+    renderApp('/settings/rules');
+    const u = userEvent.setup();
+    await screen.findByLabelText(/Інтервал перевірки/);
+    await u.click(screen.getByRole('link', { name: 'Інтеграції' }));
+    expect(await screen.findByRole('heading', { name: 'Slack' })).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it.each([
+    ['the other tab', () => screen.getByRole('link', { name: 'Інтеграції' })],
+    ['a navigation link', () => screen.getByRole('link', { name: 'Сповіщення' })],
+    ['the page action', () => screen.getByRole('link', { name: 'До сповіщень' })],
+  ])('dirty rules: %s asks in a dialog (no window.confirm); keeping stays with the draft, discarding leaves', async (_n, link) => {
+    backend('admin');
+    const { router } = renderApp('/settings/rules');
+    const confirm = vi.spyOn(window, 'confirm');
+    const { u, interval } = await editInterval('45');
+    await u.click(link());
+    const dialog = screen.getByRole('dialog', { name: 'Скасувати зміни?' });
+    expect(within(dialog).getByText(/Незбережені зміни правил буде втрачено/)).toBeTruthy();
+    await u.click(within(dialog).getByRole('button', { name: 'Продовжити редагування' }));
+    expect(router.state.location.pathname).toBe('/settings/rules');
+    expect(interval.value).toBe('45');
+    await u.click(link());
+    await u.click(within(screen.getByRole('dialog', { name: 'Скасувати зміни?' })).getByRole('button', { name: 'Відкинути зміни' }));
+    await waitFor(() => { expect(router.state.location.pathname).not.toBe('/settings/rules'); });
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('dirty rules: Back is blocked the same way; Escape keeps the draft', async () => {
+    backend('admin');
+    const { router } = renderApp('/alerts');
+    await screen.findByRole('heading', { level: 1, name: 'Сповіщення' });
+    await act(async () => { await router.navigate('/settings/rules'); });
+    const { u, interval } = await editInterval('45');
+    await act(async () => { await router.navigate(-1); });
+    expect(screen.getByRole('dialog', { name: 'Скасувати зміни?' })).toBeTruthy();
+    await u.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(router.state.location.pathname).toBe('/settings/rules');
+    expect(interval.value).toBe('45');
+  });
+
+  it('a typed webhook is guarded too; discarding clears it (never kept for a later visit)', async () => {
+    backend('admin');
+    const { router } = renderApp('/settings/integrations');
+    const u = userEvent.setup();
+    await u.type(await screen.findByLabelText('Webhook URL'), WEBHOOK);
+    await u.click(screen.getByRole('link', { name: 'Правила сповіщень' }));
+    const dialog = screen.getByRole('dialog', { name: 'Скасувати зміни?' });
+    expect(within(dialog).getByText(/Введений webhook не збережено/)).toBeTruthy();
+    await u.click(within(dialog).getByRole('button', { name: 'Відкинути зміни' }));
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/settings/rules'); });
+    await u.click(screen.getByRole('link', { name: 'Інтеграції' }));
+    expect((await screen.findByLabelText<HTMLInputElement>('Webhook URL')).value).toBe('');
+    const stored = (st: Storage) => Array.from({ length: st.length }, (_, i) => st.getItem(st.key(i) ?? '') ?? '').join('\n');
+    expect(stored(localStorage)).not.toContain('hooks.slack.com');
+    expect(stored(sessionStorage)).not.toContain('hooks.slack.com');
+    expect(router.state.location.search + router.state.location.hash).toBe('');
+  });
+
+  it('re-reading with a typed webhook asks first; keeping sends nothing', async () => {
+    const calls = backend('admin');
+    renderApp('/settings/integrations');
+    const u = userEvent.setup();
+    const input = await screen.findByLabelText<HTMLInputElement>('Webhook URL');
+    await u.type(input, WEBHOOK);
+    const before = gets(calls);
+    await u.click(screen.getByRole('button', { name: 'Перечитати стан' }));
+    await u.click(within(screen.getByRole('dialog', { name: 'Перечитати стан?' })).getByRole('button', { name: 'Продовжити введення' }));
+    expect(gets(calls)).toBe(before);
+    expect(input.value).toBe(WEBHOOK);
+    await u.click(screen.getByRole('button', { name: 'Перечитати стан' }));
+    await u.click(within(screen.getByRole('dialog', { name: 'Перечитати стан?' })).getByRole('button', { name: 'Очистити й перечитати' }));
+    await waitFor(() => { expect(gets(calls)).toBe(before + 1); });
+    expect((await screen.findByLabelText<HTMLInputElement>('Webhook URL')).value).toBe('');
+  });
+
+  it('beforeunload is armed only while something would be lost', async () => {
+    backend('admin');
+    renderApp('/settings/rules');
+    await screen.findByLabelText(/Інтервал перевірки/);
+    const fire = () => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+    expect(fire()).toBe(false);
+    await editInterval('45');
+    expect(fire()).toBe(true);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Скасувати зміни' }));
+    expect(fire()).toBe(false);
+  });
+
+  it('pending save: one PATCH; fields locked in the handlers too; leaving asks; the answer is applied only after it arrives', async () => {
+    const answer = deferred<Response>();
+    const calls = backend('admin', (req) => (req.method === 'PATCH' ? answer.promise : undefined));
+    const { router } = renderApp('/settings/rules');
+    const { u, interval } = await editInterval('60');
+    await u.click(screen.getByRole('button', { name: 'Зберегти' }));
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Збереження…' }).disabled).toBe(true);
+    expect(interval.disabled).toBe(true);
+    expect(screen.getByText(/Зміни недоступні до відповіді/)).toBeTruthy();
+    interval.disabled = false; // a path around the disabled control is refused by the handler itself
+    fireEvent.change(interval, { target: { value: '99' } });
+    expect(interval.value).toBe('60');
+    fireEvent.submit(interval.closest('form') as HTMLFormElement);
+    expect(sentTo(calls, 'PATCH', '/api/settings/alerts')).toHaveLength(1);
+    expect(screen.queryByText(/Збережено/)).toBeNull();
+    await u.click(screen.getByRole('link', { name: 'Інтеграції' }));
+    const dialog = screen.getByRole('dialog', { name: 'Запит ще виконується' });
+    await u.click(within(dialog).getByRole('button', { name: 'Залишитися' }));
+    expect(router.state.location.pathname).toBe('/settings/rules');
+    await act(async () => { answer.resolve(json(200, view({ revision: 2, timing: { ...view().timing, intervalSeconds: 60 } }))); await Promise.resolve(); });
+    expect(await screen.findByText(/Збережено. Нові правила діють/)).toBeTruthy();
+    expect(screen.getByLabelText<HTMLInputElement>(/Інтервал перевірки/).value).toBe('60');
+    expect(screen.getByText('Змін немає.')).toBeTruthy();
+  });
+
+  it('a validation error keeps the draft, sends nothing and moves no revision', async () => {
+    const calls = backend('admin');
+    renderApp('/settings/rules');
+    const { u, interval } = await editInterval('5');
+    await u.click(screen.getByRole('button', { name: 'Зберегти' }));
+    expect(screen.getByText('Ціле число від 10 до 600.')).toBeTruthy();
+    expect(interval.getAttribute('aria-invalid')).toBe('true');
+    expect(interval.value).toBe('5');
+    expect(sentTo(calls, 'PATCH', '/api/settings/alerts')).toHaveLength(0);
+  });
+
+  it.each([
+    ['network', () => Promise.reject(new TypeError('fetch failed'))],
+    ['503', () => json(503, {}, { 'retry-after': '30' })],
+  ] as const)('save %s: draft kept, never re-sent automatically', async (kind, reply) => {
+    const calls = backend('admin', (req) => (req.method === 'PATCH' ? reply() : undefined));
+    renderApp('/settings/rules');
+    const { u, interval } = await editInterval('60');
+    await u.click(screen.getByRole('button', { name: 'Зберегти' }));
+    if (kind === 'network') {
+      expect(await screen.findByText(/Відповідь не отримано — зміни могли зберегтися/)).toBeTruthy();
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Зберегти' }).disabled).toBe(true); // unknown: re-read first
+      expect(screen.getByRole('button', { name: 'Перечитати стан' })).toBeTruthy();
+    } else {
+      expect(await screen.findByText(/Сервіс тимчасово недоступний. Спробуйте через 30 с/)).toBeTruthy();
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Зберегти' }).disabled).toBe(false); // known failure
+    }
+    expect(interval.value).toBe('60');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sentTo(calls, 'PATCH', '/api/settings/alerts')).toHaveLength(1);
+  });
+
+  it('401 on save ends the session; logout with unsaved changes is never blocked; nothing of the draft survives', async () => {
+    backend('admin', (req) => (req.method === 'PATCH' ? json(401, {}) : undefined));
+    renderApp('/settings/rules');
+    const { u } = await editInterval('61');
+    await u.click(screen.getByRole('button', { name: 'Зберегти' }));
+    expect(await screen.findByText('Сесія завершилась. Увійдіть знову.')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.body.innerHTML).not.toContain('value="61"');
+  });
+
+  it('logout with a dirty draft goes straight to login', async () => {
+    backend('admin');
+    renderApp('/settings/rules');
+    const { u } = await editInterval('62');
+    await u.click(screen.getByRole('button', { name: 'Вийти' }));
+    expect(await screen.findByText('Ви вийшли з системи.')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('webhook save: success message stays visible; a failed save clears the typed secret too', async () => {
+    let fail = true;
+    backend('admin', (req) => (req.method === 'PUT' ? (fail ? json(400, {}) : json(200, configured())) : undefined));
+    renderApp('/settings/integrations');
+    const u = userEvent.setup();
+    const input = await screen.findByLabelText<HTMLInputElement>('Webhook URL');
+    await u.type(input, WEBHOOK);
+    await u.click(screen.getByRole('button', { name: 'Зберегти webhook' }));
+    expect(await screen.findByText(/Це не Slack Incoming Webhook URL/)).toBeTruthy();
+    expect(input.value).toBe('');
+    fail = false;
+    await u.type(input, WEBHOOK);
+    await u.click(screen.getByRole('button', { name: 'Зберегти webhook' }));
+    expect(await screen.findByText('Webhook збережено.')).toBeTruthy();
+    expect(document.body.innerHTML).not.toContain('hooks.slack.com/services/T0SYNTH07');
+  });
+
+  it.each([
+    [{ outcome: 'success', code: null, stored: true }, /Slack прийняв тестове повідомлення/, 'status'],
+    [{ outcome: 'failed', code: 'http_404', stored: true }, /Тестове повідомлення не доставлено \(http_404\)/, 'alert'],
+    [{ outcome: 'unknown', code: 'timeout', stored: true }, /Результат тесту невідомий \(timeout\): повідомлення могло надійти/, 'alert'],
+    [{ outcome: 'success', code: null, stored: false }, /результат стосується попереднього webhook/, 'alert'],
+  ] as const)('test answer %o is reported as such; delivery is never switched on', async (result, text, role) => {
+    const calls = backend('admin', (req) => (req.url.endsWith('/test')
+      ? json(200, { operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', generation: 1, at: '2026-10-15T09:20:00.000Z', ...result }) : undefined), () => configured());
+    renderApp('/settings/integrations');
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Надіслати тестове повідомлення' }));
+    const message = await screen.findByText(text);
+    expect(message.closest(`[role="${role}"]`)).toBeTruthy();
+    expect(screen.queryByText('Тестове повідомлення оброблено.')).toBeNull();
+    expect(sentTo(calls, 'PATCH', '/api/settings/alerts')).toHaveLength(0);
+    expect(screen.getByRole<HTMLInputElement>('switch', { name: /Автоматична доставка/ }).checked).toBe(false);
+    if (!result.stored) expect(screen.getByText(/Останній тест/).nextElementSibling?.textContent).toBe('не виконувався для цього webhook');
+  });
+
+  it('test request without an answer: possible delivery explained, not re-sent', async () => {
+    const calls = backend('admin', (req) => (req.url.endsWith('/test') ? Promise.reject(new TypeError('fetch failed')) : undefined), () => configured());
+    renderApp('/settings/integrations');
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Надіслати тестове повідомлення' }));
+    expect(await screen.findByText(/Відповідь не отримано — тест міг виконатися/)).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sentTo(calls, 'POST', '/api/settings/integrations/slack/test')).toHaveLength(1);
+  });
+
+  it('pending test: a second click and leaving are guarded; the late answer after leaving changes nothing', async () => {
+    const answer = deferred<Response>();
+    const calls = backend('admin', (req) => (req.url.endsWith('/test') ? answer.promise : undefined), () => configured());
+    const { router } = renderApp('/settings/integrations');
+    const u = userEvent.setup();
+    const btn = await screen.findByRole<HTMLButtonElement>('button', { name: 'Надіслати тестове повідомлення' });
+    await u.click(btn);
+    btn.disabled = false;
+    fireEvent.click(btn);
+    expect(sentTo(calls, 'POST', '/api/settings/integrations/slack/test')).toHaveLength(1);
+    await u.click(screen.getByRole('link', { name: 'Правила сповіщень' }));
+    await u.click(within(screen.getByRole('dialog', { name: 'Запит ще виконується' })).getByRole('button', { name: 'Вийти без очікування' }));
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/settings/rules'); });
+    await act(async () => { answer.resolve(json(200, { operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', generation: 1, outcome: 'success', code: null, at: '2026-10-15T09:20:00.000Z', stored: true })); await Promise.resolve(); });
+    expect(screen.queryByText(/Slack прийняв/)).toBeNull();
+  });
+
+  it('the queue is shown per state; a missing public URL is explained', async () => {
+    backend('admin', undefined, () => configured({ publicUrlConfigured: false, queue: { queued: 2, sending: 0, sent: 41, failed: 1, unknown: 0, dropped: 0, cancelled: 3 } }));
+    renderApp('/settings/integrations');
+    expect((await screen.findByText('Надіслано')).nextElementSibling?.textContent).toBe('41');
+    expect(screen.getByText('Скасовано').nextElementSibling?.textContent).toBe('3');
+    expect(screen.getByText(/не задано ALERTS_PUBLIC_URL/)).toBeTruthy();
   });
 });

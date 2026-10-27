@@ -5,6 +5,8 @@ import { MemoryRouter, type NavigateFunction, useNavigate } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppRoutes } from '../src/App';
 import { AuthProvider } from '../src/auth/AuthContext';
+import { reasonLabel } from '../src/components/Inventory';
+import { commandStatusText } from '../src/components/processActions';
 import { CSRF, deferred, installFetch, json, type RecordedRequest, session } from './support';
 
 // Allowlisted PM2 control UI (Task 009, ADR-017).
@@ -276,5 +278,24 @@ describe('process control on the server page', () => {
     await act(async () => { slow.resolve(json(201, command())); await Promise.resolve(); });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByText(/У черзі/)).toBeNull();
+  });
+});
+
+// Final frontend stage: reason codes from the API are looked up in Maps of own entries (no Object.prototype hits).
+describe('reason lookups with arbitrary codes', () => {
+  const command = (reason: string) => ({
+    id: '11111111-1111-4111-8111-111111111111', serverId: '22222222-2222-4222-8222-222222222222', targetKey: 'n-0123456789abcdef01234567', serviceName: 'api',
+    action: 'restart', status: 'failed', reason, requestedAt: '2026-10-15T09:00:00.000Z', completedAt: null, before: null, after: null,
+  }) as unknown as Parameters<typeof commandStatusText>[0];
+
+  it.each(['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty', 'not_a_known_code'])('%s reads as an unknown reason', (code) => {
+    expect(reasonLabel(code)).toBe('невідома причина');
+    expect(commandStatusText(command(code))).toBe('Не вдалося: невідома причина.');
+  });
+
+  it('known codes keep their texts', () => {
+    expect(reasonLabel('daemon_not_running')).toBe('PM2 daemon не запущено');
+    expect(reasonLabel(null)).toBe('');
+    expect(commandStatusText(command('timeout'))).toBe('Не вдалося: PM2 не відповів вчасно.');
   });
 });

@@ -22,7 +22,8 @@ export const MATCH_LABELS: Record<ControlTarget['matchStatus'], string> = {
   daemon_unavailable: 'PM2 daemon недоступний',
 };
 
-const REASON_LABELS: Record<string, string> = {
+// A Map of own entries: an API reason such as `constructor` never resolves to an Object.prototype member.
+const REASON_LABELS: ReadonlyMap<string, string> = new Map(Object.entries({
   not_allowlisted: 'ціль не в локальному allowlist', action_not_allowed: 'дія не дозволена для цілі', allowlist_invalid: 'локальний allowlist некоректний',
   not_found: 'процес не знайдено', ambiguous: 'кілька процесів з цим ім’ям', cluster_unsupported: 'cluster-режим не підтримується',
   fingerprint_mismatch: 'визначення процесу змінилося', invalid_state: 'процес у стані, з якого ця дія не виконується',
@@ -31,8 +32,8 @@ const REASON_LABELS: Record<string, string> = {
   identity_changed: 'процес змінився під час дії', verification_failed: 'очікуваний стан не підтвердився', command_conflict: 'конфлікт команди',
   broker_busy: 'broker зайнятий', broker_unavailable: 'broker недоступний', not_dispatched: 'команду не було передано агенту до дедлайну',
   no_result: 'результат не надійшов', actor_not_authorized: 'у користувача більше немає права керування', target_unavailable: 'ціль недоступна',
-};
-const reasonText = (r: string | null) => (r ? REASON_LABELS[r] ?? 'невідома причина' : '');
+}));
+const reasonText = (r: string | null) => (r ? REASON_LABELS.get(r) ?? 'невідома причина' : '');
 
 export function commandStatusText(c: CommandView): string {
   switch (c.status) {

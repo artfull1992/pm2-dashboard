@@ -207,10 +207,15 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 .form-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 
 /* ------------------------------------------------------------------ login */
-.login { min-height: 100%; display: grid; place-items: center; padding: var(--space-4); }
-.login__card { width: min(100%, 400px); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; display: grid; gap: var(--space-4); }
+.login { min-height: 100%; display: grid; grid-template-rows: auto 1fr; justify-items: center; align-items: start; padding: var(--space-3) var(--space-4) var(--space-6); }
+.login__bar { justify-self: stretch; display: flex; justify-content: flex-end; min-height: var(--control-h); }
+.login__card { align-self: center; width: min(100%, 400px); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; display: grid; gap: var(--space-4); margin-bottom: 8vh; }
+.login__head { display: grid; gap: 4px; }
 .login__title { font-size: var(--text-h1); line-height: 32px; font-weight: 650; }
-.login__subtitle { color: var(--text-muted); }
+.login__subtitle { color: var(--text-muted); font-size: var(--font-sm); }
+@media (max-width: 600px) {
+  .login__card { padding: 20px; margin-bottom: 0; }
+}
 
 /* ------------------------------------------------------------------ shell */
 /* ≥ 1280 px: 184 px column with icons + labels; 601–1279 px: 68 px icon rail (labels stay the accessible names and
@@ -619,24 +624,41 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 
 /* ------------------------------------------------------------------ users / account */
 .status-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
-.account-form { display: grid; gap: var(--space-4); max-width: 560px; }
+.account-card { max-width: 560px; }
+.account-facts dd { font-weight: 500; }
+.account-form { gap: var(--space-4); }
+.account-form__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.account-form__actions { justify-content: flex-start; }
 
 /* ------------------------------------------------------------------ settings */
 .tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .tab { display: inline-flex; align-items: center; min-height: var(--control-h); padding: 0 14px; margin-bottom: -1px; color: var(--text-muted); text-decoration: none; border-bottom: 2px solid transparent; font-size: var(--text-md); }
 .tab:hover { color: var(--text); }
 .tab--active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
-.settings-card { display: grid; gap: var(--space-4); max-width: 1080px; }
+/* Slack integration: the same "title + explanation | controls" grid as the alert rules below, one section per concern
+   (webhook, delivery, test, queue, removal); a message appears in the section of the action that produced it. */
+.settings-card { display: grid; gap: var(--space-3); max-width: 1080px; padding-bottom: var(--space-2); }
 .settings-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-4); }
-.settings-form { display: grid; gap: var(--space-3); max-width: 640px; }
-.settings-block { display: grid; gap: var(--space-2); border-top: 1px solid var(--border); padding-top: var(--space-4); }
-.settings-block__title { font-size: var(--font-sm); font-weight: 600; }
+.settings-head__title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--space-4); min-width: 0; }
+.settings-card__lead { max-width: 72ch; }
+.settings-form { display: grid; gap: var(--space-3); }
+.settings-section { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 440px); gap: 8px 40px; align-items: start; border-top: 1px solid var(--border); padding: 14px 0; }
+.settings-section__title { font-size: var(--text-md); line-height: 20px; font-weight: 600; }
+.settings-section__text .hint { margin-top: 2px; }
+.settings-section__body { display: grid; gap: 10px; justify-items: start; min-width: 0; }
+.settings-section__body > .settings-form, .settings-section__body > .settings-message, .settings-section__body > .facts { justify-self: stretch; }
+.settings-section--danger .settings-section__title { color: var(--danger); }
+.settings-message { display: grid; gap: 8px; justify-items: start; }
+.settings-facts { grid-template-columns: max-content minmax(0, 1fr); }
+.settings-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; margin: 0; justify-self: stretch; }
+.settings-stats__item { display: grid; gap: 2px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); min-width: 0; }
+.settings-stats dt { color: var(--text-muted); font-size: var(--font-xs); line-height: 16px; }
+.settings-stats dd { margin: 0; font-weight: 600; }
 
 /* Alert rules (Task 013.2): one card, groups divided by a rule; every row is "title + explanation | controls" on the
    same grid; a pair of controls always shares one line and both inputs have one height and width. */
 .rules-form { max-width: 1080px; gap: 0; padding-bottom: 0; }
 .rules-form__head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding-bottom: 6px; }
-.rules-form__limits { min-height: var(--control-sm); padding: 0 12px; font-size: var(--font-sm); }
 .rules-group { border: 0; border-top: 1px solid var(--border); margin: 0; padding: 14px 0 6px; min-width: 0; }
 .rules-group > legend, .rules-group > summary { font-weight: 600; font-size: var(--text-lg); padding: 0; }
 .rules-group > legend { float: left; width: 100%; margin-bottom: 4px; }
@@ -673,7 +695,7 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 @media (max-width: 760px) {
   .panel, .card { padding: var(--space-4); }
   .rules-actions { margin: 0 calc(-1 * var(--space-4)); padding: 12px var(--space-4) 14px; }
-  .rules-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .rules-row, .settings-section { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .rules-row__controls { gap: 12px; }
   .facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .facts dd { margin-bottom: var(--space-2); }
@@ -716,7 +738,6 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 /* Theme switcher (sidebar, rail, mobile menu, login). */
 .theme-switcher { display: inline-flex; }
 .profile .theme-switcher { margin-top: var(--space-2); }
-.login__theme { justify-self: end; }
 .action-menu__item--checked { font-weight: 600; }
 .action-menu__item[role="menuitemradio"]::before { content: ""; display: inline-block; width: 1.2em; }
 .action-menu__item--checked::before { content: "✓"; }

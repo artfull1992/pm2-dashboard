@@ -1,8 +1,9 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider, useAuth } from '../src/auth/AuthContext';
 import { safeInternalPath } from '../src/auth/guards';
+import { loginNotice } from '../src/pages/LoginPage';
 import { CSRF, deferred, installFetch, json, noContent, renderApp, session } from './support';
 
 const PASSWORD = 'synthetic-Ui-Passw0rd';
@@ -104,6 +105,57 @@ describe('login', () => {
 
   it.each(['https://evil.example', '//evil.example', '/\\evil', 'javascript:alert(1)', '/login'])('never redirects to %s', (from) => {
     expect(safeInternalPath(from)).toBe('/');
+  });
+
+  // Final frontend stage: one login request per submit, checked by the handler (not only the disabled button).
+  it('two submits before the re-render send one login request; the late notice is cleared by the answer', async () => {
+    const answer = deferred<Response>();
+    const calls = installFetch((req) => (req.url === '/api/auth/me' ? json(401, {}) : req.url === '/api/auth/login' ? answer.promise : json(404, {})));
+    renderApp('/login');
+    const u = userEvent.setup();
+    await u.type(await screen.findByLabelText('Email'), 'admin@example.test');
+    await u.type(screen.getByLabelText('Пароль'), PASSWORD);
+    const form = screen.getByRole('form', { name: 'Node Control' });
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(calls.filter((c) => c.url === '/api/auth/login')).toHaveLength(1);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Вхід…' }).disabled).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>('Пароль').disabled).toBe(true);
+    await act(async () => { answer.resolve(json(401, {})); await Promise.resolve(); });
+    expect(await screen.findByText('Невірний email або пароль.')).toBeTruthy();
+    expect(screen.getByLabelText<HTMLInputElement>('Пароль').value).toBe('');
+    expect(calls.filter((c) => c.url === '/api/auth/login')).toHaveLength(1);
+  });
+
+  it('password-manager friendly fields and an accessible theme switch on the login page', async () => {
+    installFetch(() => json(401, {}));
+    renderApp('/login');
+    const email = await screen.findByLabelText<HTMLInputElement>('Email');
+    const password = screen.getByLabelText<HTMLInputElement>('Пароль');
+    expect([email.name, email.type, email.autocomplete]).toEqual(['email', 'email', 'username']);
+    expect([password.name, password.type, password.autocomplete]).toEqual(['password', 'password', 'current-password']);
+    expect(screen.getByRole('heading', { level: 1, name: 'Node Control' })).toBeTruthy();
+    const theme = screen.getByRole('button', { name: /Тема оформлення/ });
+    expect(theme.closest('form')).toBeNull(); // outside the form: choosing a theme never submits it
+  });
+
+  it.each([
+    ['expired', 'Сесія завершилась. Увійдіть знову.'],
+    ['logged_out', 'Ви вийшли з системи.'],
+    ['password_changed', 'Пароль змінено. Усі сесії завершено — увійдіть з новим паролем.'],
+  ])('notice for %s', async (reason, text) => {
+    installFetch(() => json(401, {}));
+    renderApp('/login', { reason });
+    expect((await screen.findByRole('status')).textContent).toBe(text);
+  });
+
+  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'unknown_reason', 42])('an unknown notice reason (%s) shows nothing', async (reason) => {
+    expect(loginNotice(reason)).toBeNull();
+    installFetch(() => json(401, {}));
+    renderApp('/login', { reason });
+    await screen.findByLabelText('Email');
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(document.body.textContent).not.toMatch(/function|native code|\[object/);
   });
 });
 
