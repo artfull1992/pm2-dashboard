@@ -1,5 +1,30 @@
 # Поточний стан проєкту
 
+## Production: деплой `728cd6b` — етапи 3.4 «Користувачі» і 3.5 «Окрема сторінка доступів» (2026-10-27, після APPROVED Codex і за прямим дозволом користувача)
+
+Активна code revision — `728cd6b` (review-commit APPROVED поверх `989e3dc`; містить також етап 3.4 `57329de`, APPROVED у `b742f2b`). Цей запис — пізніший docs-commit; він не розгортався.
+
+**До деплою.**
+- current `2d9d856`, previous `cf44798`; API active, `NRestarts=0`, `nodecontrol`; health 200/200 локально; попереджень за 2 год — 0; Nginx і PostgreSQL active, failed units — 0; годинник сервера збігається з машиною оператора.
+- `2d9d856 → 728cd6b` в артефакті: змінено лише `frontend/dist` (`index.html`, JS, CSS). Backend, міграції, `scripts/deploy`, `deploy/systemd`, `package*.json` побайтово ідентичні; схема й env без змін.
+
+**Fallback — `2d9d856`** (previous; backend ідентичний, тож повернення — лише попередній UI; grants і audit не зачіпаються). Штатно: `server-release.js rollback` + restart лише `node-control-api`.
+
+**Процедура (штатна).**
+- Збірка `build-release.js --from-tree` з `git archive 728cd6b` на одноразовій VM (Node 22.22.1; `TMPDIR` і npm-кеш у каталозі збірки). API `sha256 2bcf356f1440927eb1ed51317bd10eaff217648cf4cfafc0f63a70ee1638fabf`, 87 файлів; без `.map`, `.env`, дизайн-матеріалів.
+- На сервері: перевірка hostname → checksum OK → резервні копії `api.env` (600), unit і `pg_dump -Fc` (`pg_restore --list` OK) → `prepare` → `config` («kept») → `migrate status` (`applied=10 pending=0 unknown=0`; `up` не запускався) → unit без змін → `activate` → restart лише `node-control-api`.
+
+**Після деплою.**
+- current `728cd6b`, previous `2d9d856`; active, enabled, `NRestarts=0`, `nodecontrol`, лише `127.0.0.1:3100`.
+- `/health/live` і `/health/ready` — 200 локально; `/nope` → 404; попереджень за 5 хв — 0; Nginx і PostgreSQL active, failed units — 0.
+- `frontend/dist` (`index.html`, JS, CSS) побайтово відповідає артефакту.
+- HTTPS: `/`, `/users`, `/audit` і пряме відкриття `/users/<id>/access` → 200 з новим `index.html`; assets 200 (JS — `application/javascript`); анонімні `/api/auth/me` і `/api/users/<id>/access` → 401 (`no-store`); невідомий `/api/*` → JSON 404.
+- Анонімний браузерний smoke (1440 dark, 390 light, лише GET): пряма адреса сторінки доступів веде на `/login`, без помилок консолі й горизонтального переповнення.
+
+**Не перевірено** (production-облікових даних немає; production-дані не читались і не змінювались). Перевірити оператору як admin: «Користувачі» (сторінки, пошук, фільтр ролі, створення/роль/активність) і «Сервери та сервіси» → сторінка доступів (сервери й сервіси, збереження, reload, «← Користувачі» повертає до тієї ж сторінки списку). Після першого використання — `journalctl -u node-control-api -p warning`.
+
+**Не змінювались:** Agent, broker, exporter, PM2, Slack, користувачі й доступи, PostgreSQL/HBA/firewall, Nginx. Rollback не знадобився.
+
 ## Повторний незалежний review Codex — етап 3.5 (`989e3dc`), 2026-10-27 — APPROVED
 
 Перевірено diff від `e54ed1f`, зауваження P2, AccessPage, AccessPickers, recoveryOutcome, regression-тести та документацію Code → Docs / Docs → Code (ADR-035, PART-02-ADOPTION, PROJECT_STATUS; попередні README/ARCHITECTURE залишаються узгодженими). P2 закрито; етап 3.5 «Окрема сторінка доступів» отримує APPROVED у межах зазначених перевірок. Нових зауважень немає. Функціональний код Codex не змінював.
