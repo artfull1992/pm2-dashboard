@@ -47,7 +47,26 @@ export function rebase(draft: readonly DraftServer[], onto: UserAccess): DraftSe
   });
 }
 
-export const scopeText = (s: DraftServer) =>
+/**
+ * What a recovery read (GET after a 409 or a lost answer) may do with the draft (ADR-035). `checked` is the signature
+ * of the draft when the read started, `current` the draft now: editing is locked during the read, and if the draft
+ * changed anyway the answer is never applied over it — only shown for an explicit choice («drifted»).
+ * - «admin»: the target became an admin — read-only full access;
+ * - «matches»: the stored state equals the checked draft — it becomes the baseline (authorship is not claimed);
+ * - «unchanged»: after a lost answer the stored state and revision are those of the baseline — the draft stays;
+ * - «differs» / «drifted»: shown beside the draft; the user keeps it on the new revision or discards it.
+ */
+export type RecoveryOutcome = 'admin' | 'matches' | 'unchanged' | 'differs' | 'drifted';
+export function recoveryOutcome(r: { checked: string; current: string; remote: UserAccess; base: UserAccess; lost: boolean }): RecoveryOutcome {
+  if (r.remote.global) return 'admin';
+  if (r.current !== r.checked) return 'drifted';
+  const stored = signature(toDraft(r.remote));
+  if (stored === r.checked) return 'matches';
+  if (r.lost && r.remote.revision === r.base.revision && stored === signature(toDraft(r.base))) return 'unchanged';
+  return 'differs';
+}
+
+export const scopeText =(s: DraftServer) =>
   (s.mode === 'all' ? 'Усі поточні й майбутні' : s.services.length === 0 ? 'Сервіси не вибрано' : `Вибрано сервісів: ${String(s.services.length)}`);
 
 /** Same substring rule as the API search (case-insensitive). */

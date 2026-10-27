@@ -5,7 +5,7 @@ import type { Role, ServerOption, UserAccess } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { AddServerDialog, ServiceCatalog } from '../components/AccessPickers';
-import { accessError, type DraftServer, emptySelections, payload, rebase, scopeText, signature, toDraft, unknownResult } from '../components/accessDraft';
+import { accessError, type DraftServer, emptySelections, payload, rebase, recoveryOutcome, scopeText, signature, toDraft, unknownResult } from '../components/accessDraft';
 import { Dialog } from '../components/Dialog';
 import { ROLE_LABELS } from '../components/Layout';
 import { LoadingState } from '../components/StatusMessage';
@@ -18,7 +18,8 @@ import { usersViewFrom } from './usersView';
 // the revision is never refreshed behind the user's back. Nothing is shown as saved before the answer; a lost answer
 // is «unknown» and is checked by an explicit GET. Leaving with unsaved changes (links, «Скасувати», Back/Forward) asks
 // first; reloading or closing the tab triggers the browser's own warning. Requests are bound to the session and the
-// user id (the page is keyed by it); late answers are dropped.
+// user id (the page is keyed by it); late answers are dropped. While a save or a recovery read is in flight the draft
+// is locked: every handler that changes it refuses, and a read answer is never applied over a draft that changed.
 
 const ROLE_SCOPE: Record<Role, string> = {
   admin: 'Повний доступ до всіх серверів і сервісів',
@@ -34,8 +35,11 @@ const ROLE_NOTE: Record<Role, string> = {
 type Load = { status: 'loading' } | { status: 'error'; text: string } | { status: 'forbidden' } | { status: 'not_found'; invalid: boolean } | { status: 'ready' };
 /** The outcome of the last save that did not succeed. «conflict» and «unknown» block saving until checked. */
 type Issue = { kind: 'refused'; text: string } | { kind: 'conflict' } | { kind: 'unknown' };
-/** The stored state read on request (after a conflict or a lost answer), shown beside the draft. */
-type Remote = { kind: 'idle' } | { kind: 'checking' } | { kind: 'error'; text: string } | { kind: 'ready'; access: UserAccess };
+/**
+ * The stored state read on request (after a conflict or a lost answer), shown beside the draft. `drifted`: the draft
+ * changed during the read, so nothing was applied automatically.
+ */
+type Remote = { kind: 'idle' } | { kind: 'checking' } | { kind: 'error'; text: string } | { kind: 'ready'; access: UserAccess; drifted: boolean };
 type Confirm = { kind: 'remove'; server: DraftServer } | { kind: 'discard'; remote: UserAccess } | null;
 
 /** One page instance per user id: another id never shows the previous user's draft or answers. */
@@ -64,6 +68,8 @@ function AccessPage({ userId }: { userId: string }) {
   const [confirm, setConfirm] = useState<Confirm>(null);
   const inflight = useRef<AbortController | null>(null);
   const reading = useRef<AbortController | null>(null);
+  // The draft as last rendered: a read answer is checked against it, not against the draft its request started with.
+  const draftNow = useRef<DraftServer[]>([]);
   const editorTitle = useRef<HTMLHeadingElement>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   // After adding or removing a server: focus the editor of the selected one (or «Додати сервер») once it is rendered.
@@ -99,6 +105,7 @@ function AccessPage({ userId }: { userId: string }) {
     return () => { controller.abort(); };
   }, [valid, userId, generation, adopt, bindSession, sessionExpired]);
   useEffect(() => () => { inflight.current?.abort(); reading.current?.abort(); }, []);
+  useEffect(() => { draftNow.current = draft; }, [draft]);
   useEffect(() => {
     if (!focusNext.current) return;
     focusNext.current = false;
@@ -110,7 +117,12 @@ function AccessPage({ userId }: { userId: string }) {
   const dirty = ready && signature(draft) !== baseSig;
   const empty = emptySelections(draft);
   const blocked = issue?.kind === 'conflict' || issue?.kind === 'unknown';
-  const canSave = ready && !access.global && dirty && empty.length === 0 && !pending && !blocked;
+  const checking = remote.kind === 'checking';
+  // A save or a recovery read in flight: the draft cannot change (ADR-035). Rendering disables the controls; the
+  // handlers check the requests themselves (`busy`), so no other path can change the draft meanwhile.
+  const locked = pending || checking;
+  const busy = () => inflight.current !== null || reading.current !== null;
+  const canSave = ready && !access.global && dirty && empty.length === 0 && !locked && !blocked;
   // Leaving loses the draft (dirty) or stops waiting for a save in flight (pending): ask first.
   const guard = dirty || pending;
   const shouldBlock = useCallback<BlockerFunction>(({ currentLocation, nextLocation }) => guard && currentLocation.pathname !== nextLocation.pathname, [guard]);
@@ -123,30 +135,35 @@ function AccessPage({ userId }: { userId: string }) {
   }, [guard]);
 
   const edit = (serverId: string, change: Partial<DraftServer>) => {
+    if (busy()) return;
     setNotice(null);
     setDraft((d) => d.map((s) => (s.serverId === serverId ? { ...s, ...change } : s)));
   };
+  const openAdd = () => { if (!busy()) setAdding(true); };
   const addServer = (o: ServerOption) => {
+    setAdding(false);
+    if (busy()) return;
     setNotice(null);
     // Into the draft only: «selected» with nothing chosen — never «all» by default.
     setDraft((d) => (d.some((s) => s.serverId === o.id) ? d : [...d, { serverId: o.id, serverName: o.name, serverActive: o.isActive, mode: 'selected', services: [], unavailable: [] }]));
     setSelected(o.id);
-    setAdding(false);
     focusNext.current = true;
   };
+  const askRemove = (s: DraftServer) => { if (!busy()) setConfirm({ kind: 'remove', server: s }); };
   const removeServer = (s: DraftServer) => {
+    setConfirm(null);
+    if (busy()) return;
     const i = draft.findIndex((x) => x.serverId === s.serverId);
     const rest = draft.filter((x) => x.serverId !== s.serverId);
     setNotice(null);
     setDraft(rest);
     setSelected(rest[i]?.serverId ?? rest[i - 1]?.serverId ?? null);
-    setConfirm(null);
     focusNext.current = true;
   };
   const leave = () => { void navigate('/users', { state: backState }); };
 
   const save = async () => {
-    if (!canSave || auth.status !== 'authenticated') return;
+    if (!canSave || busy() || auth.status !== 'authenticated') return;
     const { csrfToken } = auth.session;
     setPending(true);
     setIssue(null);
@@ -173,39 +190,48 @@ function AccessPage({ userId }: { userId: string }) {
       }
       setIssue(unknownResult(error) ? { kind: 'unknown' } : { kind: 'refused', text: accessError(error) });
     } finally {
+      if (inflight.current === controller) inflight.current = null;
       if (!controller.signal.aborted) setPending(false);
     }
   };
 
-  /** GET only, on request: what is stored now. Never a hidden save; the draft stays until the user decides. */
+  /**
+   * GET only, on request: what is stored now. Never a hidden save; the draft stays until the user decides. The draft
+   * is locked while the read runs (one read at a time, never during a save), and the answer is judged against the
+   * draft it checked: if the draft changed anyway, it is only shown for an explicit choice.
+   */
   const readRemote = async () => {
-    if (reading.current || !access) return;
+    if (busy() || !access) return;
+    const base = access;
     const controller = new AbortController();
     reading.current = controller;
     const binding = bindSession();
     const stale = () => controller.signal.aborted || !binding.current();
     const lost = issue?.kind === 'unknown';
+    const checked = signature(draft);
+    setAdding(false);
+    setConfirm(null);
     setRemote({ kind: 'checking' });
     try {
       const a = await accessApi.get(userId, controller.signal);
       if (stale()) return;
-      const sig = signature(toDraft(a));
-      if (a.global) {
+      const outcome = recoveryOutcome({ checked, current: signature(draftNow.current), remote: a, base, lost });
+      if (outcome === 'admin') {
         adopt(a); setIssue(null); setRemote({ kind: 'idle' });
         setNotice('Користувач тепер адміністратор: окремі доступи не застосовуються, чернетку не збережено.');
         return;
       }
-      if (sig === signature(draft)) {
+      if (outcome === 'matches') {
         adopt(a); setIssue(null); setRemote({ kind: 'idle' });
         setNotice(`Перевірено: збережені доступи (ревізія ${String(a.revision)}) збігаються з вашою чернеткою. Чи зберегла їх саме ця спроба, перевірка не показує.`);
         return;
       }
-      if (lost && a.revision === access.revision && sig === baseSig) {
+      if (outcome === 'unchanged') {
         setAccess(a); setIssue(null); setRemote({ kind: 'idle' });
         setNotice(`Перевірено: збережені доступи не змінилися (ревізія ${String(a.revision)}) — на момент перевірки зміни не застосовано. Чернетка лишилася; її можна зберегти знову.`);
         return;
       }
-      setRemote({ kind: 'ready', access: a });
+      setRemote({ kind: 'ready', access: a, drifted: outcome === 'drifted' });
     } catch (error) {
       if (stale()) return;
       if (error instanceof ApiError && error.kind === 'unauthorized') { sessionExpired(); return; }
@@ -217,10 +243,13 @@ function AccessPage({ userId }: { userId: string }) {
     }
   };
   const discardFor = (a: UserAccess) => {
-    adopt(a); setIssue(null); setRemote({ kind: 'idle' }); setConfirm(null);
+    setConfirm(null);
+    if (busy()) return;
+    adopt(a); setIssue(null); setRemote({ kind: 'idle' });
     setNotice(`Показано актуальний збережений стан (ревізія ${String(a.revision)}); чернетку відкинуто.`);
   };
   const keepDraftOn = (a: UserAccess) => {
+    if (busy()) return;
     setAccess(a); setDraft((d) => rebase(d, a)); setIssue(null); setRemote({ kind: 'idle' });
     setNotice(`Чернетку перенесено на актуальну ревізію ${String(a.revision)}. Після «Зберегти» вона повністю замінить збережений стан — перегляньте її перед збереженням.`);
   };
@@ -241,6 +270,7 @@ function AccessPage({ userId }: { userId: string }) {
   const current = draft.find((s) => s.serverId === selected) ?? null;
   const statusText = !ready ? 'Дані не завантажено'
     : pending ? 'Збереження…'
+      : checking ? 'Перевірка збереженого стану… Чернетку не можна змінювати до відповіді'
       : issue?.kind === 'unknown' ? 'Результат невідомий — спершу перевірте збережений стан'
         : issue?.kind === 'conflict' ? 'Чернетка базується на застарілій версії — перегляньте актуальний стан'
           : !dirty ? 'Змін немає'
@@ -248,7 +278,7 @@ function AccessPage({ userId }: { userId: string }) {
               : 'Є незбережені зміни';
   const footer = (
     <div className="acl__footer" role="group" aria-label="Збереження доступів">
-      <p className={`acl__state${dirty || pending ? ' acl__state--active' : ''}`} role="status">{statusText}</p>
+      <p className={`acl__state${dirty || locked ? ' acl__state--active' : ''}`} role="status">{statusText}</p>
       <div className="acl__actions">
         <button type="button" className="button" onClick={leave}>Скасувати</button>
         <button type="button" className="button button--primary" disabled={!canSave} onClick={() => { void save(); }}>{pending ? 'Збереження…' : 'Зберегти'}</button>
@@ -311,8 +341,8 @@ function AccessPage({ userId }: { userId: string }) {
             <div className="notice notice--error" role="alert">
               <p className="notice__title">Доступи змінилися після відкриття сторінки</p>
               <p className="notice__text">Інший адміністратор змінив доступи або роль цього користувача. Ваші зміни не збережено й нічого не перезаписано; чернетка лишилася в редакторі.</p>
-              <div><button type="button" className="button button--small" disabled={remote.kind === 'checking'} onClick={() => { void readRemote(); }}>
-                {remote.kind === 'checking' ? 'Читання…' : 'Переглянути актуальний стан'}
+              <div><button type="button" className="button button--small" disabled={checking} onClick={() => { void readRemote(); }}>
+                {checking ? 'Читання…' : 'Переглянути актуальний стан'}
               </button></div>
             </div>
           ) : null}
@@ -320,8 +350,8 @@ function AccessPage({ userId }: { userId: string }) {
             <div className="notice notice--warning" role="alert">
               <p className="notice__title">Результат невідомий</p>
               <p className="notice__text">Відповідь сервера не отримано — доступи могли зберегтися. Не зберігайте повторно наосліп: спершу перевірте збережений стан. Чернетка лишилася в редакторі.</p>
-              <div><button type="button" className="button button--small" disabled={remote.kind === 'checking'} onClick={() => { void readRemote(); }}>
-                {remote.kind === 'checking' ? 'Перевірка…' : 'Перевірити збережений стан'}
+              <div><button type="button" className="button button--small" disabled={checking} onClick={() => { void readRemote(); }}>
+                {checking ? 'Перевірка…' : 'Перевірити збережений стан'}
               </button></div>
             </div>
           ) : null}
@@ -331,7 +361,7 @@ function AccessPage({ userId }: { userId: string }) {
             </div>
           ) : null}
           {blocked && remote.kind === 'ready' ? (
-            <RemoteState remote={remote.access} before={access} onDiscard={() => { setConfirm({ kind: 'discard', remote: remote.access }); }} onKeep={() => { keepDraftOn(remote.access); }} />
+            <RemoteState remote={remote.access} before={access} drifted={remote.drifted} onDiscard={() => { setConfirm({ kind: 'discard', remote: remote.access }); }} onKeep={() => { keepDraftOn(remote.access); }} />
           ) : null}
 
           {draft.length === 0 ? (
@@ -341,7 +371,7 @@ function AccessPage({ userId }: { userId: string }) {
                 <p className="state__text">{baseSig === signature([])
                   ? 'Користувач не бачить жодного сервера. Додайте сервер, потім оберіть усі або конкретні сервіси.'
                   : 'У чернетці не лишилося серверів. Після «Зберегти» всі доступи користувача буде відкликано; доти вони діють.'}</p>
-                <button ref={addButton} type="button" className="button" disabled={pending} onClick={() => { setAdding(true); }}>Додати сервер</button>
+                <button ref={addButton} type="button" className="button" disabled={locked} onClick={openAdd}>Додати сервер</button>
               </div>
             </div>
           ) : (
@@ -349,7 +379,7 @@ function AccessPage({ userId }: { userId: string }) {
               <section className="acl-servers" aria-labelledby={ids.servers}>
                 <div className="acl-servers__head">
                   <h2 id={ids.servers} className="acl-servers__title">Сервери користувача</h2>
-                  <button ref={addButton} type="button" className="button" disabled={pending} onClick={() => { setAdding(true); }}>+ Додати сервер</button>
+                  <button ref={addButton} type="button" className="button" disabled={locked} onClick={openAdd}>+ Додати сервер</button>
                 </div>
                 <ul className="acl-servers__list">
                   {draft.map((s) => {
@@ -372,11 +402,11 @@ function AccessPage({ userId }: { userId: string }) {
                     <h2 id={ids.editor} ref={editorTitle} tabIndex={-1} className="acl-editor__title">
                       {current.serverName}{current.serverActive ? null : <span className="tag">неактивний</span>}
                     </h2>
-                    <button type="button" className="button" disabled={pending} aria-label={`Прибрати доступ до ${current.serverName}`}
-                      onClick={() => { setConfirm({ kind: 'remove', server: current }); }}>Прибрати доступ</button>
+                    <button type="button" className="button" disabled={locked} aria-label={`Прибрати доступ до ${current.serverName}`}
+                      onClick={() => { askRemove(current); }}>Прибрати доступ</button>
                   </div>
                   <div className="acl-editor__body">
-                    <fieldset className="acl-modes" disabled={pending}>
+                    <fieldset className="acl-modes" disabled={locked}>
                       <legend className="acl-modes__legend">Які сервіси доступні</legend>
                       <label className="acl-mode">
                         <input type="radio" name={`mode-${current.serverId}`} checked={current.mode === 'all'} onChange={() => { edit(current.serverId, { mode: 'all' }); }} />
@@ -403,7 +433,7 @@ function AccessPage({ userId }: { userId: string }) {
                         {current.services.length === 0 ? (
                           <p className="field__error">Виберіть хоча б один сервіс або приберіть сервер. Порожній вибір не зберігається й не означає «усі».</p>
                         ) : null}
-                        <ServiceCatalog server={current} disabled={pending} onChange={(services) => { edit(current.serverId, { services }); }} />
+                        <ServiceCatalog server={current} disabled={locked} onChange={(services) => { edit(current.serverId, { services }); }} />
                       </>
                     )}
                     <p className="hint">{ROLE_NOTE[access.role]}</p>
@@ -462,11 +492,14 @@ const namesText = (names: string[]) =>
   (names.length <= NAMES_SHOWN ? names.join(', ') : `${names.slice(0, NAMES_SHOWN).join(', ')} та ще ${String(names.length - NAMES_SHOWN)}`);
 
 /** The stored state next to the draft after a conflict or an unknown result: the user decides what happens next. */
-function RemoteState({ remote, before, onDiscard, onKeep }: { remote: UserAccess; before: UserAccess; onDiscard: () => void; onKeep: () => void }) {
+function RemoteState({ remote, before, drifted, onDiscard, onKeep }: { remote: UserAccess; before: UserAccess; drifted: boolean; onDiscard: () => void; onKeep: () => void }) {
   const servers = toDraft(remote);
   return (
     <div className="notice notice--warning acl-remote" role="status">
-      <p className="notice__title">{`Актуальний збережений стан (ревізія ${String(remote.revision)}) відрізняється від вашої чернетки`}</p>
+      <p className="notice__title">{drifted
+        ? `Чернетка змінилася під час перевірки — актуальний збережений стан (ревізія ${String(remote.revision)}) не застосовано`
+        : `Актуальний збережений стан (ревізія ${String(remote.revision)}) відрізняється від вашої чернетки`}</p>
+      {drifted ? <p className="notice__text">Ваші зміни залишилися. Оберіть, що робити далі, або перевірте стан ще раз.</p> : null}
       {remote.role === before.role ? null : <p className="notice__text">{`Роль змінилася: ${ROLE_LABELS[before.role]} → ${ROLE_LABELS[remote.role]}.`}</p>}
       {servers.length === 0 ? <p className="notice__text">Збережених доступів немає.</p> : (
         <ul className="acl-remote__list">

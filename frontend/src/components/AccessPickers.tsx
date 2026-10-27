@@ -23,7 +23,11 @@ function useDebounced(value: string) {
 
 const processesText = (n: number) => (n === 0 ? 'не в inventory' : n === 1 ? null : `${String(n)} процеси`);
 
-/** «Selected» services of one server: a searchable checklist (≤ 500 per answer), gone grants kept and marked. */
+/**
+ * «Selected» services of one server: a searchable checklist (≤ 500 per answer), gone grants kept and marked.
+ * `disabled` locks the choice (a save or a recovery read in flight) — the toggle itself refuses, not only the
+ * checkbox; searching only changes what is shown and stays available.
+ */
 export function ServiceCatalog({ server, disabled, onChange }: { server: DraftServer; disabled: boolean; onChange: (services: string[]) => void }) {
   const { sessionExpired, bindSession } = useAuth();
   const [q, setQ] = useState('');
@@ -51,7 +55,10 @@ export function ServiceCatalog({ server, disabled, onChange }: { server: DraftSe
   }, [server.serverId, query, attempt, bindSession, sessionExpired]);
 
   const chosen = new Set(server.services);
-  const toggle = (name: string) => { onChange(chosen.has(name) ? server.services.filter((n) => n !== name) : [...server.services, name].sort()); };
+  const toggle = (name: string) => {
+    if (disabled) return;
+    onChange(chosen.has(name) ? server.services.filter((n) => n !== name) : [...server.services, name].sort());
+  };
   const listed = list.status === 'ready' ? new Set(list.items.map((i) => i.name)) : new Set<string>();
   // Chosen or gone names this answer does not show (gone from the server, beyond the first 500, or not loaded yet) —
   // listed when they match the search, so they can be seen and removed explicitly.
@@ -74,7 +81,7 @@ export function ServiceCatalog({ server, disabled, onChange }: { server: DraftSe
       <div className="acl-catalog__bar">
         <div className="field">
           <label htmlFor={ids.search}>Пошук сервісів цього сервера</label>
-          <input id={ids.search} type="search" value={q} maxLength={128} disabled={disabled} autoComplete="off" spellCheck={false} placeholder="Назва сервісу"
+          <input id={ids.search} type="search" value={q} maxLength={128} autoComplete="off" spellCheck={false} placeholder="Назва сервісу"
             onKeyDown={noEnter} onChange={(e) => { setQ(e.target.value); }} aria-controls={ids.list} aria-describedby={ids.count} />
         </div>
         <p id={ids.count} className="acl-catalog__count" aria-live="polite">

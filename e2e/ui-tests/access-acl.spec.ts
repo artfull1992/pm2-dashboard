@@ -268,3 +268,67 @@ test('a direct URL and a reload work without the users list; an invalid id asks 
   expect(log.reads.some((r) => r.includes('not-a-uuid'))).toBe(false);
   await context.close();
 });
+
+// Review e54ed1f: while the explicit GET after a 409 or a lost answer runs, the draft is locked; its answer never
+// replaces a newer draft; a failed GET unlocks editing with the draft intact; exactly one PUT.
+for (const { kind, vp, scheme } of [
+  { kind: 'unknown', vp: 'desktop', scheme: 'dark' }, { kind: 'conflict', vp: 'desktop', scheme: 'light' },
+  { kind: 'unknown', vp: 'mobile', scheme: 'light' }, { kind: 'conflict', vp: 'mobile', scheme: 'dark' },
+] as const) {
+  test(`recovery read (${kind}, ${vp}, ${scheme}): editing locked during the GET, nothing replaced, one PUT`, async ({ browser }) => {
+    const { context, page, log } = await open(browser, { scheme, viewport: VIEWPORTS[vp], acl: 'ACL-03' });
+    const held: ((answer: { status: number; json: unknown }) => void)[] = [];
+    let gets = 0;
+    const draft = { ...initial('ACL-03'), revision: 4, servers: [grant(SRV.a, 'selected', ['api-service', 'auth-service', 'billing-worker', 'gateway'])] };
+    await page.route(`**/api/users/${USER}/access`, async (route) => {
+      const req = route.request();
+      if (req.method() === 'PUT') {
+        log.puts.push(req.postData() ?? '');
+        if (kind === 'unknown') await route.abort('failed');
+        else await route.fulfill({ status: 409, json: {} });
+        return;
+      }
+      gets += 1;
+      if (gets === 1) { await route.fulfill({ json: initial('ACL-03') }); return; }
+      const answer = await new Promise<{ status: number; json: unknown }>((resolve) => { held.push(resolve); });
+      await route.fulfill(answer);
+    });
+    await show(page, 'ACL-03');
+    const box = page.getByRole('checkbox', { name: 'auth-service' });
+    await box.check();
+    await save(page).click();
+    const check = page.getByRole('button', { name: kind === 'unknown' ? 'Перевірити збережений стан' : 'Переглянути актуальний стан' });
+    await check.click();
+    await expect.poll(() => held.length).toBe(1);
+    await expect(status(page)).toHaveText(/^Перевірка збереженого стану…/);
+    await expect(box).toBeDisabled();
+    await expect(page.getByRole('radio', { name: /Усі сервіси/ })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '+ Додати сервер' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Прибрати доступ до node-a' })).toBeDisabled();
+    await expect(save(page)).toBeDisabled();
+    await box.click({ force: true }); // the administrator tries to undo it anyway
+    await expect(box).toBeChecked();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await noPageOverflow(page);
+    await inViewport(page, save(page));
+    if (shots) await page.screenshot({ path: `${shots}/ACL-09-read-${kind}--${scheme}--${vp}.png` });
+    // The read fails: editing unlocks, the draft is intact, the result stays unresolved.
+    held[0]?.({ status: 503, json: {} });
+    await expect(page.getByText(/Не вдалося прочитати збережений стан/)).toBeVisible();
+    await expect(box).toBeEnabled();
+    await expect(box).toBeChecked();
+    await expect(save(page)).toBeDisabled();
+    // Checked again: the stored state equals the draft — it becomes the baseline, authorship not claimed.
+    await check.click();
+    await expect.poll(() => held.length).toBe(2);
+    await expect(box).toBeDisabled();
+    held[1]?.({ status: 200, json: draft });
+    await expect(page.getByText(/збігаються з вашою чернеткою/)).toBeVisible();
+    await expect(box).toBeChecked();
+    await expect(box).toBeEnabled();
+    await expect(status(page)).toHaveText('Змін немає');
+    expect(gets).toBe(3);
+    expect(log.puts).toHaveLength(1);
+    await context.close();
+  });
+}

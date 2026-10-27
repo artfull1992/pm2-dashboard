@@ -1,6 +1,8 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { UserAccess } from '../src/api/types';
+import { recoveryOutcome, signature, toDraft } from '../src/components/accessDraft';
 import { forgetUsersViewsForTests } from '../src/pages/usersView';
 import { CSRF, deferred, installFetch, json, noContent, type RecordedRequest, renderApp, session } from './support';
 
@@ -580,5 +582,191 @@ describe('ACL-09/10 saving, conflicts and unknown results', () => {
     await u.click(await screen.findByRole('button', { name: 'Переглянути актуальний стан' }));
     expect(await screen.findByRole('heading', { name: 'Повний доступ' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Зберегти' })).toBeNull();
+  });
+});
+
+describe('ACL-09/10 recovery reads lock the draft (review e54ed1f)', () => {
+  const start = access({ revision: 4, servers: [grant(ALPHA, 'alpha', 'selected', [ok('api')])] });
+  const both = access({ revision: 5, servers: [grant(ALPHA, 'alpha', 'selected', [ok('api'), ok('worker')])] });
+  const kinds = [
+    { kind: 'unknown', fail: () => Promise.reject(new TypeError('Failed to fetch')), check: 'Перевірити збережений стан', reading: 'Перевірка…' },
+    { kind: 'conflict', fail: () => json(409, {}), check: 'Переглянути актуальний стан', reading: 'Читання…' },
+  ] as const;
+  /** A disabled control re-enabled behind React's back and clicked: proves the handler itself refuses, not just the DOM. */
+  const forceClick = (el: HTMLElement) => {
+    const fieldset = el.closest('fieldset');
+    if (fieldset) fieldset.disabled = false;
+    (el as HTMLButtonElement | HTMLInputElement).disabled = false;
+    fireEvent.click(el);
+  };
+  /** Page after one failed save of selected=[api, worker]; the recovery GET answers through `read`. */
+  async function failedSave(fail: () => Response | Promise<Response>, read: () => Response | Promise<Response>) {
+    let gets = 0;
+    const opened = await openPage(undefined, (req) => {
+      if (req.method === 'PUT') return fail();
+      if (req.url === API) { gets += 1; return gets === 1 ? json(200, start) : read(); }
+      return undefined;
+    });
+    await opened.u.click(await screen.findByRole('checkbox', { name: 'worker' }));
+    await opened.u.click(saveButton());
+    return { ...opened, gets: () => gets };
+  }
+  const workerBox = () => screen.getByRole<HTMLInputElement>('checkbox', { name: 'worker' });
+
+  it.each(kinds)('$kind: reproducer — what the user sees after acting during the GET is not silently replaced by its answer', async ({ fail, check }) => {
+    const slow = deferred<Response>();
+    const { calls, u, gets } = await failedSave(fail, () => slow.promise);
+    await u.click(await screen.findByRole('button', { name: check }));
+    await u.click(workerBox()); // try to undo «worker» while the answer is on its way
+    const afterUserEdit = workerBox().checked;
+    const stateAfterUserEdit = within(footer()).getByRole('status').textContent;
+    await act(async () => { slow.resolve(json(200, both)); await Promise.resolve(); });
+    await screen.findByText(/збігаються з вашою чернеткою|відрізняється від вашої чернетки/);
+    expect(workerBox().checked).toBe(afterUserEdit);
+    if (!afterUserEdit) expect(within(footer()).getByRole('status').textContent).not.toBe('Змін немає');
+    expect(stateAfterUserEdit).not.toBe('Змін немає');
+    expect(gets()).toBe(2);
+    expect(puts(calls)).toHaveLength(1);
+  });
+
+  it.each(kinds)('$kind: editing is locked while the GET runs; a stale answer cannot replace a newer choice; one PUT', async ({ fail, check, reading }) => {
+    const slow = deferred<Response>();
+    const { calls, u, gets } = await failedSave(fail, () => slow.promise);
+    await u.click(await screen.findByRole('button', { name: check }));
+    expect(screen.getByRole('button', { name: reading })).toHaveProperty('disabled', true);
+    expect(within(footer()).getByRole('status').textContent).toMatch(/^Перевірка збереженого стану…/);
+    expect(workerBox().disabled).toBe(true);
+    // The administrator tries to undo «worker» while the answer is on its way: the draft does not change.
+    await u.click(workerBox());
+    forceClick(workerBox());
+    expect(workerBox().checked).toBe(true);
+    await act(async () => { slow.resolve(json(200, both)); await Promise.resolve(); });
+    expect(await screen.findByText(/збігаються з вашою чернеткою.*не показує/)).toBeTruthy();
+    expect(workerBox().checked).toBe(true);
+    expect(workerBox().disabled).toBe(false); // unlocked again
+    expect(within(footer()).getByText('Змін немає')).toBeTruthy();
+    expect(gets()).toBe(2);
+    expect(puts(calls)).toHaveLength(1);
+  });
+
+  it.each(kinds)('$kind: every draft-changing path is refused during the GET (modes, add, remove, save, re-check, remote choice)', async ({ fail, check, reading }) => {
+    const slow = deferred<Response>();
+    let next = slow;
+    const { calls, u, gets } = await failedSave(fail, () => next.promise);
+    await u.click(await screen.findByRole('button', { name: check }));
+    const all = screen.getByRole('radio', { name: /Усі сервіси/ });
+    const add = screen.getByRole('button', { name: '+ Додати сервер' });
+    const remove = screen.getByRole('button', { name: 'Прибрати доступ до alpha' });
+    expect(all.matches(':disabled')).toBe(true);
+    expect(add).toHaveProperty('disabled', true);
+    expect(remove).toHaveProperty('disabled', true);
+    expect(saveButton()).toHaveProperty('disabled', true);
+    forceClick(all);
+    forceClick(add);
+    forceClick(remove);
+    forceClick(screen.getByRole('button', { name: reading }));
+    forceClick(saveButton());
+    expect(screen.queryByRole('dialog')).toBeNull(); // neither «Додати сервер» nor «Прибрати доступ…?»
+    expect(screen.getByRole<HTMLInputElement>('radio', { name: /Вибрані сервіси/ }).checked).toBe(true);
+    expect(screen.getByRole('heading', { name: 'alpha' })).toBeTruthy();
+    expect(gets()).toBe(2); // no parallel second GET
+    expect(puts(calls)).toHaveLength(1); // no PUT during the GET
+    // Searching and switching servers stay available: they never change the draft.
+    expect(screen.getByLabelText('Пошук сервісів цього сервера')).toHaveProperty('disabled', false);
+    // The stored state differs: the explicit keep/discard choice is offered, nothing adopted silently.
+    await act(async () => { slow.resolve(json(200, access({ revision: 7, servers: [grant(BETA, 'beta', 'all')] }))); await Promise.resolve(); });
+    expect(await screen.findByText('Актуальний збережений стан (ревізія 7) відрізняється від вашої чернетки')).toBeTruthy();
+    expect(workerBox().checked).toBe(true);
+    // A second check hides the choice while it runs: the remote state cannot be applied mid-read.
+    const again = deferred<Response>();
+    next = again;
+    await u.click(screen.getByRole('button', { name: check }));
+    expect(screen.queryByRole('button', { name: 'Залишити чернетку на актуальній версії' })).toBeNull();
+    await act(async () => { again.resolve(json(200, access({ revision: 7, servers: [grant(BETA, 'beta', 'all')] }))); await Promise.resolve(); });
+    await u.click(await screen.findByRole('button', { name: 'Залишити чернетку на актуальній версії' }));
+    await u.click(saveButton());
+    await waitFor(() => { expect(puts(calls)).toHaveLength(2); });
+    expect(body(puts(calls)[1])).toEqual({ expectedRevision: 7, servers: [{ serverId: ALPHA, mode: 'selected', services: ['api', 'worker'] }] });
+  });
+
+  it.each(kinds)('$kind: a failed GET unlocks editing and keeps the draft; the result stays unresolved', async ({ fail, check }) => {
+    const slow = deferred<Response>();
+    const { calls, u } = await failedSave(fail, () => slow.promise);
+    await u.click(await screen.findByRole('button', { name: check }));
+    expect(workerBox().disabled).toBe(true);
+    await act(async () => { slow.resolve(json(503, {})); await Promise.resolve(); });
+    expect(await screen.findByText(/Не вдалося прочитати збережений стан/)).toBeTruthy();
+    expect(workerBox().disabled).toBe(false);
+    expect(workerBox().checked).toBe(true);
+    expect(saveButton()).toHaveProperty('disabled', true); // still blocked until checked
+    await u.click(workerBox()); // editing is allowed again and really edits
+    expect(workerBox().checked).toBe(false);
+    expect(puts(calls)).toHaveLength(1);
+  });
+
+  it('leaving during the GET (asked first) drops the late answer; nothing changes on the next page', async () => {
+    const slow = deferred<Response>();
+    const { app, calls, u } = await failedSave(() => Promise.reject(new TypeError('Failed to fetch')), () => slow.promise);
+    await u.click(await screen.findByRole('button', { name: 'Перевірити збережений стан' }));
+    await u.click(screen.getByRole('link', { name: 'Огляд' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Скасувати зміни?' });
+    await u.click(within(dialog).getByRole('button', { name: 'Відкинути зміни' }));
+    await waitFor(() => { expect(app.router.state.location.pathname).toBe('/'); });
+    await act(async () => { slow.resolve(json(200, both)); await Promise.resolve(); });
+    expect(screen.queryByText(/збігаються з вашою чернеткою/)).toBeNull();
+    expect(screen.queryByText('other@example.test')).toBeNull();
+    expect(puts(calls)).toHaveLength(1);
+  });
+
+  it('logout during the GET is not blocked; the late answer changes nothing of the next session', async () => {
+    const slow = deferred<Response>();
+    const { calls, u } = await failedSave(() => json(409, {}), () => slow.promise);
+    await u.click(await screen.findByRole('button', { name: 'Переглянути актуальний стан' }));
+    await u.click(screen.getByRole('button', { name: 'Вийти' }));
+    expect(await screen.findByRole('button', { name: 'Увійти' })).toBeTruthy();
+    await act(async () => { slow.resolve(json(200, both)); await Promise.resolve(); });
+    expect(screen.queryByText('other@example.test')).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(puts(calls)).toHaveLength(1);
+  });
+
+  it.each([
+    { status: 401, sees: 'Увійти', role: 'button' },
+    { status: 403, sees: 'Недостатньо прав', role: 'heading' },
+  ] as const)('$status on the recovery GET: no editor data stays', async ({ status, sees, role }) => {
+    const { u } = await failedSave(() => Promise.reject(new TypeError('Failed to fetch')), () => json(status, {}));
+    await u.click(await screen.findByRole('button', { name: 'Перевірити збережений стан' }));
+    expect(await screen.findByRole(role, { name: sees })).toBeTruthy();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByText('other@example.test')).toBeNull();
+  });
+});
+
+describe('recoveryOutcome: a read answer is judged against the draft it checked', () => {
+  const base = access({ revision: 4, servers: [grant(ALPHA, 'alpha', 'selected', [ok('api')])] }) as unknown as UserAccess;
+  const both = access({ revision: 5, servers: [grant(ALPHA, 'alpha', 'selected', [ok('worker'), ok('api')])] }) as unknown as UserAccess;
+  const other = access({ revision: 7, servers: [grant(BETA, 'beta', 'all')] }) as unknown as UserAccess;
+  const sig = (a: UserAccess) => signature(toDraft(a));
+  const judge = (remote: UserAccess, checked: string, current = checked, lost = true) => recoveryOutcome({ checked, current, remote, base, lost });
+
+  it('matches only the checked draft (order does not matter); a draft changed meanwhile is never adopted', () => {
+    expect(judge(both, sig(both))).toBe('matches');
+    expect(judge(both, sig(both), sig(base))).toBe('drifted'); // the review scenario: [api, worker] checked, [api] now
+    expect(judge(both, sig(both), sig(both), false)).toBe('matches'); // 409 path alike
+    expect(judge(both, sig(both), sig(base), false)).toBe('drifted');
+  });
+
+  it('unchanged only after a lost answer with the same revision and baseline; otherwise the explicit choice', () => {
+    expect(judge(base, sig(both))).toBe('unchanged');
+    expect(judge(base, sig(both), sig(both), false)).toBe('differs'); // after 409 the baseline is never re-adopted silently
+    expect(judge({ ...base, revision: 6 }, sig(both))).toBe('differs');
+    expect(judge(other, sig(both))).toBe('differs');
+    expect(judge(base, sig(both), sig(base))).toBe('drifted');
+  });
+
+  it('a target that became an admin is read-only whatever the draft', () => {
+    const admin = access({ role: 'admin', global: true, revision: 6 }) as unknown as UserAccess;
+    expect(judge(admin, sig(both))).toBe('admin');
+    expect(judge(admin, sig(both), sig(base), false)).toBe('admin');
   });
 });
