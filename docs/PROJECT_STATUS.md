@@ -1,5 +1,26 @@
 # Поточний стан проєкту
 
+## Незалежний review Codex — етап 3.5 (`c4b7a5a`, ACL-01…15), 2026-10-27 — CHANGES REQUIRED
+
+Перевірено diff від `b742f2b`, погоджений промпт, AccessPage, модель чернетки, каталоги, UsersView, зміни data router, тести й документацію Code → Docs / Docs → Code (README, ARCHITECTURE, ADR-034/035, ADOPTION, PART-02-ADOPTION). Backend/API/SQL/RBAC/Agent/залежності не змінені. Функціональний код Codex не змінював; наступні частини й деплой до APPROVED не починати.
+
+**P2 — GET-перевірка після 409 або невідомого результату може мовчки затерти нові зміни чернетки.** `frontend/src/pages/AccessPage.tsx:198–200` (`readRemote`): порівняння `signature(draft)` використовує чернетку із замикання на момент початку GET, тоді як каталог, radio, додавання й прибирання лишаються доступними (їх блокує лише `pending` PUT). Коли GET повертає стан, рівний старій чернетці, `adopt(a)` замінює вже змінену актуальну чернетку й прибирає dirty без підтвердження.
+
+Незалежно відтворено у Chromium на синтетичному API двома шляхами (втрата відповіді PUT і 409): початково selected=[api], додано worker → PUT → почато GET актуального стану із затриманою відповіддю → під час очікування знято worker → GET повернув [api, worker]. Результат в обох випадках: gets=2, puts=1, enabledDuringRead=true, checkedAfterUserEdit=false, checkedAfterGet=true; панель показує «Змін немає». Остання дія адміністратора втрачена локально, нових PUT не було. Чинні тести recovery не редагують чернетку, поки GET очікує відповіді, тому це не виявили.
+
+Очікується: не застосовувати відповідь поверх зміненої після старту GET чернетки. Можна явно блокувати всі зміни чернетки на час перевірки або зберігати актуальну версію/ідентичність чернетки та обробляти зміну без її затирання; порівняння старого snapshot саме по собі недостатнє. Захист має стосуватися всіх шляхів зміни (checkbox, режим, додавання/прибирання сервера) й обох видів recovery. Не переносити revision потай і не повторювати PUT. Додати component та browser regression із керованою затримкою GET, підтвердженням збереження останнього вибору/dirty або явного блокування редагування, одним PUT та перевіркою 409 і unknown. Узгодити ADR-035/PART-02-ADOPTION із фактичною поведінкою; їхня гарантія збереження чернетки зараз не виконується в цьому сценарії.
+
+**Поточні незалежні перевірки (exit 0):**
+- `check:local`: node:test 147/147, backend 525/525, smoke 10/10, agent 176 passed / 3 opt-in skipped, frontend 431/431, installer 295/295; typecheck, lint, збірки, check:secrets.
+- Повна UI-матриця поточної готової збірки — 262/262; повний E2E на ізольованій БД — 19 passed / 2 real-PM2/broker opt-in skipped.
+- Прочитаний zoom-harness ACL повторено на поточній збірці: 6/6 dark і 6/6 light; Chromium 156, tabs.getZoom=2, CSS 720×450, DPR 2. Keyboard, dirty, dialog і pending із одним PUT пройшли.
+- Власні browser-reproducer гонки після unknown і після 409 підтвердили зауваження вище, попри успіх штатних наборів.
+- `git diff --check`, повторний check:secrets — успішні. 135/135 versioned файлів part-02 побайтово відповідають оригінальному архіву.
+
+**Візуальна перевірка та межі.** Застосовні ACL-01…15 / DS-01. Переглянуто пари «еталон | реалізація»: ACL-04 dark desktop, ACL-04 light mobile, ACL-12 dark mobile; структура сторінки, окремі сервери/редактор і documented mobile-dialog збережені. Усі 68 пар попіксельно Codex не перевіряв. Справжній zoom повторено, ручне Ctrl/Cmd + і скринрідер — ні. Backend DB-suite не запускалися: backend/SQL не змінені. Реальні PM2-команди не виконувались.
+
+Перед E2E перевірено hostname одноразової nc-acc-db та синхронізовано лише її годинник; паролі, ролі, HBA та production не змінювались. Caffeinate діяло лише на час check:local/UI/E2E. Артефакти поза Git: `/tmp/nc-acl-review-{local,ui,e2e,race,conflict-race,zoom-dark,zoom-light}.log`; reproducer `/tmp/nc-acl-review-{race,conflict-race}.cjs`; zoom screenshots `/tmp/nc-acl-review-zoom-*`. Production не перевірявся й не змінювався; untracked оригінали користувача збережено. Реалізація `c4b7a5a` поки не має APPROVED.
+
 ## Етап 3.5 — окрема сторінка доступів за ACL-01…15 — готово до незалежного review Codex (НЕ розгорнуто), 2026-10-27
 
 База `b742f2b` (етап 3.4 APPROVED). Лише frontend, тести й документація; backend/API/SQL, міграції, RBAC, Agent, installer і залежності не змінювались. Production не підключався й не змінювався. INT/RUL, PRF/AUTH не розпочато. Рішення — ADR-035; ACL-ID → реалізація → відхилення → перевірки — [PART-02-ADOPTION](design/PART-02-ADOPTION.md#реалізація-acl-етап-35-adr-035).
