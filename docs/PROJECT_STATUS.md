@@ -1,5 +1,22 @@
 # Поточний стан проєкту
 
+## Повторний незалежний review Codex — етап 3.5 (`989e3dc`), 2026-10-27 — APPROVED
+
+Перевірено diff від `e54ed1f`, зауваження P2, AccessPage, AccessPickers, recoveryOutcome, regression-тести та документацію Code → Docs / Docs → Code (ADR-035, PART-02-ADOPTION, PROJECT_STATUS; попередні README/ARCHITECTURE залишаються узгодженими). P2 закрито; етап 3.5 «Окрема сторінка доступів» отримує APPROVED у межах зазначених перевірок. Нових зауважень немає. Функціональний код Codex не змінював.
+
+Підтверджено: під час recovery GET після unknown і 409 чернетку блокують і UI, і обробники через актуальні refs запитів; повторний GET/PUT не запускається, шляхи додавання/прибирання й застосування remote стану захищені. `recoveryOutcome` порівнює signature на старті та актуальну, не дозволяючи автоматично замінити іншу чернетку; «drifted» лишає явний вибір. Помилка GET розблоковує редагування зі збереженням чернетки; 401/403, вихід, logout і пізні відповіді покриті новими regression. Пошук під час GET/PUT не змінює grants, вибір лишається заблокованим. Revision, один PUT, атомарний payload, navigation guard і явні rebase/discard збережені.
+
+**Поточні незалежні перевірки (усі exit 0):**
+- `check:local`: node:test 147/147, backend 525/525, smoke 10/10, agent 176 passed / 3 opt-in skipped, frontend 446/446, installer 295/295; typecheck, lint, збірки, check:secrets.
+- Повна UI-матриця поточної готової збірки — 266/266; повний E2E на ізольованій тестовій БД — 19 passed / 2 real-PM2/broker opt-in skipped.
+- Позитивні версії власних reproducer попереднього review повторено для unknown і 409: в обох gets=2, puts=1, enabledDuringRead=false; checkedAfterUserEdit=true і checkedAfterGet=true. Колишнє затирання нового вибору недоступне через блокування. Нові component-тести також перевіряють обробники примусовим натисканням вимкнених контролів.
+- Прочитаний zoom-harness recovery повторено на поточній збірці: 3/3 dark і 3/3 light; Chromium 156, tabs.getZoom=2, CSS 720×450, DPR 2. Попередній загальний ACL zoom-набір 6/6 цього разу не повторювався (підтверджений попереднім незалежним review).
+- `git diff --check` й повторний check:secrets — успішні. Падінь у поточних прогонах немає; caffeinate діяло лише на час check:local/UI/E2E.
+
+Застосовні ACL-01…15 / DS-01, зокрема уточнені ACL-09/10: нове повідомлення й вимкнені контроли перевірені браузерними сценаріями, власним screenshot light zoom та кодом; базова геометрія не змінена, попередні візуальні відхилення збережені. Повне попіксельне порівняння всіх макетів, скринрідер і ручне Ctrl/Cmd + не виконувались. Гілка «drifted» перевірена unit-тестами helper; через UI зміни під час GET заблоковані. Backend DB-suite не запускався (backend/SQL не змінені), реальні PM2-команди не виконувались.
+
+Перед E2E перевірено hostname одноразової nc-acc-db та синхронізовано лише її годинник; паролі, ролі, HBA й production не змінювались. Артефакти поза Git: `/tmp/nc-acl-fix-review-{local,ui,e2e,race,conflict-race,zoom-dark,zoom-light}.log`, reproducer `/tmp/nc-acl-fix-review-{race,conflict-race}.cjs`, zoom screenshots `/tmp/nc-acl-fix-review-zoom-*`. Оригінальні ZIP/MD лишаються untracked. Production цього разу не перевірявся; APPROVED не означає виконаний деплой етапів 3.4/3.5.
+
 ## Виправлення за review `e54ed1f` — ACL-чернетка під час recovery GET — готово до повторного незалежного review Codex (НЕ розгорнуто), 2026-10-27
 
 База `e54ed1f` (етап 3.5 — CHANGES REQUIRED; запис нижче не змінено). Лише frontend, тести й документація; backend/API/SQL, міграції, RBAC, Agent, installer, залежності й дизайн-еталони не змінювались. Production не підключався й не змінювався. INT/RUL, PRF/AUTH не розпочато.
