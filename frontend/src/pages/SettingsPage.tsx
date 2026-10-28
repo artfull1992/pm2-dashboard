@@ -195,7 +195,10 @@ function SlackPanel({ data, onData, onReload, onGuard }: { data: SettingsView; o
       // The integration changed (another generation): an earlier test answer no longer describes it.
       if (value.slack.generation !== slack.generation) setTest(null);
       onData(value);
-      setReplacing(false);
+      // Each action ends only its own state (review faff773): a delivery change keeps a replacement draft visible;
+      // a saved webhook closes the replacement; a confirmed removal also drops a draft typed for the old integration.
+      if (what === 'webhook') setReplacing(false);
+      if (what === 'remove') { setReplacing(false); setWebhook(''); }
     } else {
       setTest(value);
     }
@@ -307,6 +310,7 @@ function SlackPanel({ data, onData, onReload, onGuard }: { data: SettingsView; o
           </>
         )}>
           <p>Webhook буде видалено, автоматичну доставку вимкнено, а повідомлення в черзі — скасовано. Інциденти залишаться.</p>
+          {unsaved ? <p>Введений, але не збережений новий webhook також буде очищено після успішного видалення.</p> : null}
         </Dialog>
       ) : null}
       {confirm === 'reload' ? (

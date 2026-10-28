@@ -491,3 +491,95 @@ describe('unsaved input, pending and recovery (final frontend stage)', () => {
     expect(screen.getByText(/не задано ALERTS_PUBLIC_URL/)).toBeTruthy();
   });
 });
+
+// Review faff773 (P2): the typed replacement webhook belongs to the webhook section only. A delivery change keeps the
+// visible draft; a confirmed removal clears it (and says so first); a failed or unknown removal is never a success.
+describe('webhook draft across other actions (review faff773)', () => {
+  const NEW_HOOK = `https://hooks.slack.com/services/T0SYNTH08/B0SYNTH08/${'n'.repeat(24)}`;
+  async function replaceDraft() {
+    const u = userEvent.setup();
+    await u.click(await screen.findByRole('button', { name: 'Замінити webhook' }));
+    const input = screen.getByLabelText<HTMLInputElement>('Новий webhook');
+    await u.type(input, NEW_HOOK);
+    return { u, input };
+  }
+
+  it('a delivery change keeps the replacement form and its draft; one PATCH; leaving still asks', async () => {
+    let state = configured();
+    const calls = backend('admin', (req) => {
+      if (req.method === 'PATCH') { state = configured({ revision: 2, deliveryEnabled: true }); return json(200, state); }
+      return undefined;
+    }, () => state);
+    const { router } = renderApp('/settings/integrations');
+    const { u, input } = await replaceDraft();
+    await u.click(screen.getByRole('switch', { name: /Автоматична доставка/ }));
+    expect(await screen.findByText('Автоматичну доставку увімкнено.')).toBeTruthy();
+    expect(sentTo(calls, 'PATCH', '/api/settings/alerts')).toHaveLength(1);
+    expect(screen.getByLabelText<HTMLInputElement>('Новий webhook')).toBe(input);
+    expect(input.value).toBe(NEW_HOOK);
+    expect(screen.queryByRole('button', { name: 'Замінити webhook' })).toBeNull();
+    await u.click(screen.getByRole('link', { name: 'Правила сповіщень' }));
+    expect(within(screen.getByRole('dialog', { name: 'Скасувати зміни?' })).getByText(/Введений webhook не збережено/)).toBeTruthy();
+    await u.keyboard('{Escape}');
+    expect(router.state.location.pathname).toBe('/settings/integrations');
+    expect(sentTo(calls, 'PUT', '/api/settings/integrations/slack')).toHaveLength(0);
+  });
+
+  it('cancelling the removal keeps the form and the draft; no DELETE', async () => {
+    const calls = backend('admin', undefined, () => configured());
+    renderApp('/settings/integrations');
+    const { u, input } = await replaceDraft();
+    await u.click(screen.getByRole('button', { name: 'Видалити інтеграцію' }));
+    const dialog = screen.getByRole('dialog', { name: 'Видалити Slack-інтеграцію?' });
+    expect(within(dialog).getByText(/Введений, але не збережений новий webhook також буде очищено/)).toBeTruthy();
+    await u.click(within(dialog).getByRole('button', { name: 'Скасувати' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(input.value).toBe(NEW_HOOK);
+    expect(sentTo(calls, 'DELETE', '/api/settings/integrations/slack')).toHaveLength(0);
+  });
+
+  it('a confirmed removal clears the draft: one DELETE, empty new connection, success visible, no leave question', async () => {
+    let state = configured();
+    const calls = backend('admin', (req) => {
+      if (req.method === 'DELETE') { state = view({ revision: 2 }, { generation: 2 }); return json(200, state); }
+      return undefined;
+    }, () => state);
+    const { router } = renderApp('/settings/integrations');
+    const { u } = await replaceDraft();
+    await u.click(screen.getByRole('button', { name: 'Видалити інтеграцію' }));
+    await u.click(within(screen.getByRole('dialog', { name: 'Видалити Slack-інтеграцію?' })).getByRole('button', { name: 'Видалити' }));
+    expect(await screen.findByText('Інтеграцію видалено.')).toBeTruthy();
+    expect(sentTo(calls, 'DELETE', '/api/settings/integrations/slack')).toHaveLength(1);
+    expect(screen.getByLabelText<HTMLInputElement>('Webhook URL').value).toBe('');
+    expect(document.body.innerHTML).not.toContain('n'.repeat(24));
+    // The guard follows the state in an effect after the answer: wait for it, then it must stay off.
+    const armed = () => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+    await waitFor(() => { expect(armed()).toBe(false); });
+    await u.click(screen.getByRole('link', { name: 'Правила сповіщень' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/settings/rules'); });
+  });
+
+  it.each([
+    ['409', () => json(409, {}), /Налаштування вже змінились/],
+    ['network (unknown result)', () => Promise.reject(new TypeError('fetch failed')), /Відповідь не отримано — зміна могла застосуватись/],
+  ] as const)('removal %s: no success claimed, not re-sent, the draft stays in its form', async (_n, reply, text) => {
+    const calls = backend('admin', (req) => (req.method === 'DELETE' ? reply() : undefined), () => configured());
+    renderApp('/settings/integrations');
+    const { u, input } = await replaceDraft();
+    await u.click(screen.getByRole('button', { name: 'Видалити інтеграцію' }));
+    await u.click(within(screen.getByRole('dialog', { name: 'Видалити Slack-інтеграцію?' })).getByRole('button', { name: 'Видалити' }));
+    expect(await screen.findByText(text)).toBeTruthy();
+    expect(screen.queryByText('Інтеграцію видалено.')).toBeNull();
+    expect(input.value).toBe(NEW_HOOK);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sentTo(calls, 'DELETE', '/api/settings/integrations/slack')).toHaveLength(1);
+  });
+
+  it('a removal without a draft does not mention one', async () => {
+    backend('admin', undefined, () => configured());
+    renderApp('/settings/integrations');
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Видалити інтеграцію' }));
+    expect(within(screen.getByRole('dialog', { name: 'Видалити Slack-інтеграцію?' })).queryByText(/не збережений новий webhook/)).toBeNull();
+  });
+});
