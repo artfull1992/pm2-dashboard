@@ -1,5 +1,29 @@
 # Поточний стан проєкту
 
+## Production: деплой `0dda425` — завершальний frontend-етап (Налаштування, Обліковий запис, Вхід) і виправлення Slack-чернетки (2026-10-28, після APPROVED Codex і за прямим дозволом користувача)
+
+Активна code revision — `0dda425` (review-commit APPROVED; містить `502f45b` і виправлення `da09f92`). Цей запис — пізніший docs-commit; він не розгортався. Деплоїлись лише Central API/UI; Agents і broker не оновлювались.
+
+**До деплою (фактично перевірено, не за звітом).**
+- current `728cd6b`, previous `2d9d856`; runtime Node.js 22.23.2; API active, enabled, `NRestarts=0`, `nodecontrol`, лише `127.0.0.1:3100`; health 200/200 локально; попереджень за 24 год — 0; `migrate status` — `applied=10 pending=0 unknown=0`. Новішої чи невідомої реалізації не виявлено, ціль ще не була підготовлена.
+- `728cd6b → 0dda425` у Git: лише `frontend/src`, тести й документація. В артефакті (порівняння manifest): змінено лише `frontend/dist/index.html` і JS/CSS bundle; `theme-init.js`, backend, міграції, `scripts/deploy`, `deploy/systemd`, `package*.json` побайтово ідентичні. Unit на сервері ідентичний unit релізу — `daemon-reload` не виконувався. Нових env-параметрів немає.
+
+**Fallback — `728cd6b`** (фактичний current до деплою, тепер previous): файли релізу перевірено за його manifest — 87 файлів, розбіжностей 0; backend і схема ідентичні цілі. Повернення — штатний `server-release.js rollback` + restart лише `node-control-api`, без відновлення БД. Резервні копії `api.env` (600), unit і `pg_dump -Fc` (`pg_restore --list` OK) зроблено перед активацією; приватний runbook — на сервері.
+
+**Процедура (штатна).**
+- Збірка `build-release.js --from-tree` з `git archive 0dda425` у новому каталозі одноразової VM (Node 22.22.1, npm 9.2.0; `TMPDIR` і npm-кеш у каталозі збірки). API `sha256 048bd82f9875d61d27f01ac535b1d7c0bae3d8af10f8ccb76ef1d563ca7cadfa`, 87 файлів (+ `RELEASE.json`, revision `0dda425`); без `.map`, `.env`, дизайн-матеріалів; `theme-init.js` є. Годинник VM відставав (~15 хв) — tar попереджав про мітки часу; на вміст не впливає.
+- На сервері: hostname перевірено → новий каталог передачі → checksum OK → backup → `prepare` → `config` («kept») → `migrate status` (`pending=0`; `up` не запускався) → `activate` → restart лише `node-control-api`.
+
+**Після деплою.**
+- current `0dda425`, previous `728cd6b`; active, enabled, `NRestarts=0`, `nodecontrol`, лише `127.0.0.1:3100`; `/health/live` і `/health/ready` — 200 локально, `/nope` → 404; Nginx і PostgreSQL active, failed units — 0; попереджень і error/fatal після restart — 0.
+- `frontend/dist` (`index.html`, `theme-init.js`, JS, CSS) побайтово відповідає артефакту; через HTTPS `index.html` збігається з артефактом.
+- HTTPS: `/`, `/settings/integrations`, `/settings/rules`, `/account`, `/login`, `/users`, `/audit` → 200; `theme-init.js` і assets 200 (JS — `application/javascript`, CSS — `text/css`); анонімні `/api/auth/me` і `/api/settings/alerts` → 401 (`no-store`); невідомий `/api/*` → JSON 404. `/health/live` через HTTPS віддає SPA, бо Nginx проксує лише `/api/` (без змін) — health перевірено локально.
+- Анонімний браузерний smoke (1440 dark, 390 light, лише GET): «Налаштування» й «Обліковий запис» ведуть на `/login`, перемикач теми поза формою входу, без помилок консолі й горизонтального переповнення.
+
+**Не перевірено** (production-облікових даних немає; дані не читались і не змінювались). Оператору як admin, без змін даних: «Налаштування → Інтеграції» (секції Slack, «Останній тест», черга; не перемикати доставку й не надсилати тест без потреби), «Правила» (лише перегляд, «Показати межі й типові»), «Обліковий запис» (профіль, без зміни пароля), тема й мобільне меню, погоджені сторінки. Після першого використання — `journalctl -u node-control-api -p warning`.
+
+**Не змінювались:** Agents, broker, exporter, PM2, Slack (доставка, webhook, тести), користувачі й доступи, PostgreSQL/HBA/firewall, Nginx, runtime Node.js. Rollback не знадобився. Продукт не позначається готовим до публічного запуску: фінальна безпека, інсталятори й експлуатаційні перевірки — окремі завдання.
+
 ## Повторний незалежний review Codex `da09f92` — APPROVED (2026-10-28)
 
 Закрито P2 з review `faff773` щодо завершального frontend-етапу `502f45b`. Перевірено весь diff виправлення, пов'язаний обробник SlackPanel, нові компонентні й браузерні тести, ADR-022 та ADOPTION у напрямках Code → Docs і Docs → Code. Зміна доставки залишає видиму чернетку; підтверджене успішне видалення очищує її та стан заміни; скасування, 409 і невідомий результат не стирають введення та не видаються за успіх. Повідомлення й захист навігації збережені. Нових зауважень у межах виправлення немає.
