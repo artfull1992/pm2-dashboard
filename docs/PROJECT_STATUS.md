@@ -1,5 +1,13 @@
 # Поточний стан проєкту
 
+## Аудит безпеки Codex — CHANGES REQUIRED (2026-10-30)
+
+База `c6fdac2`, runtime-код `0dda425`. Аудит коду/залежностей і обмежені read-only зовнішні перевірки виконано; функціональний код, production, БД, Nginx, firewall, PM2 і Slack не змінювались. Результати, пріоритети, застосовність advisories та межі — [SECURITY_REVIEW](SECURITY_REVIEW.md). Приватні операційні докази й сирі результати — поза Git (`/tmp/nc-security-*`; тимчасові файли, можуть бути очищені).
+
+Відкриті: SEC-OPS-01/P1 (мережевий DB-периметр), SEC-OPS-02/P2 (захисні заголовки), SEC-DEP-01/P2 (production Fastify/fast-uri), SEC-DEP-02/P2 (dev Undici), NC-SEC-001/P2 (динамічні validation paths), SEC-DB-SETUP-01/P2 (legacy широкий HBA default). Наявність advisory не видається за відтворену атаку; dev Undici не видається за production npm-залежність. `check:local` exit 0: 147/525/10/176 (+3 opt-in skipped)/496/295; npm audit виявив 3 пакети з advisories; NC-SEC-001 відтворено синтетично. Production SSH/DB auth і host-конфігурації не перевірялись.
+
+За рішенням користувача наскрізні x86_64 інсталяції виконуватимуться на його машинах під час підключення (поки частково перевірено); restore відкладено до апгрейду сервера (не перевірено). Створення backup перед деплоєм зберігається. Попередній APPROVED frontend не змінюється; security-підготовка не завершена.
+
 ## Production: деплой `0dda425` — завершальний frontend-етап (Налаштування, Обліковий запис, Вхід) і виправлення Slack-чернетки (2026-10-28, після APPROVED Codex і за прямим дозволом користувача)
 
 Активна code revision — `0dda425` (review-commit APPROVED; містить `502f45b` і виправлення `da09f92`). Цей запис — пізніший docs-commit; він не розгортався. Деплоїлись лише Central API/UI; Agents і broker не оновлювались.
