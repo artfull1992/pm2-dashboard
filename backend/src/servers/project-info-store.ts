@@ -1,6 +1,6 @@
 import { type Scope, serviceVisibleSql } from '../auth/scope.js';
 import { insertAudit } from '../auth/store.js';
-import { type ActorRef, actorIsAdmin } from '../auth/users-store.js';
+import { type ActorRef, lockActorAdmin } from '../auth/users-store.js';
 import type { Database } from '../database.js';
 import { FIELD_NAMES, type ProjectInfoFields } from './project-info.js';
 
@@ -10,7 +10,8 @@ import { FIELD_NAMES, type ProjectInfoFields } from './project-info.js';
 //   - A service is readable when the reader may see it (scope, in SQL) and it is either in the current inventory of
 //     that server or already has saved information; anything else — unknown server, invisible service, a name that
 //     was never reported — is "not found", without telling which.
-//   - A save needs an admin (re-checked inside the transaction, like the other admin writes), the service in the
+//   - A save needs an admin with a valid session, checked AND held (FOR SHARE on its users and session rows) until the
+//     transaction ends, so a concurrent revocation is serialized with it (lockActorAdmin); then the service in the
 //     current inventory (no records for invented names) and the expected revision: revision 0 inserts (a concurrent
 //     first save loses on the primary key → conflict), otherwise the row is locked FOR UPDATE and compared. The change
 //     and its audit row are one transaction: a failing audit insert rolls the change back.
@@ -64,7 +65,9 @@ export function createPgProjectInfoStore(db: Database): ProjectInfoStore {
 
     save({ actor, serverId, serviceName, expectedRevision, value, requestId }) {
       return db.transaction(async (tx): Promise<SaveProjectInfoResult> => {
-        if (!(await actorIsAdmin(tx, actor))) return { status: 'actor_revoked' };
+        // The admin and its session stay locked until COMMIT: a revocation committed later waits for this save, one
+        // committed earlier refuses it (review ad41717). Lock order: users row → session row → metadata row.
+        if (!(await lockActorAdmin(tx, actor))) return { status: 'actor_revoked' };
         const known = await tx.query(`SELECT 1 FROM servers s WHERE s.id = $1 AND ${IN_INVENTORY}`, [serverId, serviceName]);
         if (known.rows.length === 0) return { status: 'not_found' };
         const current = (await tx.query<Row>(

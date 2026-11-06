@@ -343,7 +343,7 @@ Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HO
 | Запит | Доступ | Успіх | Помилки |
 |---|---|---|---|
 | `GET /api/servers/:id/project-info?service=<назва PM2>` | `monitoring:read` + доступ до цього сервісу | `200 ProjectInfo`; без збережених даних — `revision: 0`, поля й `updatedAt` = `null` (читання нічого не пише) | 400, 401, 403, 404 (сервер/сервіс невидимий, невідомий або ніколи не звітувався — без розкриття, що саме), 503 |
-| `PUT /api/servers/:id/project-info` | `servers:manage` (admin), Origin + CSRF | `200 ProjectInfo` — збережений стан; без змін revision не зростає | 400 (strict body, формати, довжини), 401, 403, 404 (сервісу немає в поточному inventory сервера), 409 (`expectedRevision` застарів, зокрема одночасне перше створення), 429, 503 |
+| `PUT /api/servers/:id/project-info` | `servers:manage` (admin), Origin + CSRF | `200 ProjectInfo` — збережений стан; без змін revision не зростає | 400 (strict body, формати, довжини), 401 (зокрема admin/сесію відкликано до збереження — запис не виконується), 403, 404 (сервісу немає в поточному inventory сервера), 409 (`expectedRevision` застарів, зокрема одночасне перше створення), 429, 503 |
 
 `ProjectInfo = {serverId, serviceName, revision, githubUrl, projectUrl, description, updatedAt}`. Тіло PUT: `{serviceName, expectedRevision, githubUrl, projectUrl, description}` — усі ключі обов'язкові; `null` або порожній рядок очищує поле. Формати:
 - `githubUrl` — `https://github.com/<owner>/<repository>` (опційно `.git` і `/`), без credentials, порту, query, fragment;

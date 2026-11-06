@@ -1,5 +1,45 @@
 # Поточний стан проєкту
 
+## Виправлення P2 за review `ad41717` — збереження «Про проєкт» серіалізовано з відкликанням доступу — готово до повторного незалежного review Codex (НЕ розгорнуто), 2026-11-06
+
+База `ad41717` (реалізація `7d17576`; запис CHANGES REQUIRED нижче не змінено). APPROVED не виставлено. Production, PM2, Slack, Homebrew/qemu не змінювались. API-контракт, ролі, frontend, Agent, міграції й залежності не змінювались; нової міграції немає. Зауваження SECURITY_REVIEW відкриті.
+
+**Причина.** `actorIsAdmin` читав `users`/`sessions` без блокувань. Поки збереження чекало на рядок метаданих (`FOR UPDATE`) або на конкурентну вставку першого запису, відкликання встигало закомітитися, а запис ішов на підставі застарілої перевірки. В операціях над користувачами й доступами цей helper захищено `LOCK TABLE users`, у project-info — ні.
+
+**Виправлення.** `lockActorAdmin` (`backend/src/auth/users-store.ts`), лише для project-info:
+- `SELECT role, is_active FROM users … FOR SHARE`, потім сесія `… revoked_at IS NULL AND expires_at > now() FOR SHARE`;
+- блокування тримаються до COMMIT;
+- порядок: users → sessions → метадані → audit, як у login і в кожному відкликанні.
+
+Зміна ролі, деактивація, зміна пароля (`UPDATE users`) і logout (`UPDATE sessions`) чекають на збереження, що вже авторизоване. Закомічене раніше відкликання збереження бачить і відхиляється (`actor_revoked` → 401) без запису й аудиту. Спільний `actorIsAdmin` не змінено. Optimistic concurrency, атомарний аудит і обробка відмов — без змін.
+
+**Regression** (`backend/test/db/project-info-revocation.test.ts`, справжня ізольована PostgreSQL, штатні `updateUser` / `revokeSession` / `changePassword`, бар'єри через утримувану транзакцію та `pg_stat_activity` за pid конкретної транзакції, без sleep):
+- **Збереження авторизоване першим, відкликання чекає.** Для кожного з чотирьох видів відкликання, для наявного рядка й першого створення: save → commit → revocation, наступна спроба `actor_revoked`, дані незмінні.
+- **Відкликання вже закомічене.** Відмова, поля й revision незмінні, success-аудиту немає; перше створення не з'являється.
+- **Відкликання в процесі (пауза перед COMMIT).** Збереження чекає й відхиляється.
+- **Сторонні користувачі.** Зміна іншого користувача, login іншого користувача й того самого admin не чекають на збереження.
+- **Завершення.** Обидві операції завершуються в межах ліміту, без deadlock; кожен тест прибирає свої транзакції, схема — лише власна.
+
+**До/після.**
+- На `ad41717`: 12/18 падіння. 8 — «revocation completed instead of waiting for the lock (not serialized)» (сценарій Codex для всіх видів, наявний рядок і перше створення). 4 — «відкликання в процесі»: збереження не чекало. 6 допустимих порядків проходили.
+- Reproducer Codex (копія `codex-race-reproducer.mjs` у каталозі доказів): до — `saveStatus: ok`, `descriptionChangedAfterRevocation: true`.
+- Після: 18/18. Reproducer не може закомітити відкликання раніше за запис: його `UPDATE users` чекає на збереження, а сам скрипт знімає блокування метаданих лише після цього UPDATE. Тому він стоїть, доки збереження не відкотиться за `Query read timeout` пулу; запису немає. Дві залишені схеми моїх перерваних прогонів (`nc_test_…` 17:37 і 17:39) видалено штатним `dropRunSchema`; інших схем немає.
+
+**Перевірки (exit 0):**
+- `check:local`: node:test 147/147, backend 597/597, smoke 10/10, agent 176 + 3 opt-in skipped, frontend 526/526, installer 295/295; typecheck, lint, збірки, check:secrets.
+- `test:backend:db` — 191/191, зокрема чинні тести expectedRevision, одночасного першого створення й rollback аудиту.
+- `test:e2e` на ізольованій БД — 19 passed / 2 real-PM2 opt-in skipped: `inventory.spec` (project-info save/reload/viewer/audit), auth, users, access. Перед E2E синхронізовано годинник лише тестової VM `nc-acc-db`.
+- `git diff --check`, `check:secrets` — OK.
+
+Докази поза Git: `~/node-control-validation/project-info-2026-11-06/logs/` (`race-before.log`, `race-after.log`, `codex-reproducer-*.log`, `backend-db-fix.log`, `check-local-fix.log`, `e2e-fix.log`).
+
+**Документація.** ADR-036 («Авторизація до COMMIT», фактична гарантія), ARCHITECTURE, README (401 за відкликання), ADOPTION (адаптація форми: DS-поля з підписами над ними замість двоколонкових рядків скриншота).
+
+**Не перевірено / межі:**
+- Сесія, строк якої мине під час очікування, перевіряється на момент авторизації (`now()` транзакції), як і раніше.
+- `access-store.saveAccess` має схожий шаблон (`actorIsAdmin` без `LOCK TABLE`, далі `FOR UPDATE` цільового користувача): це поза scope, не змінено й окремо не відтворювалось. Варто перевірити окремим завданням.
+- UI-матриця не повторювалась: frontend не змінювався.
+
 ## Незалежний review Codex `7d17576` — CHANGES REQUIRED (2026-11-06)
 
 Перевірено diff від `1f4770a`, реалізацію «Про проєкт», DB/API/RBAC/audit, frontend і документацію Code → Docs / Docs → Code. Код продукту Codex не змінював. Production, реальні PM2/Slack, Homebrew і x86_64 інсталяції не змінювались; оригінальні ZIP/MD збережені.
