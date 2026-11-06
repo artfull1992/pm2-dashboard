@@ -1,5 +1,43 @@
 # Поточний стан проєкту
 
+## Production: деплой `eef5c24` — «Про проєкт» у деталях застосунку (ADR-036) (2026-11-06, після APPROVED Codex і за прямим дозволом користувача)
+
+Активна code revision — `eef5c24`: review-commit APPROVED поверх `066c1f1`; runtime — функція `7d17576` з виправленням гонки `f2a8f03`. Цей запис — пізніший docs-commit; він не розгортався. Деплоїлись лише Central API/UI; Agents, broker і exporter не оновлювались.
+
+**До деплою (фактично перевірено).**
+- current `0dda425`, previous `728cd6b`; runtime Node.js 22.23.2; API active, enabled, `NRestarts=0`, `nodecontrol`, лише `127.0.0.1:3100`; health 200/200 локально; попереджень за 24 год — 0; міграції `applied=10 pending=0 unknown=0`; Nginx і PostgreSQL active, failed units — 0. Ціль ще не була підготовлена.
+- `0dda425 → eef5c24` в артефакті (порівняння manifest):
+  - додано `backend/dist/servers/project-info{,-store,-routes}.js` і міграцію `1791900000010_application-project-info.sql`;
+  - змінено `backend/dist/app.js`, `backend/dist/auth/users-store.js`, `frontend/dist/index.html` і JS/CSS bundle;
+  - `package*.json`, `scripts/deploy`, `deploy/systemd`, `theme-init.js` побайтово ті самі. Unit на сервері ідентичний unit релізу — `daemon-reload` не виконувався. Нових env-параметрів немає.
+
+**Fallback — `0dda425`** (фактичний current до деплою, тепер previous): 87 файлів, розбіжностей із manifest 0. Він не читає нову таблицю, тож сумісний зі схемою після міграції. Повернення — штатний `server-release.js rollback` + restart лише `node-control-api`, без production `down` і без відновлення БД; збережені метадані лишаються.
+
+**Процедура (штатна).**
+- Збірка `build-release.js --from-tree` з `git archive eef5c24` у новому каталозі одноразової VM `nc-acc-db` (Node 22.22.1, npm 9.2.0; `TMPDIR` і npm-кеш у каталозі збірки). API `sha256 d002bbac9b088a10985fe5ec62934867f77eeee7a88b6bc8796bdfffededdd5f`, 91 файл (+ `RELEASE.json`); без `.map`, `.env`, дизайн-матеріалів.
+- Перша спроба збірки впала (`Killed` на `tsc`): tmpfs `/tmp` VM (975 МБ) був заповнений старими каталогами збірок жовтня. Їх перенесено (не видалено) у `~/nc-builds/tmp-archive-*` на диску VM; повтор у новому каталозі успішний.
+- На сервері:
+  1. Перевірка hostname → новий каталог передачі → checksum OK.
+  2. Резервні копії `api.env` (600) і unit.
+  3. `prepare` → `config` («kept»).
+  4. `migrate status` (`pending=1`) → `pg_dump -Fc node_control_db` (600, `pg_restore --list` OK) → `migrate up` → `status` (`applied=11 pending=0`) — до активації.
+  5. `activate` → restart лише `node-control-api`.
+- Приватний runbook rollback — на сервері.
+
+**Після деплою.**
+- current `eef5c24`, previous `0dda425`; active, enabled, `NRestarts=0`, `nodecontrol`, лише `127.0.0.1:3100`.
+- `/health/live` і `/health/ready` — 200 локально; `/nope` → 404; анонімний `GET …/project-info` → 401. Попереджень і error/fatal за 15 хв після restart — 0; Nginx і PostgreSQL active, failed units — 0.
+- `frontend/dist` побайтово відповідає manifest; через HTTPS `index.html` збігається з артефактом.
+- HTTPS:
+  - `/`, `/applications`, `/servers`, `/audit`, `/login`, `/users`, `/settings/rules` → 200;
+  - JS (`application/javascript`), CSS (`text/css`), `theme-init.js` → 200;
+  - анонімні `/api/auth/me` і `/api/servers/:id/project-info` → 401 (`no-store`); невідомий `/api/*` → JSON 404.
+- Анонімний браузерний smoke (1440 dark, 390 light, лише GET): `/applications` веде на `/login`, без горизонтального переповнення; помилок консолі, крім очікуваного 401 анонімного `/api/auth/me`, немає.
+
+**Не перевірено** (production-облікових даних немає; production-дані не читались і не змінювались). Перевірити оператору як admin: «Застосунки» → застосунок → «Огляд»: «Про проєкт» першим, «Параметри процесу» — закрита згортка; за бажання — додати інформацію для одного сервісу. Viewer/operator мають бачити лише надані застосунки без «Редагувати». Після першого використання — `journalctl -u node-control-api -p warning`.
+
+**Не змінювались:** Agent, broker, exporter, PM2, Slack, користувачі й доступи, PostgreSQL/HBA/firewall, Nginx, runtime Node.js. Rollback не знадобився. Зауваження SECURITY_REVIEW і відкритий пункт `saveAccess` лишаються відкритими.
+
 ## Повторний незалежний review Codex `066c1f1` — APPROVED (2026-11-06)
 
 Обидва документаційні зауваження з `b2adb4f` закриті. Diff містить лише DECISIONS і PROJECT_STATUS; runtime ідентичний перевіреному `f2a8f03`. ADR-036 звірено з `lockActorAdmin`, project-info save, `saveAccess`, login та шляхами відкликання: відсутній table lock у saveAccess більше не прихований; login без ротації та login із відкликанням утримуваної сесії описані окремо. Потенційний аналогічний ACL-ризик явно лишається невідтвореним відкритим пунктом, не оголошений виправленим. Адаптація макета APP-02/DS-01 задокументована раніше; frontend не змінювався.
