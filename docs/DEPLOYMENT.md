@@ -365,6 +365,18 @@ journalctl -u node-control-agent -n 5 -o cat                             # "cont
 
 **Rollback:** штатний `server-release.js rollback` (або `activate --revision` попереднього сумісного релізу) + restart лише `node-control-api`. Production `down` немає: таблиця лишається, попередній код її не читає, збережені дані не видаляються й знову використовуються після наступного оновлення. Відновлення БД з backup для цього rollback не потрібне.
 
+### Перехід broker з legacy allowlist на auto на підключеному сервері
+
+Це конфігураційна зміна одного вузла, без коду, ключа Agent і рестарту Agent. Деталі й обсяг — у [INSTALLATION](INSTALLATION.md), розділ 3.3.
+
+1. Read-only: власник PM2 і `PM2_HOME` (`ps -eo user,cmd | grep '[G]od Daemon'`), активний реліз Agent (`readlink /opt/node-control-agent/current`), режим (`NC_BROKER_MODE` у `/etc/node-control-pm2-broker/<owner>.env`), кількість `targets` в останньому `control poll`.
+2. Installer того самого релізу (за потреби — відтворена збірка Agent-компонента, manifest звірено з установленим) у захищеному каталозі root. `agent.js plan … --pm2-owner <owner> --pm2-home <home> --enable-control --control-mode auto` має показати лише «перемкнути режим allowlist → auto» і restart broker.
+3. Власна копія `<owner>.env` і `<owner>.allowlist.json` у `/root/node-control-recovery/`. Перелік процесів власника, що стануть цілями, погоджено.
+4. `apply` з тими самими параметрами. Installer робить `<owner>.env.bak-<час>`, додає `NC_BROKER_MODE=auto` і перезапускає лише broker; allowlist лишається на диску.
+5. Перевірки: broker і Agent active; у `control poll` `broker: ok`, `targets` = кількість процесів власника; `logs poll` ok; heartbeat/inventory ok; помилок немає. PID PM2 daemon і застосунків не змінились.
+
+**Rollback:** відновити `<owner>.env` з резервної копії (або той самий `apply` з `--control-mode allowlist`) і `systemctl restart node-control-pm2-broker@<owner>`; allowlist уже на місці. Agent і PM2 не чіпаються.
+
 ### Автозапуск PM2 після reboot (окремо від Agent)
 
 PM2 і його застосунки належать власнику PM2 на керованій ноді; Node Control їх не запускає. Agent, exporter і broker — окремі systemd-служби й **не** відповідають за автозапуск PM2: після reboot вони працюють, але exporter звітує «daemon unavailable», доки PM2 не запущено. Автозапуск PM2 налаштовується окремо, штатною службою PM2 від імені власника.

@@ -27,6 +27,9 @@ export function startAgent(token: string, extra: Record<string, string> = {}) {
   const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
   return {
     output: () => output,
+    /** The process id, unchanged as long as the Agent was not restarted. */
+    pid: () => child.pid,
+    running: () => child.exitCode === null,
     stop: async () => { child.kill('SIGTERM'); const code = await exited; rmSync(dir, { recursive: true, force: true }); return code; },
   };
 }

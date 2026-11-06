@@ -154,7 +154,7 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     await expect(viewerDialog).toHaveCount(0);
     const logAudit = await inRunSchema(async (q) => (await q(
       `SELECT event, details FROM audit_log WHERE event LIKE 'logs.%' AND details->>'serverId' = $1`, [serverId])).rows);
-    expect(logAudit).toEqual([{ event: 'logs.view_opened', details: { serverId, targetKey: 'e2e-allowed' } }]);
+    expect(logAudit).toEqual([{ event: 'logs.view_opened', details: { serverId, serviceName: 'e2e-allowed', targetKey: 'e2e-allowed' } }]); // serviceName since ADR-033
     const leaked = await inRunSchema(async (q) => (await q(`SELECT count(*)::int AS n FROM audit_log WHERE details::text LIKE '%e2e stdout%' OR details::text LIKE $1`, [`%${LOG_SECRET}%`])).rows[0]);
     expect(leaked).toEqual({ n: 0 });
 
@@ -165,6 +165,8 @@ test('operator stops and starts an allowlisted process through Agent + broker; v
     // Select a process in the list; its details hold «Перезапустити» and the «Дії» menu.
     await op.getByRole('button', { name: /^e2e-other на e2e-control:/ }).click({ timeout: 15_000 });
     const otherDetails = op.getByRole('region', { name: 'Деталі: e2e-other на e2e-control' });
+    // ADR-036: the control availability notice is inside the closed «Параметри процесу» disclosure.
+    await otherDetails.getByText('Параметри процесу').click();
     await expect(otherDetails.getByText(/Процесу немає в allowlist сервера/).first()).toBeVisible();
     // The visible command stays, disabled with the reason (design reference 1.0); nothing can be sent for it.
     await expect(otherDetails.getByRole('button', { name: 'Перезапустити' })).toHaveAttribute('aria-disabled', 'true');
@@ -356,6 +358,156 @@ test('auto broker: operator controls and reads logs only of the granted service;
     expect(audit.every((r) => r.key === keyOf('e2e-granted'))).toBe(true);
     expect(audit.filter((r) => r.event === 'process.command_succeeded')).toHaveLength(2);
     await opContext.close();
+  } finally {
+    if (agent) { const code = await agent.stop(); expect(code).toBe(0); }
+    if (broker) { broker.kill('SIGTERM'); await new Promise((r) => { broker?.once('exit', r); }); }
+    try { pm2('kill'); } catch { /* already gone */ }
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// A PM2 process started AFTER the auto broker and the Agent are running (no restart of either): the next inventory
+// and control polls pick it up, the UI shows it controllable without a page reload, and access still follows roles +
+// grants — admin and an operator with «all» on the server may control it; an operator with selected services does
+// not get it; a viewer can neither control nor read logs. A deleted process stops being a target.
+test('auto broker discovers a process started later, without restarting broker or Agent; access follows grants', async ({ page, browser }) => {
+  test.setTimeout(300_000);
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'nc-e2e-new-')));
+  const home = join(base, 'h');
+  const run = join(base, 'run');
+  const state = join(base, 'state');
+  mkdirSync(home, { mode: 0o700 });
+  mkdirSync(run, { mode: 0o750 });
+  mkdirSync(state, { mode: 0o700 });
+  chmodSync(run, 0o750);
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('npm_'))), PM2_HOME: home };
+  const pm2 = (...args: string[]) => {
+    const r = spawnSync('npx', ['-y', PM2, ...args], { env, encoding: 'utf8', timeout: 120_000 });
+    if (r.status !== 0) throw new Error(`pm2 ${args[0] ?? ''} failed`);
+    return r.stdout;
+  };
+  const pidOf = (name: string) => (JSON.parse(pm2('jlist')) as { name: string; pid: number }[]).find((p) => p.name === name)?.pid;
+  const keyOf = (name: string) => `n-${createHash('sha256').update(name, 'utf8').digest('hex').slice(0, 24)}`;
+  const brokerEnv = { PATH: process.env.PATH ?? '', NC_PM2_HOME: home, NC_BROKER_SOCKET: join(run, 'broker.sock'), NC_BROKER_JOURNAL_DIR: state, NC_BROKER_MODE: 'auto' };
+  const snapshotFile = join(base, 'inventory.json');
+  const exportInventory = () => {
+    expect(spawnSync(process.execPath, [join(ROOT, 'agent', 'dist', 'pm2-exporter.js')], {
+      env: { PATH: process.env.PATH ?? '', NC_PM2_HOME: home, NC_PM2_SNAPSHOT_FILE: snapshotFile }, encoding: 'utf8',
+    }).status).toBe(0);
+  };
+  /** A direct API call from the page's session (cookie + CSRF), as the UI would make it. */
+  const call = (p: Page, method: string, path: string, body?: unknown) => p.evaluate(async ({ method, path, body }) => {
+    const me = await (await fetch('/api/auth/me', { credentials: 'same-origin' })).json() as { csrfToken: string };
+    const res = await fetch(path, { method, credentials: 'same-origin', headers: { 'x-csrf-token': me.csrfToken, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: res.status, json: res.headers.get('content-type')?.includes('json') ? await res.json() as unknown : null };
+  }, { method, path, body });
+  const targetsOf = async (p: Page, id: string) => ((await call(p, 'GET', `/api/servers/${id}/control`)).json as { targets: { name: string; targetKey: string; matchStatus: string }[] }).targets;
+  let broker: ChildProcess | null = null;
+  let agent: ReturnType<typeof startAgent> | null = null;
+  try {
+    const script = join(base, 'app.cjs');
+    writeFileSync(script, "setInterval(() => { console.log('tick'); }, 1000);\n");
+    pm2('start', script, '--name', 'e2e-first');
+    broker = spawn(process.execPath, [join(ROOT, 'agent', 'dist', 'pm2-broker.js'), 'serve'], { env: brokerEnv, stdio: 'ignore' });
+    await expect.poll(() => spawnSync('test', ['-S', brokerEnv.NC_BROKER_SOCKET]).status, { timeout: 10_000 }).toBe(0);
+
+    await login(page, 'admin');
+    await page.getByRole('link', { name: 'Сервери', exact: true }).click();
+    await page.getByRole('button', { name: 'Додати сервер' }).click();
+    const createDialog = page.getByRole('dialog', { name: 'Новий сервер' });
+    await createDialog.getByLabel('Назва нового сервера').fill('e2e-new-process');
+    await createDialog.getByRole('button', { name: 'Додати', exact: true }).click();
+    await expect(createDialog).toHaveCount(0);
+    await page.getByRole('link', { name: 'e2e-new-process' }).click();
+    await page.getByRole('button', { name: 'Видати ключ' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Ключ агента видано' });
+    const token = await dialog.getByRole('textbox').inputValue();
+    await dialog.getByRole('button', { name: /закрити/ }).click();
+    const serverId = new URL(page.url()).pathname.split('/').at(-1) ?? '';
+    exportInventory();
+    agent = startAgent(token, {
+      NC_AGENT_CONTROL_SOCKET: brokerEnv.NC_BROKER_SOCKET, NC_AGENT_INVENTORY_FILE: snapshotFile,
+      NC_AGENT_INVENTORY_ALLOW_SAME_OWNER: 'true', NC_AGENT_INVENTORY_MAX_AGE_SECONDS: '3600', NC_AGENT_INVENTORY_INTERVAL_SECONDS: '30',
+    });
+    await expect.poll(async () => (await targetsOf(page, serverId)).map((t) => t.name), { timeout: 60_000 }).toEqual(['e2e-first']);
+
+    // The UI is open before the new process exists.
+    await page.goto(`/applications?serverId=${serverId}`);
+    await expect(page.getByRole('button', { name: /^e2e-first на / })).toBeVisible({ timeout: 60_000 });
+    const brokerPid = broker.pid;
+    const agentPid = agent.pid();
+
+    // A new project is started on the running PM2; nothing of Node Control is restarted.
+    pm2('start', script, '--name', 'e2e-new');
+    exportInventory(); // the exporter's 30 s timer, run once by the test
+    await expect.poll(async () => (await targetsOf(page, serverId)).map((t) => t.name).sort(), { timeout: 60_000 }).toEqual(['e2e-first', 'e2e-new']);
+    expect(broker.pid).toBe(brokerPid);
+    expect(agent.pid()).toBe(agentPid);
+    expect(broker.exitCode).toBeNull();
+    expect(agent.running()).toBe(true);
+
+    // The list (polled) shows it without a reload, and its menu offers the commands (capabilities revalidated).
+    const row = page.getByRole('button', { name: /^e2e-new на / });
+    await expect(row).toBeVisible({ timeout: 90_000 });
+    await row.click();
+    const panel = page.getByRole('region', { name: /^Деталі: e2e-new на / });
+    await expect(async () => {
+      // «Перезапустити» is the visible command of the details; the other commands are in the «⋯» menu.
+      await expect(panel.getByRole('button', { name: 'Перезапустити' })).not.toHaveAttribute('aria-disabled', 'true', { timeout: 2_000 });
+      await expect(panel.getByText('Потрібне підтвердження')).toBeVisible({ timeout: 2_000 });
+      await panel.getByRole('button', { name: /^Дії: e2e-new/ }).click();
+      await expect(page.getByRole('menuitem', { name: 'Зупинити' })).toBeEnabled({ timeout: 2_000 });
+      await page.keyboard.press('Escape');
+    }).toPass({ timeout: 60_000 });
+
+    // Admin: a confirmed restart of the new synthetic process (direct API; the UI path is covered above).
+    const before = pidOf('e2e-new');
+    const created = await call(page, 'POST', `/api/servers/${serverId}/control-commands`, { targetKey: keyOf('e2e-new'), action: 'restart', idempotencyKey: crypto.randomUUID() });
+    expect(created.status).toBe(201);
+    const commandId = (created.json as { id: string }).id;
+    await expect.poll(async () => ((await call(page, 'GET', `/api/control-commands/${commandId}`)).json as { status: string }).status, { timeout: 60_000 }).toBe('succeeded');
+    expect(pidOf('e2e-new')).not.toBe(before);
+
+    // Operator with «all» on the server: the new service is controllable (direct API).
+    await grantAccess(credentials('operator').email, serverId, 'all');
+    const opContext = await browser.newContext();
+    const op = await opContext.newPage();
+    await login(op, 'operator');
+    expect((await targetsOf(op, serverId)).map((t) => t.name).sort()).toEqual(['e2e-first', 'e2e-new']);
+    const opCommand = await call(op, 'POST', `/api/servers/${serverId}/control-commands`, { targetKey: keyOf('e2e-new'), action: 'restart', idempotencyKey: crypto.randomUUID() });
+    expect(opCommand.status).toBe(201);
+    await expect.poll(async () => ((await call(op, 'GET', `/api/control-commands/${(opCommand.json as { id: string }).id}`)).json as { status: string }).status, { timeout: 60_000 }).toBe('succeeded');
+
+    // Operator with selected services (only e2e-first): the new service is not added to the grant.
+    await inRunSchema((q) => q("UPDATE user_server_access SET mode = 'selected' WHERE server_id = $1", [serverId]));
+    await inRunSchema(async (q) => {
+      const user = (await q('SELECT id FROM users WHERE email = $1', [credentials('operator').email])).rows[0]?.id as string;
+      await q("INSERT INTO user_service_access (user_id, server_id, service_name) VALUES ($1, $2, 'e2e-first')", [user, serverId]);
+    });
+    expect((await targetsOf(op, serverId)).map((t) => t.name)).toEqual(['e2e-first']);
+    const pidBefore = pidOf('e2e-new');
+    expect((await call(op, 'POST', `/api/servers/${serverId}/control-commands`, { targetKey: keyOf('e2e-new'), action: 'stop', idempotencyKey: crypto.randomUUID() })).status).toBe(404);
+    expect((await call(op, 'POST', `/api/servers/${serverId}/log-requests`, { targetKey: keyOf('e2e-new') })).status).not.toBe(202);
+    expect(pidOf('e2e-new')).toBe(pidBefore);
+    await opContext.close();
+
+    // Viewer with access to the server: sees it, cannot control or read logs.
+    await grantAccess(credentials('viewer').email, serverId, 'all');
+    const viewerContext = await browser.newContext();
+    const viewer = await viewerContext.newPage();
+    await login(viewer, 'viewer');
+    expect((await call(viewer, 'POST', `/api/servers/${serverId}/control-commands`, { targetKey: keyOf('e2e-new'), action: 'stop', idempotencyKey: crypto.randomUUID() })).status).toBe(403);
+    expect((await call(viewer, 'POST', `/api/servers/${serverId}/log-requests`, { targetKey: keyOf('e2e-new') })).status).toBe(403);
+    expect(pidOf('e2e-new')).toBe(pidBefore);
+    await viewerContext.close();
+
+    // Deleted from PM2: no longer a target; a command for its key is refused and nothing else is touched.
+    pm2('delete', 'e2e-new');
+    await expect.poll(async () => (await targetsOf(page, serverId)).map((t) => t.name), { timeout: 60_000 }).toEqual(['e2e-first']);
+    const gone = await call(page, 'POST', `/api/servers/${serverId}/control-commands`, { targetKey: keyOf('e2e-new'), action: 'start', idempotencyKey: crypto.randomUUID() });
+    expect(gone.status).toBeGreaterThanOrEqual(400);
+    expect(pidOf('e2e-new')).toBeUndefined();
+    expect(pidOf('e2e-first')).toBeDefined();
   } finally {
     if (agent) { const code = await agent.stop(); expect(code).toBe(0); }
     if (broker) { broker.kill('SIGTERM'); await new Promise((r) => { broker?.once('exit', r); }); }
