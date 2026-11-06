@@ -566,6 +566,29 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor: not-allo
 .kv > div { padding: var(--space-3) 0; border-bottom: 1px solid var(--border); min-width: 0; }
 .kv dt { color: var(--text-muted); font-size: var(--font-xs); }
 .kv dd { margin: 6px 0 0; overflow-wrap: anywhere; }
+/* «Про проєкт» (ADR-036, APP-02 refinement): compact label/value rows, inline editing in the same block. */
+.project-info { display: grid; gap: var(--space-3); min-width: 0; }
+.project-info__head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: var(--control-sm); }
+.project-info__rows { display: grid; margin: 0; }
+.project-info__rows > div { display: grid; grid-template-columns: minmax(96px, 9rem) minmax(0, 1fr); gap: var(--space-3); padding: var(--space-2) 0; border-bottom: 1px solid var(--border); min-width: 0; }
+.project-info__rows dt { color: var(--text-muted); font-size: var(--font-xs); line-height: 20px; }
+.project-info__rows dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.project-info__text { white-space: pre-wrap; }
+.project-info__unset { color: var(--text-muted); }
+.project-info__empty { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.project-info__form { display: grid; gap: var(--space-3); min-width: 0; }
+.project-info__form textarea { min-height: 96px; resize: vertical; }
+.project-info__saved { display: grid; gap: var(--space-1); padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.notice--ok { border-color: color-mix(in srgb, var(--success) 40%, var(--border)); background: var(--success-soft); }
+.notice--ok .notice__title { color: var(--success); }
+.notice__action { margin-top: var(--space-2); }
+.external-link { color: var(--primary); overflow-wrap: anywhere; }
+.external-link__icon { margin-left: 4px; text-decoration: none; display: inline-block; }
+/* «Параметри процесу»: a native disclosure (keyboard + expanded state), closed by default. */
+.app-disclosure { display: grid; gap: var(--space-3); min-width: 0; }
+.app-disclosure > summary { cursor: pointer; display: list-item; min-height: var(--control-sm); font-size: var(--text-md); line-height: 20px; font-weight: 650; }
+.app-disclosure[open] > summary { margin-bottom: var(--space-2); }
+@media (max-width: 600px) { .project-info__rows > div { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
 .timeline { list-style: none; margin: 0; padding: 0; display: grid; }
 .timeline__event { display: grid; gap: 4px; padding: 0 0 20px 16px; border-left: 1px solid var(--border); }
 .timeline__title { font-weight: 500; }

@@ -1,11 +1,9 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
-import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from 'react-router';
+import { type NavigateFunction, useLocation, useNavigate } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppRoutes } from '../src/App';
-import { AuthProvider } from '../src/auth/AuthContext';
-import { deferred, installFetch, json, type RecordedRequest, renderApp, session } from './support';
+import { deferred, installFetch, json, type RecordedRequest, renderApp, session, renderAppWith } from './support';
 
 // Read-only PM2 inventory UI (Task 008, ADR-016).
 
@@ -53,7 +51,7 @@ function Probe() {
   return null;
 }
 function renderAt(path: string) {
-  return render(<AuthProvider><MemoryRouter initialEntries={[path]}><Probe /><AppRoutes /></MemoryRouter></AuthProvider>);
+  return renderAppWith(path, <Probe />);
 }
 const go = async (path: string) => { await act(async () => { await nav.current?.(path); }); };
 

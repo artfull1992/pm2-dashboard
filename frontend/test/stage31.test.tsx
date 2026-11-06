@@ -1,11 +1,9 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
-import { MemoryRouter, type NavigateFunction, useNavigate } from 'react-router';
+import { type NavigateFunction, useNavigate } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppRoutes } from '../src/App';
-import { AuthProvider } from '../src/auth/AuthContext';
-import { deferred, installFetch, json, type RecordedRequest, session } from './support';
+import { deferred, installFetch, json, type RecordedRequest, session, renderAppWith } from './support';
 
 // Stage 3.1 (overview, servers, server detail on the shared design system, ТЗ §11 / DS-01): the UI projection of the
 // process state on the server page, honest unknowns, no extra per-server requests, roles, and command protection.
@@ -43,7 +41,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 
 const nav: { current: NavigateFunction | null } = { current: null };
 function Probe() { const n = useNavigate(); useEffect(() => { nav.current = n; }, [n]); return null; }
-const renderAt = (path: string) => render(<AuthProvider><MemoryRouter initialEntries={[path]}><Probe /><AppRoutes /></MemoryRouter></AuthProvider>);
+const renderAt = (path: string) => renderAppWith(path, <Probe />);
 
 type Route = (req: RecordedRequest) => Response | Promise<Response> | undefined;
 function backend(role: 'admin' | 'operator' | 'viewer', route: Route = () => undefined) {

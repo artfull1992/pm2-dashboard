@@ -1,12 +1,10 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
-import { MemoryRouter, type NavigateFunction, useNavigate } from 'react-router';
+import { type NavigateFunction, useNavigate } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppRoutes } from '../src/App';
 import { useAuth } from '../src/auth/AuthContext';
-import { AuthProvider } from '../src/auth/AuthContext';
-import { CSRF, deferred, installFetch, json, type RecordedRequest, session } from './support';
+import { CSRF, deferred, installFetch, json, type RecordedRequest, session, renderAppWith } from './support';
 
 type User = ReturnType<typeof userEvent.setup>;
 
@@ -49,7 +47,7 @@ function Probe() {
   useEffect(() => { nav.current = navigate; nav.logout = logout; }, [navigate, logout]);
   return null;
 }
-const renderAt = (path = '/applications') => render(<AuthProvider><MemoryRouter initialEntries={[path]}><Probe /><AppRoutes /></MemoryRouter></AuthProvider>);
+const renderAt = (path = '/applications') => renderAppWith(path, <Probe />);
 
 type Route = (req: RecordedRequest) => Response | Promise<Response> | undefined;
 interface Opts {

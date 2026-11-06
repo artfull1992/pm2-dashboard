@@ -1,11 +1,9 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
-import { type NavigateFunction, MemoryRouter, useNavigate } from 'react-router';
+import { type NavigateFunction, useNavigate } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppRoutes } from '../src/App';
-import { AuthProvider } from '../src/auth/AuthContext';
-import { deferred, installFetch, json, type RecordedRequest, session } from './support';
+import { deferred, installFetch, json, type RecordedRequest, session, renderAppWith } from './support';
 
 // Regression for review finding P1 (Task 007.1): server detail state and credential controls are bound to the
 // server id in the URL. Navigation /servers/A → /servers/B happens inside one real router (same route, new param),
@@ -31,14 +29,7 @@ function Navigator() {
 }
 
 function renderAt(path: string) {
-  return render(
-    <AuthProvider>
-      <MemoryRouter initialEntries={[path]}>
-        <Navigator />
-        <AppRoutes />
-      </MemoryRouter>
-    </AuthProvider>,
-  );
+  return renderAppWith(path, <Navigator />);
 }
 
 const go = async (path: string) => { await act(async () => { await nav.current?.(path); }); };

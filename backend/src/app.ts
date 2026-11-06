@@ -22,6 +22,8 @@ import { LogHub } from './servers/logs.js';
 import { registerLogRoutes } from './servers/logs-routes.js';
 import { createPgInventoryStore, type InventoryStore } from './servers/inventory-store.js';
 import { registerInventoryRoutes } from './servers/inventory-routes.js';
+import { registerProjectInfoRoutes } from './servers/project-info-routes.js';
+import { createPgProjectInfoStore, type ProjectInfoStore } from './servers/project-info-store.js';
 import { registerServerRoutes } from './servers/routes.js';
 import { createPgServerStore, type ServerStore } from './servers/store.js';
 import { ALERTS_DEFAULTS, type AlertsConfig, type AuthConfig, type LogLevel } from './config.js';
@@ -90,6 +92,8 @@ export interface BuildAppOptions {
     /** Test seams for resource grants (ADR-028): their administration and the checker used by the log routes. */
     createAccessStore?: (database: Database) => AccessStore;
     accessChecker?: AccessChecker;
+    /** Test seam for project information of applications (ADR-036). */
+    createProjectInfoStore?: (database: Database) => ProjectInfoStore;
     extra?: Omit<Parameters<typeof registerAuth>[1], 'config' | 'store'>;
   };
 }
@@ -195,6 +199,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     registerServerRoutes(app, { store: serverStore, ...(options.auth.heartbeatLimiter ? { heartbeatLimiter: options.auth.heartbeatLimiter } : {}) });
     const inventoryStore = (options.auth.createInventoryStore ?? createPgInventoryStore)(database);
     registerInventoryRoutes(app, { store: inventoryStore, ...(options.auth.inventoryLimiter ? { inventoryLimiter: options.auth.inventoryLimiter } : {}) });
+    registerProjectInfoRoutes(app, {
+      store: (options.auth.createProjectInfoStore ?? createPgProjectInfoStore)(database),
+      ...(options.auth.userAdminLimiter ? { limiter: options.auth.userAdminLimiter } : {}),
+    });
     const controlStore = (options.auth.createControlStore ?? createPgControlStore)(database);
     registerControlRoutes(app, {
       store: controlStore, enabled: options.auth.controlEnabled === true,

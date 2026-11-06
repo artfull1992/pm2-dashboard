@@ -1,11 +1,9 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
-import { MemoryRouter, type NavigateFunction, useNavigate } from 'react-router';
+import { type NavigateFunction, useNavigate } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppRoutes } from '../src/App';
-import { AuthProvider } from '../src/auth/AuthContext';
-import { CSRF, deferred, installFetch, json, type RecordedRequest, session } from './support';
+import { CSRF, deferred, installFetch, json, type RecordedRequest, session, renderAppWith } from './support';
 
 // Bounded log viewing UI (Task 010, ADR-018).
 
@@ -33,7 +31,7 @@ afterEach(() => { vi.unstubAllGlobals(); expect(storageWrites).toEqual([]); });
 
 const nav: { current: NavigateFunction | null } = { current: null };
 function Probe() { const n = useNavigate(); useEffect(() => { nav.current = n; }, [n]); return null; }
-const renderAt = (path: string) => render(<AuthProvider><MemoryRouter initialEntries={[path]}><Probe /><AppRoutes /></MemoryRouter></AuthProvider>);
+const renderAt = (path: string) => renderAppWith(path, <Probe />);
 
 type Route = (req: RecordedRequest) => Response | Promise<Response> | undefined;
 function backend(role: 'operator' | 'viewer' | 'admin', route: Route = () => undefined, targetsFor: (id: string) => unknown = (id) => logTargets(id)) {

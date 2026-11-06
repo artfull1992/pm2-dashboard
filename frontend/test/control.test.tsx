@@ -1,13 +1,11 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
-import { MemoryRouter, type NavigateFunction, useNavigate } from 'react-router';
+import { type NavigateFunction, useNavigate } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppRoutes } from '../src/App';
-import { AuthProvider } from '../src/auth/AuthContext';
 import { reasonLabel } from '../src/components/Inventory';
 import { commandStatusText } from '../src/components/processActions';
-import { CSRF, deferred, installFetch, json, type RecordedRequest, session } from './support';
+import { CSRF, deferred, installFetch, json, type RecordedRequest, session, renderAppWith } from './support';
 
 // Allowlisted PM2 control UI (Task 009, ADR-017).
 
@@ -38,7 +36,7 @@ function Probe() {
   useEffect(() => { nav.current = navigate; }, [navigate]);
   return null;
 }
-const renderAt = (path: string) => render(<AuthProvider><MemoryRouter initialEntries={[path]}><Probe /><AppRoutes /></MemoryRouter></AuthProvider>);
+const renderAt = (path: string) => renderAppWith(path, <Probe />);
 
 type Route = (req: RecordedRequest) => Response | Promise<Response> | undefined;
 function backend(role: 'operator' | 'viewer' | 'admin', route: Route = () => undefined, controlFor: (id: string) => unknown = (id) => control(id)) {

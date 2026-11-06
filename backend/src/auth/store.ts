@@ -27,6 +27,8 @@ export type AuditEvent =
   | { event: 'integration.slack_test_result'; outcome: 'success' | 'failure'; details: { operationId: string; generation: number; code?: string; stale?: boolean } }
   | { event: 'auth.logout'; outcome: 'success'; details?: Record<string, never> }
   | { event: 'access.updated'; outcome: 'success'; details: { targetUserId: string; revision: number; servers: number; services: number } }
+  // Project information of an application (ADR-036): which fields changed (codes) and the revision — never the values.
+  | { event: 'application.project_info_changed'; outcome: 'success'; details: { serverId: string; serviceName: string; revision: number; changed: string } }
   | { event: 'authz.denied'; outcome: 'denied'; details: { permission: string; route: string } }
   | { event: 'server.created'; outcome: 'success'; details: { serverId: string } }
   | { event: 'agent.credential_issued'; outcome: 'success'; details: { serverId: string; rotated: boolean } }

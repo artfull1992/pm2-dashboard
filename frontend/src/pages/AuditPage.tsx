@@ -114,7 +114,7 @@ function AuditRecords({ items, onOpen, rowsRef }: { items: AuditItem[]; onOpen: 
 function AuditDrawer({ item, onClose, fallbackFocus }: { item: AuditItem; onClose: () => void; fallbackFocus: () => HTMLElement | null }) {
   const a = actorOf(item);
   const t = targetOf(item);
-  const rows = detailRows(item.details);
+  const rows = detailRows(item.details, item.event);
   const d = item.details;
   const control = item.event.startsWith('process.command_') && item.outcome === 'success';
   return (

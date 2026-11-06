@@ -26,6 +26,7 @@ const EVENT_LABELS: ReadonlyMap<string, string> = new Map(Object.entries({
   'user.activated': 'Активація користувача',
   'user.update_rejected': 'Зміну користувача відхилено',
   'access.updated': 'Зміна доступів',
+  'application.project_info_changed': 'Зміна інформації про проєкт',
   'server.created': 'Додавання сервера',
   'agent.credential_issued': 'Видача ключа агента',
   'agent.credential_revoked': 'Відкликання ключа агента',
@@ -121,7 +122,7 @@ const ACTION_TEXT: ReadonlyMap<string, string> = new Map(Object.entries({
   'admin.bootstrap': 'Створено адміністратора', 'auth.logout': 'Вийшов', 'authz.denied': 'Відмова в доступі',
   'user.created': 'Створив користувача', 'user.create_rejected': 'Створення користувача відхилено', 'user.role_changed': 'Змінив роль',
   'user.deactivated': 'Деактивував користувача', 'user.activated': 'Активував користувача', 'user.update_rejected': 'Зміну користувача відхилено',
-  'access.updated': 'Змінив доступи', 'server.created': 'Додав сервер', 'agent.credential_revoked': 'Відкликав ключ агента',
+  'access.updated': 'Змінив доступи', 'application.project_info_changed': 'Змінив інформацію про проєкт', 'server.created': 'Додав сервер', 'agent.credential_revoked': 'Відкликав ключ агента',
   'logs.view_opened': 'Переглянув логи', 'logs.view_denied': 'Перегляд логів відхилено',
   'settings.alerts_changed': 'Змінив правила сповіщень', 'settings.delivery_enabled': 'Увімкнув доставку сповіщень', 'settings.delivery_disabled': 'Вимкнув доставку сповіщень',
   'integration.slack_removed': 'Відключив Slack', 'integration.slack_test_requested': 'Запросив тест Slack',
@@ -160,7 +161,7 @@ const joined = (...parts: (string | null | undefined)[]) => parts.filter((p): p 
 export function targetOf(item: AuditItem): Target {
   const d = item.details;
   const e = item.event;
-  if (e.startsWith('process.command_') || e.startsWith('logs.')) return { primary: serviceOf(item).name ?? 'Назву застосунку не збережено', secondary: serverOf(item) };
+  if (e.startsWith('process.command_') || e.startsWith('logs.') || e === 'application.project_info_changed') return { primary: serviceOf(item).name ?? 'Назву застосунку не збережено', secondary: serverOf(item) };
   if (e === 'server.created' || e.startsWith('agent.credential_')) {
     const note = e === 'agent.credential_revoked' && d.revoked === false ? 'активного ключа не було' : null;
     return { primary: item.context?.serverName ?? (d.serverId ? `Сервер ${shortId(d.serverId)}` : 'Не передано'), secondary: note };
@@ -187,7 +188,7 @@ export function contextRows(item: AuditItem): { label: string; value: string; or
   rows.push({ label: 'Автор запису', value: author.label, origin: author.full && item.context?.actorEmail ? 'поточний email на момент перегляду' : author.label === 'Система' ? 'запис зробив сервер (крок виконання команди)' : '—' });
   const requester = requesterOf(item);
   if (requester) rows.push({ label: 'Замовник команди', value: requester.label, origin: 'з пов’язаної команди; email — поточний на момент перегляду' });
-  if (item.event.startsWith('process.command_') || item.event.startsWith('logs.')) {
+  if (item.event.startsWith('process.command_') || item.event.startsWith('logs.') || item.event === 'application.project_info_changed') {
     const s = serviceOf(item);
     rows.push({ label: 'Застосунок', value: s.name ?? 'Назву застосунку не збережено', origin: s.origin });
   }
@@ -207,11 +208,17 @@ const DETAIL_LABELS: [keyof AuditItem['details'], string][] = [
   ['revoked', 'Ключ відкликано'], ['revision', 'Ревізія'], ['changed', 'Змінено'], ['cancelledItems', 'Скасовано повідомлень'],
   ['generation', 'Покоління інтеграції'], ['replaced', 'Замінено webhook'], ['code', 'Код результату'], ['stale', 'Застарілий результат'],
 ];
-export function detailRows(details: AuditItem['details']): [string, string][] {
+/** Field codes in `changed` of a project information change (ADR-036); other events keep their codes. */
+const PROJECT_FIELDS: ReadonlyMap<string, string> = new Map(Object.entries({ github: 'GitHub', url: 'адреса проєкту', description: 'опис' }));
+const changedText = (event: string | undefined, value: string) => (event === 'application.project_info_changed'
+  ? value.split(',').map((code) => labelOf(PROJECT_FIELDS, code)).join(', ') : value);
+
+export function detailRows(details: AuditItem['details'], event?: string): [string, string][] {
   const rows: [string, string][] = [];
   for (const [key, label] of DETAIL_LABELS) {
     const v = details[key];
     if (v === undefined) continue;
+    if (key === 'changed' && typeof v === 'string') { rows.push([label, changedText(event, v)]); continue; }
     if (typeof v === 'boolean') rows.push([label, v ? 'так' : 'ні']);
     else if (typeof v === 'number') rows.push([label, String(v)]);
     else rows.push([label, key === 'reason' ? `${reasonLabel(v)}${reasonLabel(v) === v ? '' : ` (${v})`}` : key === 'action' ? `${actionLabel(v)}${actionLabel(v) === v ? '' : ` (${v})`}` : v]);
@@ -235,7 +242,7 @@ export function searchText(item: AuditItem): string {
   const a = actorOf(item);
   const t = targetOf(item);
   return [item.id, item.event, eventLabel(item.event), actionText(item), OUTCOME[item.outcome].label, a.label, a.full, authorOf(item).label,
-    t.primary, t.secondary, item.requestId, ...contextRows(item).map((r) => r.value), ...detailRows(item.details).map(([, v]) => v),
+    t.primary, t.secondary, item.requestId, ...contextRows(item).map((r) => r.value), ...detailRows(item.details, item.event).map(([, v]) => v),
     ...technicalRows(item).map(([, v]) => v)].filter(Boolean).join(' ').toLocaleLowerCase('uk-UA');
 }
 

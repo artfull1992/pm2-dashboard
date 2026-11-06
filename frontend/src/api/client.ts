@@ -4,8 +4,9 @@ import {
   type LogRequestView, type LogTargetsView, parseLogRequestCreated, parseLogRequestView, parseLogTargets,
   parseDashboard, type DashboardView, parseSettingsView, parseSlackTestResult, type SettingsView, type SlackTestResult, parseAlertsStatus, parseIncidentPage, type AlertsStatus, type IncidentPage, parseRevokeResult, parseServerApplications, parseUserPage, parseUserView, type Role, type UserPage, type UserView, parseServerDetail, parseServerPage, parseServerSummary, parseSessionInfo,
   type ProcessStatus, type ServerApplications, type ServerDetail, type ServerPage, type ServerSummary, type SessionInfo,
-  type AccessMode, parseServerOptionPage, parseServiceOptionList, parseUserAccess, type ServerOptionPage, type ServiceOptionList, type UserAccess,
+  type AccessMode, parseProjectInfo, type ProjectInfo, parseServerOptionPage, parseServiceOptionList, parseUserAccess, type ServerOptionPage, type ServiceOptionList, type UserAccess,
 } from './types';
+import { githubProblem, projectUrlProblem } from '../components/projectInfoRules';
 
 // Central API client (ADR-012):
 //  * relative /api URLs only, `credentials: 'same-origin'` — the browser manages the HttpOnly session cookie;
@@ -288,6 +289,25 @@ export const applicationsApi = {
         return result;
       },
       ...(signal ? { signal } : {}),
+    }),
+};
+
+/** The reply must describe the requested service of the requested server. */
+const projectInfoParser = (serverId: string, serviceName: string) => (v: unknown) => {
+  const info = parseProjectInfo(v, { githubOk: (u) => githubProblem(u) === null, urlOk: (u) => projectUrlProblem(u) === null });
+  if (info.serverId !== serverId || info.serviceName !== serviceName) throw new ContractError();
+  return info;
+};
+
+/** Project information of one service (ADR-036). The PM2 name travels as query/body data, never as a path segment. */
+export const projectInfoApi = {
+  get: (serverId: string, serviceName: string, signal?: AbortSignal): Promise<ProjectInfo> =>
+    apiRequest(`${serverPath(serverId)}/project-info?${new URLSearchParams({ service: serviceName }).toString()}`,
+      { parse: projectInfoParser(serverId, serviceName), ...(signal ? { signal } : {}) }),
+  /** Sent once, never retried automatically; 409 when the revision is no longer the current one. */
+  save: (serverId: string, input: { serviceName: string; expectedRevision: number; githubUrl: string | null; projectUrl: string | null; description: string | null }, csrfToken: string, signal?: AbortSignal): Promise<ProjectInfo> =>
+    apiRequest(`${serverPath(serverId)}/project-info`, {
+      method: 'PUT', body: input, csrfToken, parse: projectInfoParser(serverId, input.serviceName), ...(signal ? { signal } : {}),
     }),
 };
 

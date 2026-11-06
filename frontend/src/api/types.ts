@@ -786,3 +786,32 @@ export function parseServiceOptionList(value: unknown, serverId: string): Servic
     truncated: value.truncated,
   };
 }
+
+// --- Project information of an application (ADR-036) ------------------------------------------------------------
+export interface ProjectInfo {
+  serverId: string;
+  serviceName: string;
+  /** 0: nothing saved yet. */
+  revision: number;
+  githubUrl: string | null;
+  projectUrl: string | null;
+  description: string | null;
+  updatedAt: string | null;
+}
+
+/**
+ * Exactly the public fields. A URL is accepted only in the form the API itself validates (projectInfo.ts), so a value
+ * that is not a safe link can never reach an href even if the API were wrong.
+ */
+export function parseProjectInfo(value: unknown, rules: { githubOk: (v: string) => boolean; urlOk: (v: string) => boolean }): ProjectInfo {
+  expect(isObject(value) && Object.keys(value).length === 7);
+  const { serverId, serviceName, revision, githubUrl, projectUrl, description, updatedAt } = value;
+  expect(isString(serverId, 36) && USER_ID_RE.test(serverId) && isServiceName(serviceName));
+  expect(typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0);
+  expect(githubUrl === null || (isString(githubUrl, 4096) && rules.githubOk(githubUrl)));
+  expect(projectUrl === null || (isString(projectUrl, 4096) && rules.urlOk(projectUrl)));
+  expect(description === null || isString(description, 4000));
+  expect(updatedAt === null || isDate(updatedAt));
+  expect((revision === 0) === (updatedAt === null));
+  return { serverId, serviceName, revision, githubUrl, projectUrl, description, updatedAt };
+}

@@ -352,6 +352,19 @@ journalctl -u node-control-agent -n 5 -o cat                             # "cont
 - Аварійно для всіх: `PM2_CONTROL_ENABLED=false` + restart API (нові команди → 409, черга не видається).
 - Протокол логів (review `e621e31`): API цього релізу з Agent попереднього релізу ADR-028 видає логи лише admin — rollback Agent не відкриває логи operator/viewer без перевірки цілі. Повернення API на попередній реліз ADR-028 (без повторної перевірки сесії й прив'язки цілі) знову відкрило б дефекти review — не виконувати; лише виправлення вперед.
 
+### Інформація про проєкт застосунку (ADR-036)
+
+Міграція `1791900000010_application-project-info` — additive: лише нова таблиця `application_project_info` (FK на `servers` і `users`; на неї ніщо не посилається). Agent, broker, exporter, systemd units, `api.env` і Nginx не змінюються; нових env-параметрів немає.
+
+**Майбутній rollout (лише за окремим погодженням після APPROVED):**
+
+1. Backup лише `node_control_db` (`pg_dump -Fc` → `pg_restore --list`), як у «Міграції: backup, recovery, rollback».
+2. `migrate.js status` (очікувано `pending=1`) → `up` → `status` (`pending=0`) — **до** активації нового релізу.
+3. Активувати реліз API/UI, restart лише `node-control-api`; health, журнал без нових помилок.
+4. Перевірка (admin, без зміни реальних даних поза тестовим сервісом за рішенням власника): «Застосунки» → застосунок → «Огляд»: «Про проєкт» першим, «Параметри процесу» — закрита згортка; viewer/operator бачать лише надані сервіси без «Редагувати». Audit `application.project_info_changed` — без значень полів.
+
+**Rollback:** штатний `server-release.js rollback` (або `activate --revision` попереднього сумісного релізу) + restart лише `node-control-api`. Production `down` немає: таблиця лишається, попередній код її не читає, збережені дані не видаляються й знову використовуються після наступного оновлення. Відновлення БД з backup для цього rollback не потрібне.
+
 ### Автозапуск PM2 після reboot (окремо від Agent)
 
 PM2 і його застосунки належать власнику PM2 на керованій ноді; Node Control їх не запускає. Agent, exporter і broker — окремі systemd-служби й **не** відповідають за автозапуск PM2: після reboot вони працюють, але exporter звітує «daemon unavailable», доки PM2 не запущено. Автозапуск PM2 налаштовується окремо, штатною службою PM2 від імені власника.

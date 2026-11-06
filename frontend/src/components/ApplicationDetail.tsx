@@ -9,6 +9,7 @@ import { currentState, freshness, lastKnown, notRunning } from './appState';
 import { formatCount, formatCpu, formatMemory } from './Inventory';
 import { LogTail } from './LogViewer';
 import { ACTION_LABELS, commandStatusText, controlTargetFor, logTargetFor } from './processActions';
+import { type ProjectInfoController, ProjectInfoPanel } from './ProjectInfo';
 import { formatAgo, formatClock, recent } from './time';
 import { StatusIndicator, type Tone } from './ui';
 import type { ServerCapabilities } from './useServerCapabilities';
@@ -17,7 +18,8 @@ import type { ServerCapabilities } from './useServerCapabilities';
 // APP-15): the right pane of the split view (≥ 1280 px) or a separate view below that width. Layout: identity (full
 // name, server · PM2 id · mode, current state), actions («Перезапустити» — or «Запустити» for a stopped process — as a
 // visible button, the other commands in the «⋯» menu, a short hint), state notices, CPU / RAM / uptime with the PM2
-// collection time; then the tabs. Everything is loaded only for the open tab: the overview uses the row; logs mount
+// collection time; then the tabs. The overview starts with «Про проєкт» (ADR-036: links and a description an admin
+// keeps for the service; state owned by the page, see ProjectInfo.tsx), then «Параметри процесу» as a closed disclosure. Everything is loaded only for the open tab: the overview uses the row; logs mount
 // the shared bounded log tail; the history asks the API for the commands of the ONE broker-confirmed control target.
 // Actions are the shared menu items (same confirmation, limits and tracking) — the static design buttons never bypass
 // them, and a missing permission is shown, not hidden.
@@ -87,7 +89,7 @@ function NoticeBox({ notice, role }: { notice: Notice; role?: 'status' | 'alert'
   );
 }
 
-export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reasons, canControl, canLogs, historyVersion, lastSeenAt, onMenuOpen, onClose, onBack, headingRef }: {
+export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reasons, canControl, canLogs, historyVersion, lastSeenAt, onMenuOpen, onClose, onBack, headingRef, project }: {
   /** The selected process: live data when confirmed, otherwise its last known row. */
   app: ApplicationItem;
   presence: Presence;
@@ -111,6 +113,8 @@ export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reas
   /** Split view: «Закрити деталі» clears the selection (the list gets the whole width back). */
   onClose?: (() => void) | undefined;
   headingRef?: Ref<HTMLHeadingElement> | undefined;
+  /** «Про проєкт» of this service (useProjectInfo on the page); omitted: the block is not shown. */
+  project?: ProjectInfoController | undefined;
 }) {
   const base = useId();
   const tabRefs = useRef<Partial<Record<DetailTab, HTMLButtonElement | null>>>({});
@@ -190,7 +194,7 @@ export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reas
             ))}
           </div>
           <div role="tabpanel" id={`${base}-${tab}`} aria-labelledby={`${base}-${tab}-tab`} className="app-detail__content">
-            {tab === 'overview' ? <Overview app={app} caps={caps} canControl={canControl} confirmed={confirmed} actions={actions} reasons={reasons} /> : null}
+            {tab === 'overview' ? <Overview app={app} caps={caps} canControl={canControl} confirmed={confirmed} actions={actions} reasons={reasons} project={project} /> : null}
             {tab === 'logs' ? <LogsTab app={app} caps={caps} canLogs={canLogs} /> : null}
             {tab === 'history' ? <HistoryTab app={app} caps={caps} canControl={canControl} version={historyVersion} /> : null}
           </div>
@@ -202,7 +206,7 @@ export function ApplicationDetail({ app, presence, tab, onTab, caps, items, reas
 
 const FRESHNESS_TEXT = { live: 'Актуальні', offline: 'Сервер офлайн — дані неактуальні', stale: 'Застарілі', unavailable: 'Exporter недоступний' } as const;
 
-function Overview({ app, caps, canControl, confirmed, actions, reasons }: { app: ApplicationItem; caps: ServerCapabilities | null; canControl: boolean; confirmed: boolean; actions: MenuItem[]; reasons: string[] }) {
+function Overview({ app, caps, canControl, confirmed, actions, reasons, project }: { app: ApplicationItem; caps: ServerCapabilities | null; canControl: boolean; confirmed: boolean; actions: MenuItem[]; reasons: string[]; project: ProjectInfoController | undefined }) {
   const enabled = actions.filter((a) => !a.disabled);
   const control: Notice = !canControl ? { tone: 'info', title: 'Керування недоступне', text: 'Немає дозволу на команди для цього застосунку.' }
     : !confirmed ? { tone: 'info', title: 'Керування заблоковано', text: 'Наявність процесу не підтверджено.' }
@@ -219,12 +223,15 @@ function Overview({ app, caps, canControl, confirmed, actions, reasons }: { app:
   ];
   return (
     <>
-      <h3 className="app-section-title">Параметри процесу</h3>
-      <dl className="kv">
-        {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
-      </dl>
-      <NoticeBox notice={control} />
-      <p className="hint">CPU за PM2 може перевищувати 100 % на кількох ядрах. «—» означає невідоме значення, не нуль.</p>
+      {project ? <ProjectInfoPanel project={project} /> : null}
+      <details className="app-disclosure">
+        <summary>Параметри процесу</summary>
+        <dl className="kv">
+          {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
+        </dl>
+        <NoticeBox notice={control} />
+        <p className="hint">CPU за PM2 може перевищувати 100 % на кількох ядрах. «—» означає невідоме значення, не нуль.</p>
+      </details>
     </>
   );
 }

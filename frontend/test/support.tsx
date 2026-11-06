@@ -1,5 +1,6 @@
 import { render } from '@testing-library/react';
-import { createMemoryRouter, RouterProvider } from 'react-router';
+import type { ReactNode } from 'react';
+import { createMemoryRouter, Outlet, RouterProvider } from 'react-router';
 import { vi } from 'vitest';
 import { appRoutes } from '../src/App';
 import { AuthProvider } from '../src/auth/AuthContext';
@@ -69,6 +70,20 @@ export function deferred<T>() {
  */
 export function renderApp(path = '/', state?: unknown) {
   const router = createMemoryRouter(appRoutes, { initialEntries: [{ pathname: path, state }] });
+  const result = render(
+    <AuthProvider>
+      <RouterProvider router={router} />
+    </AuthProvider>,
+  );
+  return Object.assign(result, { router });
+}
+
+/**
+ * The same data router with test helpers (e.g. a probe of the location or of navigate) rendered above every route,
+ * for tests that used to drive a plain MemoryRouter: pages that guard unsaved input (useBlocker) need a data router.
+ */
+export function renderAppWith(path: string, helpers: ReactNode) {
+  const router = createMemoryRouter([{ element: <>{helpers}<Outlet /></>, children: appRoutes }], { initialEntries: [path] });
   const result = render(
     <AuthProvider>
       <RouterProvider router={router} />

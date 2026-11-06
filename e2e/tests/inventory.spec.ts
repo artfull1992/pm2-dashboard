@@ -78,8 +78,33 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
     await page.getByRole('button', { name: /^e2e-worker на / }).click();
     const panel = page.getByRole('region', { name: /^Деталі: e2e-worker на / });
     await expect(panel.getByRole('tab', { name: 'Огляд' })).toHaveAttribute('aria-selected', 'true');
+    // ADR-036: «Параметри процесу» is a closed disclosure under «Про проєкт».
+    await panel.getByText('Параметри процесу').click();
     await expect(panel.getByText('PM2 id')).toBeVisible();
     await expect(panel.getByText('Актуальні', { exact: true })).toBeVisible();
+
+    // «Про проєкт» against the real API and PostgreSQL: empty → saved by the admin → still there after a reload;
+    // stored per server + PM2 name with an audit row that carries no values.
+    const project = panel.getByRole('region', { name: 'Про проєкт' });
+    await expect(project.getByText('Інформацію про проєкт ще не додано.')).toBeVisible();
+    await project.getByRole('button', { name: 'Додати інформацію' }).click();
+    await project.getByLabel('GitHub').fill('https://github.com/acme/e2e-worker');
+    await project.getByLabel('Адреса проєкту').fill('https://worker.example.test/health');
+    await project.getByLabel('Короткий опис').fill(`Синтетичний воркер\n${XSS}`);
+    await project.getByRole('button', { name: 'Зберегти' }).click();
+    await expect(project.getByText('Інформацію про проєкт збережено.')).toBeVisible();
+    await page.reload();
+    await page.getByRole('button', { name: /^e2e-worker на / }).click();
+    const reloaded = page.getByRole('region', { name: /^Деталі: e2e-worker на / }).getByRole('region', { name: 'Про проєкт' });
+    await expect(reloaded.getByRole('link', { name: /github\.com\/acme\/e2e-worker/ })).toHaveAttribute('rel', 'noopener noreferrer');
+    await expect(reloaded.getByText(XSS)).toBeVisible();
+    expect(await page.locator('img').count()).toBe(0);
+    const stored = await inRunSchema(async (q) => (await q(
+      `SELECT service_name, github_url, project_url, revision::int AS revision FROM application_project_info WHERE server_id = $1`, [serverId])).rows);
+    expect(stored).toEqual([{ service_name: 'e2e-worker', github_url: 'https://github.com/acme/e2e-worker', project_url: 'https://worker.example.test/health', revision: 1 }]);
+    const audit = await inRunSchema(async (q) => (await q(
+      "SELECT details FROM audit_log WHERE event = 'application.project_info_changed' AND details->>'serverId' = $1", [serverId])).rows);
+    expect(audit).toEqual([{ details: { serverId, serviceName: 'e2e-worker', revision: 1, changed: 'github,url,description' } }]);
     await page.getByRole('button', { name: 'Очистити' }).click();
     await expect(table.getByText('e2e-api')).toBeVisible();
     await expect(page.getByRole('button', { name: /^e2e-worker на / })).toHaveAttribute('aria-current', 'true'); // selection kept
@@ -101,6 +126,11 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
     await login(viewer, 'viewer');
     await viewer.goto('/applications');
     await expect(viewer.getByText('e2e-api')).toBeVisible();
+    // The viewer reads the project information of a granted service, without editing.
+    await viewer.getByRole('button', { name: /^e2e-worker на / }).click();
+    const viewerProject = viewer.getByRole('region', { name: 'Про проєкт' });
+    await expect(viewerProject.getByText('Синтетичний воркер', { exact: false })).toBeVisible();
+    await expect(viewerProject.getByRole('button')).toHaveCount(0);
     await viewerContext.close();
 
     // Exporter reports the daemon as down: the last processes stay, explicitly marked as not current.

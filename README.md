@@ -338,6 +338,20 @@ npm run test:agent:pm2   # opt-in: справжній одноразовий PM2
 
 Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HOME` (абсолютний), `NC_PM2_SNAPSHOT_FILE` (поза `PM2_HOME`), `NC_PM2_SOURCE` (типово `pm2`), `NC_PM2_TIMEOUT_SECONDS` (1–60), `NC_PM2_MAX_PROCESSES` (≤500). Agent: `NC_AGENT_INVENTORY_FILE` (вмикає inventory), `NC_AGENT_INVENTORY_INTERVAL_SECONDS` (30–600, типово 60), `NC_AGENT_INVENTORY_MAX_AGE_SECONDS` (30–3600, типово 120).
 
+### Інформація про проєкт застосунку (ADR-036)
+
+| Запит | Доступ | Успіх | Помилки |
+|---|---|---|---|
+| `GET /api/servers/:id/project-info?service=<назва PM2>` | `monitoring:read` + доступ до цього сервісу | `200 ProjectInfo`; без збережених даних — `revision: 0`, поля й `updatedAt` = `null` (читання нічого не пише) | 400, 401, 403, 404 (сервер/сервіс невидимий, невідомий або ніколи не звітувався — без розкриття, що саме), 503 |
+| `PUT /api/servers/:id/project-info` | `servers:manage` (admin), Origin + CSRF | `200 ProjectInfo` — збережений стан; без змін revision не зростає | 400 (strict body, формати, довжини), 401, 403, 404 (сервісу немає в поточному inventory сервера), 409 (`expectedRevision` застарів, зокрема одночасне перше створення), 429, 503 |
+
+`ProjectInfo = {serverId, serviceName, revision, githubUrl, projectUrl, description, updatedAt}`. Тіло PUT: `{serviceName, expectedRevision, githubUrl, projectUrl, description}` — усі ключі обов'язкові; `null` або порожній рядок очищує поле. Формати:
+- `githubUrl` — `https://github.com/<owner>/<repository>` (опційно `.git` і `/`), без credentials, порту, query, fragment;
+- `projectUrl` — явний `http://`/`https://` без username/password, пробілів і керівних символів;
+- URL ≤ 2048, `description` ≤ 2000 символів (code points) — звичайний текст, переноси рядків зберігаються (CRLF → LF), інші керівні символи — 400.
+
+Ідентичність — сервер + назва PM2-процесу (як у доступах ADR-028): зміна `pm_id` і inventory-звіти дані не змінюють; назва, що повертається на той самий сервер, успадковує їх; однакові назви на одному сервері мають один запис. Значення не перевіряються мережею й нікуди не надсилаються. Audit: `application.project_info_changed` (сервер, сервіс, revision, коди змінених полів; без значень).
+
 ### Перегляд логів сервісів (Task 010, ADR-018) — лише явно дозволені сервіси
 
 | Запит | Доступ | Успіх | Помилки |

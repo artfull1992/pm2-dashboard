@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { type BlockerFunction, useBlocker, useSearchParams } from 'react-router';
 import { applicationsApi, SEARCH_MAX_LENGTH, serversApi } from '../api/client';
 import { type ApplicationItem, PROCESS_STATUSES, type ProcessStatus, type ServerApplications } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Forbidden } from '../auth/guards';
 import { ApplicationDetail, confirmedPresence, type DetailTab, type Presence } from '../components/ApplicationDetail';
 import { ApplicationList, appIdentity, isLive, ListHead, ListSkeleton, PanelMessage } from '../components/ApplicationList';
+import { Dialog } from '../components/Dialog';
 import { PROCESS_STATUS_LABELS } from '../components/Inventory';
+import { useProjectInfo } from '../components/ProjectInfo';
 import { CommandStatusList, type CommandRequest, controlReady, rowMenu, useProcessCommands } from '../components/processActions';
 import { ErrorState, formatRetry } from '../components/StatusMessage';
 import { usePolledResource } from '../components/usePolledResource';
@@ -36,6 +38,12 @@ import { formatDate } from './ServersPage';
 // live inventory, confirmation, tracking). Capabilities are loaded per server only when needed (rows' servers and the
 // selected one are retained) and checked again right before a command is sent. The whole view is mounted per session:
 // a new session starts without a selection, details or logs.
+//
+// «Про проєкт» (ADR-036) of the selected service is kept here (useProjectInfo), not in the details panel, so a draft
+// survives list refreshes and the panel moving between the split and the separate view. With a dirty draft or a save
+// in flight, choosing another service, another tab or closing the details asks first; leaving the page is guarded
+// by this page's only data-router blocker (+ beforeunload). Filters, search and pages do not change the selection and
+// are not blocked. Logout and session expiry unmount the view (keyed by session) and are never blocked.
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CURSOR_RE = /^[A-Za-z0-9_-]{1,400}$/;
@@ -190,6 +198,26 @@ function ApplicationsView() {
   const confirmedNow = selection && selected && confirmedPresence(presence) && selected !== selection.last ? selected : null;
   if (selection && confirmedNow) setSelection({ ...selection, last: confirmedNow });
 
+  // «Про проєкт»: the service of the selection while it may be shown (a process gone or no longer visible clears it).
+  const projectTarget = selection && selected && presence.kind !== 'missing' && presence.kind !== 'revoked' ? { serverId: selected.serverId, serviceName: selected.name } : null;
+  const project = useProjectInfo(projectTarget, tab === 'overview', can('servers:manage'));
+  const { discard: discardProject } = project;
+  const leaving = project.guard.dirty || project.guard.pending;
+  /** A change that would drop the draft (or stop waiting for its save) runs only after an explicit choice. */
+  const [confirmLeave, setConfirmLeave] = useState<{ run: () => void; pending: boolean } | null>(null);
+  const guarded = (run: () => void) => {
+    if (!leaving) { run(); return; }
+    setConfirmLeave({ run: () => { discardProject(); run(); }, pending: project.guard.pending });
+  };
+  const shouldBlock = useCallback<BlockerFunction>(({ currentLocation, nextLocation }) => leaving && currentLocation.pathname !== nextLocation.pathname, [leaving]);
+  const blocker = useBlocker(shouldBlock);
+  useEffect(() => {
+    if (!leaving) return undefined;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => { window.removeEventListener('beforeunload', warn); };
+  }, [leaving]);
+
   // Capabilities are kept for the servers of the rows on screen and of the selection.
   const serverIds = [...new Set([...(data ? data.items.map((a) => a.serverId) : []), ...(selection ? [selection.serverId] : [])])].sort().join(',');
   useEffect(() => { retain(serverIds ? serverIds.split(',') : []); }, [serverIds, retain]);
@@ -210,6 +238,18 @@ function ApplicationsView() {
     restoreList.current = { id: selection.id, scroll: split ? null : listScroll.current };
     setSelection(null);
     setTab('overview'); // a new selection opens on «Огляд» again
+  };
+  // With a dirty «Про проєкт» draft (or its save in flight) these ask first. Another row of the SAME service (server +
+  // PM2 name, e.g. two processes named alike) keeps the same project information and draft: no question.
+  const requestSelect = (app: ApplicationItem) => {
+    if (selected && app.serverId === selected.serverId && app.name === selected.name) { select(app); return; }
+    guarded(() => { select(app); });
+  };
+  const requestClose = () => { guarded(closeDetails); };
+  const changeTab = (next: DetailTab) => {
+    if (next === tab) return;
+    if (tab === 'overview') guarded(() => { setTab(next); });
+    else setTab(next);
   };
 
   // Below 1280 px a selection is shown as its own view; a window that only changes its width keeps the selection
@@ -248,7 +288,7 @@ function ApplicationsView() {
       app, canControl, canLogs, control: loaded.control, logs: loaded.logs,
       busy: (loaded.control?.targets ?? []).some((t) => t.name === app.name && t.pmId === app.pmId && isBusy(app.serverId, t.targetKey)), limitReached,
       onAction: (target, action) => { ask({ serverId: app.serverId, serverName: app.serverName, target, action }); },
-      onLogs: () => { setTab('logs'); },
+      onLogs: () => { changeTab('logs'); },
     }) : { items: [], reasons: [] as string[], rowReasons: [] as string[] };
     if (loaded?.failed) menu.reasons.unshift('Не вдалося перевірити можливості — відкрийте меню ще раз');
     // An unconfirmed process is never controlled: the commands stay visible but blocked.
@@ -269,9 +309,9 @@ function ApplicationsView() {
     const confirmed = confirmedPresence(presence);
     const { loaded, items, reasons } = menuFor(selected, confirmed);
     detail = (
-      <ApplicationDetail key={selection.id} app={selected} presence={presence} tab={tab} onTab={setTab} caps={loaded} items={items} reasons={reasons}
+      <ApplicationDetail key={selection.id} app={selected} presence={presence} tab={tab} onTab={changeTab} caps={loaded} items={items} reasons={reasons}
         canControl={canControl} canLogs={canLogs} historyVersion={historyVersion} lastSeenAt={lastSeenOf(selected.serverId)}
-        onMenuOpen={() => { void ensure(selected.serverId); }} onClose={split ? closeDetails : undefined} onBack={split ? undefined : closeDetails} headingRef={heading} />
+        onMenuOpen={() => { void ensure(selected.serverId); }} onClose={split ? requestClose : undefined} onBack={split ? undefined : requestClose} headingRef={heading} project={project} />
     );
   }
 
@@ -360,7 +400,7 @@ function ApplicationsView() {
                 </PanelMessage>
               </>
             ) : null}
-            {data && data.items.length > 0 ? <ApplicationList items={data.items} selected={selection?.id ?? null} onSelect={select} label="PM2-процеси" /> : null}
+            {data && data.items.length > 0 ? <ApplicationList items={data.items} selected={selection?.id ?? null} onSelect={requestSelect} label="PM2-процеси" /> : null}
             {pager}
           </section>
           {/* The details panel exists only for a selection: without one the list has the whole width. */}
@@ -368,6 +408,27 @@ function ApplicationsView() {
         </div>
       )}
       {dialog}
+      {blocker.state === 'blocked' ? (
+        <LeaveDialog pending={project.guard.pending} onKeep={() => { blocker.reset(); }} onLeave={() => { discardProject(); blocker.proceed(); }} />
+      ) : confirmLeave ? (
+        <LeaveDialog pending={confirmLeave.pending} onKeep={() => { setConfirmLeave(null); }} onLeave={() => { const { run } = confirmLeave; setConfirmLeave(null); run(); }} />
+      ) : null}
     </section>
+  );
+}
+
+/** The explicit choice before a dirty «Про проєкт» draft is dropped or its save is no longer awaited. */
+function LeaveDialog({ pending, onKeep, onLeave }: { pending: boolean; onKeep: () => void; onLeave: () => void }) {
+  return (
+    <Dialog title={pending ? 'Збереження ще виконується' : 'Скасувати зміни?'} onClose={onKeep} actions={(
+      <>
+        <button type="button" className="button" onClick={onKeep}>{pending ? 'Залишитися' : 'Продовжити редагування'}</button>
+        <button type="button" className="button button--danger" onClick={onLeave}>{pending ? 'Не чекати результату' : 'Відкинути зміни'}</button>
+      </>
+    )}>
+      <p>{pending
+        ? 'Запит уже надіслано, і перехід його не скасує: інформація про проєкт може змінитися. Результат видно лише тут — після переходу відкрийте застосунок знову й перевірте.'
+        : 'Введену інформацію про проєкт не збережено. Якщо продовжити, чернетку буде втрачено.'}</p>
+    </Dialog>
   );
 }
