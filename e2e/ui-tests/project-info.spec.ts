@@ -44,7 +44,7 @@ async function api(page: Page, role: 'admin' | 'viewer', filled: boolean): Promi
     if (path === '/api/auth/me') {
       data = role === 'admin'
         ? { user: { id: '00000000-0000-4000-8000-000000000001', email: 'admin@example.test', role: 'admin' }, csrfToken: 'a'.repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-          permissions: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage'] }
+          permissions: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage', 'applications:metadata:write'] }
         : { user: { id: '00000000-0000-4000-8000-000000000002', email: 'viewer@example.test', role: 'viewer' }, csrfToken: 'b'.repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
           permissions: ['monitoring:read'] };
     } else if (path === '/api/servers') {

@@ -1,7 +1,7 @@
 // Runtime validation of API responses (ADR-012). The backend contract is in README / ADR-011; anything that
 // does not match exactly is treated as an unexpected response instead of being trusted by the UI.
 
-export const KNOWN_PERMISSIONS = ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage'] as const;
+export const KNOWN_PERMISSIONS = ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage', 'applications:metadata:write'] as const;
 export type Permission = (typeof KNOWN_PERMISSIONS)[number];
 export const KNOWN_ROLES = ['admin', 'operator', 'viewer'] as const;
 export type Role = (typeof KNOWN_ROLES)[number];

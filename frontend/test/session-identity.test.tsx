@@ -17,7 +17,7 @@ const ADMIN_ID = '00000000-0000-4000-8000-0000000000a1';
 const VIEWER_ID = '00000000-0000-4000-8000-0000000000b2';
 const sessionOf = (id: string, email: string, role: 'admin' | 'viewer', csrf: string, expiresAt: string) => ({
   user: { id, email, role }, csrfToken: csrf.repeat(43), expiresAt,
-  permissions: role === 'admin' ? ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage'] : ['monitoring:read'],
+  permissions: role === 'admin' ? ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage', 'applications:metadata:write'] : ['monitoring:read'],
 });
 const A = sessionOf(ADMIN_ID, 'admin@example.test', 'admin', 'a', PAST); // past due by this browser's clock
 const B = sessionOf(VIEWER_ID, 'viewer@example.test', 'viewer', 'b', FUTURE); // another user

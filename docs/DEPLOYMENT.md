@@ -361,7 +361,7 @@ journalctl -u node-control-agent -n 5 -o cat                             # "cont
 1. Backup лише `node_control_db` (`pg_dump -Fc` → `pg_restore --list`), як у «Міграції: backup, recovery, rollback».
 2. `migrate.js status` (очікувано `pending=1`) → `up` → `status` (`pending=0`) — **до** активації нового релізу.
 3. Активувати реліз API/UI, restart лише `node-control-api`; health, журнал без нових помилок.
-4. Перевірка (admin, без зміни реальних даних поза тестовим сервісом за рішенням власника): «Застосунки» → застосунок → «Огляд»: «Про проєкт» першим, «Параметри процесу» — закрита згортка; viewer/operator бачать лише надані сервіси без «Редагувати». Audit `application.project_info_changed` — без значень полів.
+4. Перевірка (admin, без зміни реальних даних поза тестовим сервісом за рішенням власника): «Застосунки» → застосунок → «Огляд»: «Про проєкт» першим, «Параметри процесу» — закрита згортка; viewer бачить лише надані сервіси без «Редагувати»; operator (з версії, що додає `applications:metadata:write`) — редагує лише надані сервіси. Audit `application.project_info_changed` — без значень полів.
 
 **Rollback:** штатний `server-release.js rollback` (або `activate --revision` попереднього сумісного релізу) + restart лише `node-control-api`. Production `down` немає: таблиця лишається, попередній код її не читає, збережені дані не видаляються й знову використовуються після наступного оновлення. Відновлення БД з backup для цього rollback не потрібне.
 

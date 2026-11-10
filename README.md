@@ -217,10 +217,10 @@ Frontend flow: при старті `GET /api/auth/me` (401 → сторінка 
 | Роль | Дозволи |
 |---|---|
 | `viewer` | `monitoring:read` |
-| `operator` | `monitoring:read`, `processes:control`, `logs:read` |
-| `admin` | `monitoring:read`, `processes:control`, `logs:read`, `users:manage`, `servers:manage`, `audit:read`, `alerts:manage` |
+| `operator` | `monitoring:read`, `processes:control`, `logs:read`, `applications:metadata:write` |
+| `admin` | `monitoring:read`, `processes:control`, `logs:read`, `users:manage`, `servers:manage`, `audit:read`, `alerts:manage`, `applications:metadata:write` |
 
-Джерело — `backend/src/auth/rbac.ts`; `processes:control` і `logs:read` незалежні.
+Джерело — `backend/src/auth/rbac.ts`; `processes:control` і `logs:read` незалежні. Permission дозволяє **операцію**; для operator/viewer ресурс (сервер, сервіс) визначає окремо **grant** («Доступи», ADR-028). `applications:metadata:write` — лише редагування «Про проєкт» (ADR-036) у межах grant; реєстру серверів, ключів Agent, PM2, логів чи користувачів воно не надає.
 
 **Доступ до ресурсів (ADR-028).** Дозвіл ролі діє лише на надані ресурси: `admin` — усі сервери й сервіси, зокрема майбутні; `operator`/`viewer` — лише сервери з призначенням («Усі сервіси» сервера — поточні й майбутні, або «Вибрані сервіси» за назвою PM2-процесу). Без призначень — нічого. Фільтр застосовується в SQL до пагінації й агрегатів для всіх списків, пошуку, огляду, сповіщень, inventory, керування, логів та історії команд. `403` — брак дозволу ролі; `404` — ресурс не надано або не існує (однаково).
 
@@ -343,7 +343,7 @@ Exporter (`agent/dist/pm2-exporter.js`, від власника PM2): `NC_PM2_HO
 | Запит | Доступ | Успіх | Помилки |
 |---|---|---|---|
 | `GET /api/servers/:id/project-info?service=<назва PM2>` | `monitoring:read` + доступ до цього сервісу | `200 ProjectInfo`; без збережених даних — `revision: 0`, поля й `updatedAt` = `null` (читання нічого не пише) | 400, 401, 403, 404 (сервер/сервіс невидимий, невідомий або ніколи не звітувався — без розкриття, що саме), 503 |
-| `PUT /api/servers/:id/project-info` | `servers:manage` (admin), Origin + CSRF | `200 ProjectInfo` — збережений стан; без змін revision не зростає | 400 (strict body, формати, довжини), 401 (зокрема admin/сесію відкликано до збереження — запис не виконується), 403, 404 (сервісу немає в поточному inventory сервера), 409 (`expectedRevision` застарів, зокрема одночасне перше створення), 429, 503 |
+| `PUT /api/servers/:id/project-info` | `applications:metadata:write` (admin, operator) + для operator grant цього сервісу (сервер «Усі сервіси» або назва у «Вибрані»), Origin + CSRF | `200 ProjectInfo` — збережений стан; без змін revision не зростає | 400 (strict body, формати, довжини), 401 (зокрема користувача деактивовано чи сесію відкликано до збереження — запис не виконується), 403 (роль без permission, зокрема viewer), 404 (сервісу немає в поточному inventory сервера або немає grant — без розкриття, що саме), 409 (`expectedRevision` застарів, зокрема одночасне перше створення), 429, 503 |
 
 `ProjectInfo = {serverId, serviceName, revision, githubUrl, projectUrl, description, updatedAt}`. Тіло PUT: `{serviceName, expectedRevision, githubUrl, projectUrl, description}` — усі ключі обов'язкові; `null` або порожній рядок очищує поле. Формати:
 - `githubUrl` — `https://github.com/<owner>/<repository>` (опційно `.git` і `/`), без credentials, порту, query, fragment;

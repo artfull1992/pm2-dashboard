@@ -69,24 +69,6 @@ export async function actorIsAdmin(tx: QueryClient, actor: ActorRef): Promise<bo
   return rows.length > 0;
 }
 
-/**
- * For admin writes that do NOT take the users table lock (project information, ADR-036): the actor is an active admin
- * with a valid session, and stays so until this transaction ends. The actor's users row and then its session row are
- * held FOR SHARE: a role/activity change or a password change (UPDATE users) and a logout or session revocation
- * (UPDATE sessions) wait for this transaction; one that committed first is seen, because a FOR SHARE that had to wait
- * returns the newest row version (and re-checks its conditions). Lock order users row → session row, as in login and
- * in every revocation (no cycles); only these two rows are locked, other users are not affected.
- */
-export async function lockActorAdmin(tx: QueryClient, actor: ActorRef): Promise<boolean> {
-  const user = (await tx.query<{ role: string; is_active: boolean }>('SELECT role, is_active FROM users WHERE id = $1 FOR SHARE', [actor.userId])).rows[0];
-  if (!user?.is_active || user.role !== 'admin') return false;
-  const session = await tx.query(
-    'SELECT 1 FROM sessions WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now() FOR SHARE',
-    [actor.sessionId, actor.userId],
-  );
-  return session.rows.length > 0;
-}
-
 export function createPgUserStore(db: Database): UserStore {
   return {
     async listUsers({ limit, after }) {

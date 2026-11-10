@@ -1,7 +1,8 @@
-import { type Scope, serviceVisibleSql } from '../auth/scope.js';
+import { hasPermission } from '../auth/rbac.js';
+import { type Scope, scopeOf, serviceGranted, serviceVisibleSql } from '../auth/scope.js';
 import { insertAudit } from '../auth/store.js';
-import { type ActorRef, lockActorAdmin } from '../auth/users-store.js';
-import type { Database } from '../database.js';
+import type { ActorRef } from '../auth/users-store.js';
+import type { Database, QueryClient } from '../database.js';
 import { FIELD_NAMES, type ProjectInfoFields } from './project-info.js';
 
 // Project information SQL (ADR-036). Parameterized only. Keyed by (server, PM2 process name) — the service identity of
@@ -10,11 +11,12 @@ import { FIELD_NAMES, type ProjectInfoFields } from './project-info.js';
 //   - A service is readable when the reader may see it (scope, in SQL) and it is either in the current inventory of
 //     that server or already has saved information; anything else — unknown server, invisible service, a name that
 //     was never reported — is "not found", without telling which.
-//   - A save needs an admin with a valid session, checked AND held (FOR SHARE on its users and session rows) until the
-//     transaction ends, so a concurrent revocation is serialized with it (lockActorAdmin); then the service in the
-//     current inventory (no records for invented names) and the expected revision: revision 0 inserts (a concurrent
-//     first save loses on the primary key → conflict), otherwise the row is locked FOR UPDATE and compared. The change
-//     and its audit row are one transaction: a failing audit insert rolls the change back.
+//   - A save needs the permission applications:metadata:write (admin, operator) AND, for a scoped user, the grant of
+//     this very service (server «all», or the name selected) — checked and held until the transaction ends by
+//     lockEditor, so a concurrent revocation of the role, activity, session or grant is serialized with it; then the
+//     service in the current inventory (no records for invented names) and the expected revision: revision 0 inserts
+//     (a concurrent first save loses on the primary key → conflict), otherwise the row is locked FOR UPDATE and
+//     compared. The change and its audit row are one transaction: a failing audit insert rolls the change back.
 
 export interface ProjectInfoView extends ProjectInfoFields {
   serverId: string;
@@ -25,7 +27,7 @@ export interface ProjectInfoView extends ProjectInfoFields {
 
 export type SaveProjectInfoResult =
   | { status: 'ok'; info: ProjectInfoView; changed: boolean }
-  | { status: 'not_found' | 'revision_conflict' | 'actor_revoked' };
+  | { status: 'not_found' | 'revision_conflict' | 'actor_revoked' | 'forbidden' };
 
 export interface ProjectInfoStore {
   /** null: not found for this scope (see above). */
@@ -44,6 +46,32 @@ const COLUMNS = 'github_url, project_url, description, revision, updated_at';
 const IN_INVENTORY = 'EXISTS (SELECT 1 FROM server_applications a WHERE a.server_id = $1 AND a.name = $2)';
 /** Audit codes of the changed fields (never their values). */
 const FIELD_CODES: Record<(typeof FIELD_NAMES)[number], string> = { githubUrl: 'github', projectUrl: 'url', description: 'description' };
+
+/**
+ * The editor of project information, checked and HELD until the transaction ends (reviews ad41717, b2adb4f): FOR SHARE
+ * on the actor's users row, then its session row, then — for a scoped user — its grant rows of this service
+ * (user_server_access, and user_service_access for «selected»; serviceGranted with lock). A role or activity change
+ * or a password change (UPDATE users), a logout (UPDATE sessions) or a grant change (saveAccess: DELETE of the grant
+ * rows) waits for this transaction; one committed first is seen, because a FOR SHARE that had to wait re-reads the
+ * row (a deleted grant row is then gone). Lock order users → sessions → grants, as in login, every revocation and
+ * saveAccess (target user row FOR UPDATE, then its grant rows): no cycles. Only this actor's rows are locked.
+ * A concurrently REPLACED grant (saveAccess deletes and re-inserts the whole set) is refused even when the new set
+ * still includes the service: fail closed, the user saves again.
+ *   actor_revoked — inactive user or no valid session (401); forbidden — the role lacks the permission (403);
+ *   not_found — no grant of this service (404, nothing disclosed).
+ * The permission is only this one: it never stands for an admin check, and no other operation uses this helper.
+ */
+async function lockEditor(tx: QueryClient, actor: ActorRef, serverId: string, serviceName: string): Promise<'ok' | 'actor_revoked' | 'forbidden' | 'not_found'> {
+  const user = (await tx.query<{ role: string; is_active: boolean }>('SELECT role, is_active FROM users WHERE id = $1 FOR SHARE', [actor.userId])).rows[0];
+  if (!user?.is_active) return 'actor_revoked';
+  const session = await tx.query(
+    'SELECT 1 FROM sessions WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now() FOR SHARE',
+    [actor.sessionId, actor.userId],
+  );
+  if (session.rows.length === 0) return 'actor_revoked';
+  if (!hasPermission(user.role, 'applications:metadata:write')) return 'forbidden';
+  return (await serviceGranted(tx, scopeOf({ role: user.role, userId: actor.userId }), serverId, serviceName, true)) ? 'ok' : 'not_found';
+}
 
 export function createPgProjectInfoStore(db: Database): ProjectInfoStore {
   return {
@@ -65,9 +93,10 @@ export function createPgProjectInfoStore(db: Database): ProjectInfoStore {
 
     save({ actor, serverId, serviceName, expectedRevision, value, requestId }) {
       return db.transaction(async (tx): Promise<SaveProjectInfoResult> => {
-        // The admin and its session stay locked until COMMIT: a revocation committed later waits for this save, one
-        // committed earlier refuses it (review ad41717). Lock order: users row → session row → metadata row.
-        if (!(await lockActorAdmin(tx, actor))) return { status: 'actor_revoked' };
+        // The editor (role, activity, session, grant) stays locked until COMMIT: a revocation committed later waits for
+        // this save, one committed earlier refuses it. Lock order: users → session → grants → metadata row.
+        const editor = await lockEditor(tx, actor, serverId, serviceName);
+        if (editor !== 'ok') return { status: editor };
         const known = await tx.query(`SELECT 1 FROM servers s WHERE s.id = $1 AND ${IN_INVENTORY}`, [serverId, serviceName]);
         if (known.rows.length === 0) return { status: 'not_found' };
         const current = (await tx.query<Row>(

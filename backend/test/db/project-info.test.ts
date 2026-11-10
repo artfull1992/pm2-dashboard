@@ -48,7 +48,7 @@ beforeAll(async () => {
   });
   await app.ready();
   const hash = await hashPassword(PASSWORD);
-  for (const [email, role] of [['admin@example.test', 'admin'], ['op-all@example.test', 'operator'], ['op-sel@example.test', 'operator'], ['viewer-sel@example.test', 'viewer'], ['nobody@example.test', 'viewer']]) {
+  for (const [email, role] of [['admin@example.test', 'admin'], ['op-all@example.test', 'operator'], ['op-sel@example.test', 'operator'], ['viewer-sel@example.test', 'viewer'], ['nobody@example.test', 'viewer'], ['op-none@example.test', 'operator']]) {
     await sql('INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3)', [email, hash, role]);
   }
 });
@@ -241,16 +241,80 @@ describe('audit in the same transaction', () => {
 });
 
 describe('access', () => {
-  it('only admin saves: operator (even with full access) and viewer → 403, nothing stored', async () => {
+  it('viewer (even with the service granted) → 403, nothing stored', async () => {
+    const boss = await login('admin@example.test');
+    const n = await server(boss);
+    await inventory(n.token, [[0, 'api']]);
+    await grant('viewer-sel@example.test', n.id, 'selected', ['api']);
+    expect((await save(await login('viewer-sel@example.test'), n.id, 'api', 0, { description: 'x' })).statusCode).toBe(403);
+    expect(await rows(n.id)).toEqual([]);
+  });
+
+  it('operator with «all» on the server: creates, changes and clears any service of it, also one reported later; audited as the operator', async () => {
+    const boss = await login('admin@example.test');
+    const n = await server(boss);
+    await inventory(n.token, [[0, 'api'], [1, 'worker']]);
+    await grant('op-all@example.test', n.id, 'all');
+    const op = await login('op-all@example.test');
+    expect((await save(op, n.id, 'api', 0, { githubUrl: 'https://github.com/acme/api', description: `${MARK} op` })).json()).toMatchObject({ revision: 1 });
+    expect((await save(op, n.id, 'api', 1, { githubUrl: 'https://github.com/acme/api', projectUrl: 'https://api.example.com' })).json()).toMatchObject({ revision: 2, description: null, projectUrl: 'https://api.example.com' });
+    expect((await save(op, n.id, 'api', 2, {})).json()).toMatchObject({ revision: 3, githubUrl: null, projectUrl: null, description: null });
+    expect((await save(op, n.id, 'worker', 0, { description: 'w' })).statusCode).toBe(200);
+    await inventory(n.token, [[0, 'api'], [1, 'worker'], [2, 'later']]); // a future service of the same server
+    expect((await save(op, n.id, 'later', 0, { description: 'new one' })).statusCode).toBe(200);
+    const opId = await userId('op-all@example.test');
+    const trail = (await audits(n.id)).filter((a) => a.details.serviceName === 'api');
+    expect(trail.map((a) => [a.outcome, a.actor_user_id, a.details])).toEqual([
+      ['success', opId, { serverId: n.id, serviceName: 'api', revision: 1, changed: 'github,description' }],
+      ['success', opId, { serverId: n.id, serviceName: 'api', revision: 2, changed: 'url,description' }],
+      ['success', opId, { serverId: n.id, serviceName: 'api', revision: 3, changed: 'github,url' }],
+    ]);
+    expect(JSON.stringify(await audits(n.id))).not.toContain(MARK);
+  });
+
+  it('operator with selected services: only the granted name; another service of that server, another server, the same name elsewhere → 404', async () => {
+    const boss = await login('admin@example.test');
+    const a = await server(boss);
+    const b = await server(boss);
+    await inventory(a.token, [[0, 'api'], [1, 'worker']]);
+    await inventory(b.token, [[0, 'api']]); // the same name on another server
+    await grant('op-sel@example.test', a.id, 'selected', ['api']);
+    const op = await login('op-sel@example.test');
+    expect((await save(op, a.id, 'api', 0, { description: 'granted' })).statusCode).toBe(200);
+    for (const [serverId, service] of [[a.id, 'worker'], [b.id, 'api'], [randomUUID(), 'api']] as const) {
+      const res = await save(op, serverId, service, 0, { description: 'not mine' });
+      expect(res.statusCode, `${serverId}/${service}`).toBe(404);
+      expect(res.json<{ message: string }>().message).toBe('Application not found');
+    }
+    expect(await rows(a.id)).toMatchObject([{ service_name: 'api', description: 'granted' }]);
+    expect(await rows(b.id)).toEqual([]);
+  });
+
+  it('operator without any grant → 404, nothing stored', async () => {
+    const boss = await login('admin@example.test');
+    const n = await server(boss);
+    await inventory(n.token, [[0, 'api']]);
+    expect((await save(await login('op-none@example.test'), n.id, 'api', 0, { description: 'x' })).statusCode).toBe(404);
+    expect(await rows(n.id)).toEqual([]);
+  });
+
+  it('operator: expectedRevision and concurrent first saves behave as for admin; a failing audit rolls the change back', async () => {
     const boss = await login('admin@example.test');
     const n = await server(boss);
     await inventory(n.token, [[0, 'api']]);
     await grant('op-all@example.test', n.id, 'all');
-    await grant('viewer-sel@example.test', n.id, 'selected', ['api']);
-    for (const email of ['op-all@example.test', 'viewer-sel@example.test']) {
-      expect((await save(await login(email), n.id, 'api', 0, { description: 'x' })).statusCode, email).toBe(403);
+    const op = await login('op-all@example.test');
+    const results = await Promise.all(Array.from({ length: 4 }, (_, i) => save(op, n.id, 'api', 0, { description: `op ${String(i)}` })));
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409, 409, 409]);
+    expect((await save(op, n.id, 'api', 0, { description: 'stale' })).statusCode).toBe(409);
+    await sql("ALTER TABLE audit_log ADD CONSTRAINT test_block_project_info_op CHECK (event <> 'application.project_info_changed') NOT VALID");
+    try {
+      expect((await save(op, n.id, 'api', 1, { description: 'lost' })).statusCode).toBe(503);
+    } finally {
+      await sql('ALTER TABLE audit_log DROP CONSTRAINT test_block_project_info_op');
     }
-    expect(await rows(n.id)).toEqual([]);
+    expect(await rows(n.id)).toMatchObject([{ revision: 1 }]);
+    expect(await audits(n.id)).toHaveLength(1);
   });
 
   it('reading follows the resource scope; anything invisible or unknown is 404 without telling which', async () => {

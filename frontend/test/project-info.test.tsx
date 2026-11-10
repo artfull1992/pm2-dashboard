@@ -167,13 +167,52 @@ describe('view', () => {
   });
 
   it('partial: saved values shown, the rest «Не вказано»', async () => {
-    backend('operator', (req) => (req.method === 'GET' ? json(200, info(A, { revision: 1, updatedAt: UPDATED, projectUrl: 'http://localhost:3000/' })) : undefined));
+    backend('viewer', (req) => (req.method === 'GET' ? json(200, info(A, { revision: 1, updatedAt: UPDATED, projectUrl: 'http://localhost:3000/' })) : undefined));
     renderAt();
     const user = userEvent.setup();
     const { block } = await open(user);
     expect(await within(block).findByRole('link', { name: /http:\/\/localhost:3000\// })).toBeTruthy();
     expect(within(block).getAllByText('Не вказано')).toHaveLength(2);
-    expect(within(block).queryByRole('button')).toBeNull(); // operator: read only
+    expect(within(block).queryByRole('button')).toBeNull(); // viewer: read only
+  });
+
+  it('editing follows applications:metadata:write, not servers:manage: an operator without servers:manage edits, a session without the permission does not', async () => {
+    backend('operator', (req) => (req.method === 'GET' ? json(200, info(A, { revision: 1, updatedAt: UPDATED, projectUrl: 'http://localhost:3000/' })) : undefined));
+    const view = renderAt();
+    const user = userEvent.setup();
+    const { block } = await open(user);
+    expect(await within(block).findByRole('button', { name: 'Редагувати інформацію про проєкт' })).toBeTruthy();
+    view.unmount();
+    vi.unstubAllGlobals();
+    // An admin-like session that lacks the new permission (an older API) never shows the editor.
+    installFetch((req) => {
+      if (req.url === '/api/auth/me') return json(200, { ...session('admin'), permissions: session('admin').permissions.filter((p) => p !== 'applications:metadata:write') });
+      if (req.url.includes('/project-info')) return json(200, info(A));
+      if (req.url.startsWith('/api/servers?')) return json(200, serverPage);
+      if (req.url.startsWith('/api/applications?')) return json(200, { items: [app(A)], nextCursor: null, freshWindowSeconds: 180 });
+      if (req.url === `/api/servers/${A}/control`) return json(200, control(A));
+      if (req.url === `/api/servers/${A}/log-targets`) return json(200, { serverId: A, state: 'supported', reportedAt: new Date().toISOString(), targets: [] });
+      if (req.url === `/api/servers/${A}/applications`) return json(200, { serverId: A, serverStatus: 'online', items: [app(A)], freshWindowSeconds: 180, inventory: { state: 'current', reason: null, source: 'pm2', capturedAt: null, collectedAt: '2026-10-13T12:00:01.000Z', reportedAt: null, processCount: 1 } });
+      return json(404, {});
+    });
+    renderAt();
+    const again = await open(user);
+    expect(await within(again.block).findByText('Інформацію про проєкт ще не додано.')).toBeTruthy();
+    expect(within(again.block).queryByRole('button')).toBeNull();
+  });
+
+  it('operator: saves through the same contract (one PUT, CSRF, base revision) and sees the server values', async () => {
+    const calls = backend('operator', (req) => (req.method === 'GET' ? json(200, info(A)) : json(200, info(A, { revision: 1, description: 'від оператора', updatedAt: UPDATED }))));
+    renderAt();
+    const user = userEvent.setup();
+    const { block } = await open(user);
+    const form = await edit(user, block);
+    await user.type(fields(form).description, 'від оператора');
+    await user.click(within(form).getByRole('button', { name: 'Зберегти' }));
+    expect(await within(block).findByText('Інформацію про проєкт збережено.')).toBeTruthy();
+    expect(saves(calls)).toHaveLength(1);
+    expect(saves(calls)[0]?.headers.get('x-csrf-token')).toBe(CSRF);
+    expect(bodyOf(saves(calls)[0])).toEqual({ serviceName: 'api', expectedRevision: 0, githubUrl: null, projectUrl: null, description: 'від оператора' });
   });
 
   it('an unsafe URL in an answer is never turned into a link (contract error → load error)', async () => {

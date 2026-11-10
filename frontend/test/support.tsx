@@ -47,8 +47,8 @@ export const CSRF = 'C'.repeat(43);
 export function session(role: 'admin' | 'operator' | 'viewer' = 'admin', email = `${role}@example.test`) {
   const permissions = {
     viewer: ['monitoring:read'],
-    operator: ['monitoring:read', 'processes:control', 'logs:read'],
-    admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage'],
+    operator: ['monitoring:read', 'processes:control', 'logs:read', 'applications:metadata:write'],
+    admin: ['monitoring:read', 'processes:control', 'users:manage', 'servers:manage', 'audit:read', 'logs:read', 'alerts:manage', 'applications:metadata:write'],
   }[role];
   return {
     user: { id: `00000000-0000-4000-8000-00000000000${String(['admin', 'operator', 'viewer'].indexOf(role))}`, email, role },

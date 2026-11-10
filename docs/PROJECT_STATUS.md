@@ -1,5 +1,68 @@
 # Поточний стан проєкту
 
+## «Про проєкт»: редагування оператором у межах grant (ADR-036, уточнення) — готово до незалежного review Codex (НЕ розгорнуто), 2026-11-10
+
+База `0fa3a14` (попереднє завдання — перехід broker на auto — ще чекає review; функціональні зміни тут окремі). APPROVED не виставлено. Production не змінювався. Agent, broker, PM2, installer, залежності, Nginx/HBA/firewall не змінювались; нової міграції немає (ролі й права — у коді, таблиця не змінюється). Зауваження SECURITY_REVIEW і окремий пункт `saveAccess` лишаються відкритими.
+
+**Права.** Нове permission `applications:metadata:write` (admin і operator; viewer — ні) замість `servers:manage` для `PUT /api/servers/:id/project-info`. Permission дозволяє операцію; ресурс для operator визначає grant (ADR-028):
+
+| Роль | Перегляд | Редагування |
+|---|---|---|
+| admin | усі | усі |
+| operator, «Усі сервіси» | усі сервіси сервера | усі сервіси сервера, зокрема майбутні |
+| operator, «Вибрані» | надані назви | ті самі назви |
+| viewer | надані сервіси | 403 |
+| без grant | 404 | 404 |
+
+Нове permission не дає реєстру серверів, ключів Agent, користувачів, аудиту, PM2 чи логів (перевірено API-тестом: operator 403 на `POST /api/servers`, credentials, `/api/users`, `/api/audit`).
+
+**Backend.** `lockEditor` у `project-info-store.ts` (замість `lockActorAdmin`, якого вживало лише це збереження; helper прибрано, `actorIsAdmin` не змінено). У транзакції `FOR SHARE` до COMMIT:
+1. рядок користувача (активність, роль);
+2. його сесія;
+3. для operator — grant цього сервісу (`serviceGranted` з блокуванням: `user_server_access`, для «Вибрані» — `user_service_access`).
+
+Далі inventory, `FOR UPDATE` / INSERT метаданих, `expectedRevision`, аудит в одній транзакції.
+
+Результати відмови: `401` (неактивний / без сесії), `403` (роль без permission), `404` (немає grant — без розкриття). Порядок users → sessions → grants → метадані — як у login, відкликаннях і `saveAccess` (спершу `FOR UPDATE` рядка цільового користувача, потім його grants). Одночасна заміна всього набору grants через `saveAccess` відхиляє збереження навіть тоді, коли сервіс у новому наборі є: fail closed. Аудит — та сама подія з operator як автором.
+
+**Frontend.** «Редагувати» / «Додати інформацію» — за `applications:metadata:write` (не `servers:manage`); дизайн, поля, валідація, ідентичність, dirty/pending/conflict/recovery — без змін; 401/403/404 — чинне очищення.
+
+**Тести:**
+- **Backend unit/API 599/599.** Матриця RBAC; viewer 403; operator доходить до store з собою як актором; 404 / 403 (`forbidden`); operator без адміністративних прав.
+- **DB `project-info.test.ts`.**
+  - operator «Усі сервіси» створює, змінює й очищує поля, також для сервісу, що з'явився пізніше; аудит — operator, без значень;
+  - operator «Вибрані»: лише наданий сервіс; інший сервіс того сервера, інший сервер, та сама назва деінде → 404;
+  - operator без grant → 404; viewer → 403;
+  - для operator: `expectedRevision`, паралельне перше створення, rollback за збою аудиту.
+- **DB `project-info-revocation.test.ts`** (справжня PostgreSQL, контрольовані бар'єри, штатні `updateUser` / `revokeSession` / `changePassword` / `saveAccess`).
+  - Operator — сім шляхів: роль → viewer, деактивація, logout, пароль, видалення server grant, «Усі» → «Вибрані» без сервісу, видалення service grant. Кожен перевірено для наявного рядка й першого створення: збереження першим, відкликання чекає. Також відкликання закомічене раніше й відкликання в процесі (пауза перед COMMIT).
+  - Зміна grants іншого operator не чекає.
+  - Прямий `DELETE` рядків grant (без блокування користувача) чекає на збереження.
+  - Чинні admin-сценарії — без змін, успішні.
+- **Контроль тестів.** Із вимкненим блокуванням grant падають саме сценарії прямого `DELETE` («not serialized»). Сценарії через `saveAccess` проходять і так, бо їх серіалізує блокування рядка користувача — це зафіксовано як фактична гарантія.
+- **Frontend 528/528:** operator бачить editor і зберігає; сесія без permission — ні; viewer — лише читає.
+- **UI-матриця 282/282** (мок admin отримав нове permission).
+- **E2E `inventory.spec`** на ізольованій БД: operator з одним наданим сервісом зберігає опис, бачить його після reload, аудит — operator; PUT до ненаданого сервісу → 404; після відкликання grant сервіс і дані зникають.
+
+**Перевірки (exit 0):**
+- `check:local`: 147 / 599 / 10 / 176 + 3 opt-in skipped / 528 / 295; typecheck, lint, збірки, check:secrets;
+- `test:backend:db` — 227/227;
+- повна UI-матриця — 282/282;
+- `test:e2e` — 19 passed / 3 real-PM2 opt-in skipped (годинник лише тестової VM синхронізовано);
+- `git diff --check`, `check:secrets` — OK.
+
+Докази поза Git: `~/node-control-validation/project-info-operator-2026-11-10/`.
+
+**Документація.** ADR-036 (матриця прав, `lockEditor`, гарантії й межі), README (матриця ролей, різниця permission/grant, контракт PUT), ARCHITECTURE, ADOPTION (права editor), DEPLOYMENT (перевірка після деплою).
+
+**Не перевірено / межі:**
+- Production (деплой поза scope).
+- Скринрідер.
+- Реальні PM2-сценарії (не стосуються).
+- Строк сесії перевіряється на момент авторизації, як і раніше.
+
+**Майбутній деплой і rollback.** API/UI за DEPLOYMENT після APPROVED; міграцій немає. Rollback — попередній сумісний реліз: operator знову лише читає, збережені ним дані лишаються.
+
 ## Новий PM2-застосунок без керування — причина: legacy allowlist; broker BACKEND-API-STUD переведено на auto (2026-11-06) — готово до незалежного review Codex
 
 База `acf4c39` (у завданні очікувався `eef5c24`; `acf4c39` — лише docs-запис уже виконаного за прямим запитом користувача деплою «Про проєкт», цим завданням не змінювався). Runtime-код не змінювався: дефекту коду не знайдено. Змінено конфігурацію одного broker, додано real-PM2 E2E-сценарій і документацію. APPROVED не виставлено.

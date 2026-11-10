@@ -11,6 +11,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createPgAccessStore } from '../../src/auth/access-store.js';
 import { createPgAuthStore } from '../../src/auth/store.js';
 import { createPgUserStore } from '../../src/auth/users-store.js';
 import type { DbConfig } from '../../src/config.js';
@@ -294,5 +295,176 @@ describe('locks are limited to the acting admin and the session', () => {
     } finally {
       await cleanup(locker, [saving]);
     }
+  });
+});
+
+// ── Scoped operators (permission applications:metadata:write + the grant of the service) ──────────────────────────
+// The same barriers for an operator: besides role, activity, logout and password, the grant itself is revoked through
+// the real access administration (saveAccess) — the server grant removed, «all» narrowed to «selected» without this
+// service, or this service removed from «selected». Allowed outcomes only, as above.
+
+type OpKind = 'role' | 'deactivate' | 'logout' | 'password' | 'grant_removed' | 'all_to_selected' | 'service_removed';
+const OP_EVENT: Record<OpKind, string> = { ...EVENT, grant_removed: 'access.updated', all_to_selected: 'access.updated', service_removed: 'access.updated' };
+/** What a save gets once the revocation committed: no session any more (401) or no grant of the service (404). */
+const OP_REFUSAL: Record<OpKind, SaveProjectInfoResult['status']> = {
+  role: 'actor_revoked', deactivate: 'actor_revoked', logout: 'actor_revoked', password: 'actor_revoked',
+  grant_removed: 'not_found', all_to_selected: 'not_found', service_removed: 'not_found',
+};
+/** The grant the operator starts with: «all» on the server, or «selected» with both services. */
+const OP_START: Record<OpKind, 'all' | 'selected'> = {
+  role: 'all', deactivate: 'all', logout: 'selected', password: 'selected', grant_removed: 'selected', all_to_selected: 'all', service_removed: 'selected',
+};
+
+async function opFixture(kind: OpKind, withRow: boolean): Promise<Fixture> {
+  const f = await fixture(withRow);
+  await sql("UPDATE users SET role = 'operator' WHERE id = $1", [f.victim.userId]);
+  await sql("INSERT INTO server_applications (server_id, source, pm_id, name, status, first_seen_at) VALUES ($1, 'pm2', 1, 'other', 'online', now())", [f.serverId]);
+  await sql('INSERT INTO user_server_access (user_id, server_id, mode) VALUES ($1, $2, $3)', [f.victim.userId, f.serverId, OP_START[kind]]);
+  if (OP_START[kind] === 'selected') {
+    await sql("INSERT INTO user_service_access (user_id, server_id, service_name) SELECT $1, $2, n FROM unnest(ARRAY['api', 'other']) AS n", [f.victim.userId, f.serverId]);
+  }
+  const v = (await sql('SELECT credential_version::int AS v FROM users WHERE id = $1', [f.victim.userId])).rows[0] as { v: number };
+  return { ...f, credentialVersion: v.v };
+}
+
+async function opRevoke(kind: OpKind, f: Fixture, database: Database): Promise<void> {
+  if (kind === 'role' || kind === 'deactivate' || kind === 'logout' || kind === 'password') { await revoke(kind, f, database); return; }
+  const revision = ((await sql('SELECT access_revision::int AS r FROM users WHERE id = $1', [f.victim.userId])).rows[0] as { r: number }).r;
+  const servers = kind === 'grant_removed' ? [] : [{ serverId: f.serverId, mode: 'selected' as const, services: ['other'] }];
+  const r = await createPgAccessStore(database).saveAccess({ actor: f.boss, userId: f.victim.userId, expectedRevision: revision, servers, requestId: randomUUID() });
+  expect(r.status).toBe('ok');
+}
+
+async function opTrail(f: Fixture, kind: OpKind) {
+  const { rows } = await sql(
+    `SELECT event FROM audit_log
+      WHERE (event = 'application.project_info_changed' AND details->>'serverId' = $1)
+         OR (event = $2 AND (actor_user_id::text = $3 OR details->>'targetUserId' = $3))
+      ORDER BY id`, [f.serverId, OP_EVENT[kind], f.victim.userId]);
+  return rows.map((r: { event: string }) => r.event);
+}
+
+const OP_KINDS: OpKind[] = ['role', 'deactivate', 'logout', 'password', 'grant_removed', 'all_to_selected', 'service_removed'];
+
+describe('operator: save authorised first, the revocation waits for it', () => {
+  it.each(OP_KINDS.flatMap((k) => [[k, true], [k, false]] as [OpKind, boolean][]))('%s — %s row: the save commits first; a further save is refused', async (kind, withRow) => {
+    const f = await opFixture(kind, withRow);
+    const locker = await lockClient();
+    await locker.query('BEGIN');
+    if (withRow) await locker.query("SELECT 1 FROM application_project_info WHERE server_id = $1 AND service_name = 'api' FOR UPDATE", [f.serverId]);
+    else await locker.query("INSERT INTO application_project_info (server_id, service_name, revision, description) VALUES ($1, 'api', 1, 'other')", [f.serverId]);
+    const s = traced();
+    const saving = save(f, s.db, withRow ? 1 : 0);
+    const r = traced();
+    let revoking: Promise<void> = Promise.resolve();
+    let saved: SaveProjectInfoResult;
+    try {
+      await waitsForLock(s.pid, saving, 'save'); // authorised (user, session, grant held), waiting for the metadata
+      revoking = opRevoke(kind, f, r.db);
+      await waitsForLock(r.pid, revoking, `${kind} revocation`);
+      await locker.query(withRow ? 'COMMIT' : 'ROLLBACK');
+      [saved] = await bothSettle(saving, revoking);
+    } finally {
+      await cleanup(locker, [saving, revoking]);
+    }
+    expect(saved.status).toBe('ok');
+    expect(await metadata(f.serverId)).toEqual([{ description: 'after', revision: withRow ? 2 : 1 }]);
+    expect(await opTrail(f, kind)).toEqual(['application.project_info_changed', OP_EVENT[kind]]);
+    expect((await save(f, db, withRow ? 2 : 1, 'later')).status).toBe(OP_REFUSAL[kind]);
+    expect(await metadata(f.serverId)).toEqual([{ description: 'after', revision: withRow ? 2 : 1 }]);
+    expect(await opTrail(f, kind)).toEqual(['application.project_info_changed', OP_EVENT[kind]]);
+  });
+});
+
+describe('operator: revocation first, the save is refused without any change', () => {
+  it.each(OP_KINDS)('%s — already committed', async (kind) => {
+    const f = await opFixture(kind, true);
+    await opRevoke(kind, f, db);
+    expect((await save(f, db, 1)).status).toBe(OP_REFUSAL[kind]);
+    expect(await metadata(f.serverId)).toEqual([{ description: 'before', revision: 1 }]);
+    expect(await opTrail(f, kind)).toEqual([OP_EVENT[kind]]);
+  });
+
+  it.each(OP_KINDS)('%s — in progress (paused before COMMIT): the save waits for it and is then refused', async (kind) => {
+    const f = await opFixture(kind, true);
+    const r = traced(/INSERT INTO audit_log/);
+    const revoking = opRevoke(kind, f, r.db);
+    await r.reached;
+    const s = traced();
+    const saving = save(f, s.db, 1);
+    let saved: SaveProjectInfoResult;
+    try {
+      await waitsForLock(s.pid, saving, 'save');
+      r.release();
+      [saved] = await bothSettle(saving, revoking);
+    } finally {
+      await cleanup(null, [saving, revoking], r.release);
+    }
+    expect(saved.status).toBe(OP_REFUSAL[kind]);
+    expect(await metadata(f.serverId)).toEqual([{ description: 'before', revision: 1 }]);
+    expect(await opTrail(f, kind)).toEqual([OP_EVENT[kind]]);
+  });
+
+  it('a first save after a committed grant removal creates no row', async () => {
+    const f = await opFixture('grant_removed', false);
+    await opRevoke('grant_removed', f, db);
+    expect((await save(f, db, 0)).status).toBe('not_found');
+    expect(await metadata(f.serverId)).toEqual([]);
+  });
+});
+
+describe('operator: grant changes of ANOTHER user do not wait for the save', () => {
+  it('while an operator\'s save waits, an admin changes another operator\'s grants on the same server without waiting; the save then succeeds', async () => {
+    const f = await opFixture('service_removed', true);
+    const locker = await lockClient();
+    await locker.query('BEGIN');
+    await locker.query("SELECT 1 FROM application_project_info WHERE server_id = $1 AND service_name = 'api' FOR UPDATE", [f.serverId]);
+    const s = traced();
+    const saving = save(f, s.db, 1);
+    try {
+      await waitsForLock(s.pid, saving, 'save');
+      // Another operator's grants change meanwhile: unrelated rows, nothing waits.
+      const other = await user('operator');
+      const revision = ((await sql('SELECT access_revision::int AS r FROM users WHERE id = $1', [other.userId])).rows[0] as { r: number }).r;
+      const changed = createPgAccessStore(db).saveAccess({ actor: f.boss, userId: other.userId, expectedRevision: revision, servers: [{ serverId: f.serverId, mode: 'all', services: [] }], requestId: randomUUID() });
+      let timer: NodeJS.Timeout | undefined;
+      const result = await Promise.race([changed, new Promise<never>((_, reject) => { timer = setTimeout(() => { reject(new Error('another user\'s grants waited for the save')); }, WAIT_MS); })]);
+      clearTimeout(timer);
+      expect(result.status).toBe('ok');
+      await locker.query('COMMIT');
+      expect((await saving).status).toBe('ok');
+    } finally {
+      await cleanup(locker, [saving]);
+    }
+  });
+});
+
+describe('operator: the grant rows themselves are held (defence in depth)', () => {
+  // saveAccess always locks the target user row first, which the save already holds, so it is serialized by that
+  // lock alone. A writer that removes the grant rows WITHOUT touching the user row must wait for the save as well.
+  it.each(['server', 'service'] as const)('a direct DELETE of the %s grant waits for the authorised save', async (which) => {
+    const f = await opFixture('service_removed', true); // «selected»: api + other
+    const locker = await lockClient();
+    await locker.query('BEGIN');
+    await locker.query("SELECT 1 FROM application_project_info WHERE server_id = $1 AND service_name = 'api' FOR UPDATE", [f.serverId]);
+    const s = traced();
+    const saving = save(f, s.db, 1);
+    const deleter = await lockClient();
+    let deleting: Promise<unknown> = Promise.resolve();
+    try {
+      await waitsForLock(s.pid, saving, 'save');
+      const pid = (await deleter.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid ?? -1;
+      deleting = which === 'server'
+        ? deleter.query('DELETE FROM user_server_access WHERE user_id = $1 AND server_id = $2', [f.victim.userId, f.serverId])
+        : deleter.query("DELETE FROM user_service_access WHERE user_id = $1 AND server_id = $2 AND service_name = 'api'", [f.victim.userId, f.serverId]);
+      await waitsForLock(Promise.resolve(pid), deleting, `${which} grant delete`);
+      await locker.query('COMMIT');
+      const [saved] = await bothSettle(saving, deleting);
+      expect(saved.status).toBe('ok');
+    } finally {
+      await cleanup(locker, [saving, deleting]);
+    }
+    expect(await metadata(f.serverId)).toEqual([{ description: 'after', revision: 2 }]);
+    expect((await save(f, db, 2, 'later')).status).toBe('not_found');
   });
 });

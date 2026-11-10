@@ -133,6 +133,47 @@ test('Agent reports a PM2 inventory; Applications shows it; unavailable keeps th
     await expect(viewerProject.getByRole('button')).toHaveCount(0);
     await viewerContext.close();
 
+    // Operator with ONE selected service (ADR-036, applications:metadata:write within the grant): edits it, the change
+    // survives a reload and is audited as the operator; a direct PUT for a service outside the grant is 404; after the
+    // grant is revoked the information is no longer shown.
+    await grantAccess(credentials('operator').email, serverId, 'selected', ['e2e-worker']);
+    const opContext = await browser.newContext();
+    const op = await opContext.newPage();
+    await login(op, 'operator');
+    await op.goto('/applications');
+    await op.getByRole('button', { name: /^e2e-worker на / }).click();
+    const opProject = op.getByRole('region', { name: 'Про проєкт' });
+    await opProject.getByRole('button', { name: 'Редагувати інформацію про проєкт' }).click();
+    await opProject.getByLabel('Короткий опис').fill('Оновлено оператором');
+    await opProject.getByRole('button', { name: 'Зберегти' }).click();
+    await expect(opProject.getByText('Інформацію про проєкт збережено.')).toBeVisible();
+    await op.reload();
+    await op.getByRole('button', { name: /^e2e-worker на / }).click();
+    await expect(op.getByRole('region', { name: 'Про проєкт' }).getByText('Оновлено оператором')).toBeVisible();
+    const foreign = await op.evaluate(async (id) => {
+      const me = await (await fetch('/api/auth/me', { credentials: 'same-origin' })).json() as { csrfToken: string };
+      const res = await fetch(`/api/servers/${id}/project-info`, {
+        method: 'PUT', credentials: 'same-origin', headers: { 'x-csrf-token': me.csrfToken, 'content-type': 'application/json' },
+        body: JSON.stringify({ serviceName: 'e2e-api', expectedRevision: 0, githubUrl: null, projectUrl: null, description: 'not granted' }),
+      });
+      return res.status;
+    }, serverId);
+    expect(foreign).toBe(404);
+    const opAudit = await inRunSchema(async (q) => (await q(
+      `SELECT a.details->>'serviceName' AS service, a.details->>'revision' AS revision, u.email
+         FROM audit_log a JOIN users u ON u.id = a.actor_user_id
+        WHERE a.event = 'application.project_info_changed' AND a.details->>'serverId' = $1 ORDER BY a.id`, [serverId])).rows);
+    expect(opAudit).toEqual([
+      { service: 'e2e-worker', revision: '1', email: credentials('admin').email },
+      { service: 'e2e-worker', revision: '2', email: credentials('operator').email },
+    ]);
+    expect(await inRunSchema(async (q) => (await q("SELECT count(*)::int AS n FROM application_project_info WHERE server_id = $1 AND service_name = 'e2e-api'", [serverId])).rows[0])).toEqual({ n: 0 });
+    await inRunSchema(async (q) => { await q('DELETE FROM user_server_access WHERE server_id = $1 AND user_id = (SELECT id FROM users WHERE email = $2)', [serverId, credentials('operator').email]); });
+    await op.reload();
+    await expect(op.getByRole('button', { name: /^e2e-worker на / })).toHaveCount(0);
+    await expect(op.getByText('Оновлено оператором')).toHaveCount(0);
+    await opContext.close();
+
     // Exporter reports the daemon as down: the last processes stay, explicitly marked as not current.
     expect(await agent.stop()).toBe(0);
     writeSnapshot(file, { state: 'unavailable', reason: 'daemon_not_running', processes: [] });

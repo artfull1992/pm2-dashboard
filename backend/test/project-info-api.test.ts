@@ -125,14 +125,33 @@ describe('read', () => {
 });
 
 describe('save', () => {
-  it('only admin: anonymous 401 (403 without Origin), operator and viewer 403 — nothing reaches the store', async () => {
+  it('applications:metadata:write: anonymous 401 (403 without Origin), viewer 403 — nothing reaches the store', async () => {
     expect((await put(null, body())).statusCode).toBe(403);
     expect((await put(null, body(), { origin: ORIGIN })).statusCode).toBe(401);
-    for (const role of ['operator', 'viewer'] as const) {
-      const s = await session(role);
-      expect((await put(s, body())).statusCode, role).toBe(403);
-    }
+    const viewer = await session('viewer');
+    expect((await put(viewer, body())).statusCode).toBe(403);
     expect(store.saves).toHaveLength(0);
+  });
+
+  it('operator: the save reaches the store with the operator as actor (the grant is checked there, in the transaction)', async () => {
+    const s = await session('operator');
+    expect((await put(s, body())).statusCode).toBe(200);
+    expect(store.saves).toEqual([expect.objectContaining({ actor: { userId: s.id, sessionId: expect.any(String) as string }, serverId: SERVER, serviceName: 'api' })]);
+    // A service outside the operator's grants is answered by the store as not found: 404, nothing disclosed.
+    store.saveResult = { status: 'not_found' };
+    const res = await put(s, body());
+    expect(res.statusCode).toBe(404);
+    expect(res.json<{ message: string }>().message).toBe('Application not found');
+  });
+
+  it('the new permission is not servers:manage / users:manage: an operator still gets 403 on server registry, credentials and users', async () => {
+    const s = await session('operator');
+    const headers = { cookie: s.cookie, origin: ORIGIN, 'x-csrf-token': s.csrf };
+    expect((await app.inject({ method: 'POST', url: '/api/servers', headers, payload: { name: 'x' } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url: `/api/servers/${SERVER}/agent-credentials`, headers })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url: `/api/servers/${SERVER}/agent-credentials/revoke`, headers })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/api/users', headers: { cookie: s.cookie } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/api/audit', headers: { cookie: s.cookie } })).statusCode).toBe(403);
   });
 
   it('admin without CSRF token or with a foreign Origin → 403', async () => {
@@ -168,6 +187,8 @@ describe('save', () => {
     expect(conflict.json<{ message: string }>().message).toMatch(/changed by someone else/);
     store.saveResult = { status: 'actor_revoked' };
     expect((await put(s, body())).statusCode).toBe(401);
+    store.saveResult = { status: 'forbidden' }; // the role lost the permission meanwhile
+    expect((await put(s, body())).statusCode).toBe(403);
   });
 
   it('invalid values → 400 with a fixed message, never echoing the value', async () => {

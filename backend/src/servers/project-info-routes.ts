@@ -7,7 +7,8 @@ import { normalizeProjectInfo, PROJECT_INFO_LIMITS } from './project-info.js';
 import type { ProjectInfoStore } from './project-info-store.js';
 
 // Project information API (ADR-036): reference links and a short description of ONE service of a server. Reading:
-// monitoring:read + the resource scope of that service; saving: servers:manage (admin), Origin + CSRF (auth plugin).
+// monitoring:read + the resource scope of that service; saving: applications:metadata:write (admin, operator) + the
+// grant of that service for a scoped user (checked in the store's transaction), Origin + CSRF (auth plugin).
 // The service name is a query parameter (GET) or a body field (PUT), never a path segment: any valid PM2 name is
 // transported as data. Saving stores text only — nothing is fetched, opened, deployed or sent to an Agent.
 
@@ -66,7 +67,7 @@ export function registerProjectInfoRoutes(app: FastifyInstance, options: Project
   });
 
   app.put('/api/servers/:id/project-info', {
-    config: { access: { permission: 'servers:manage' } },
+    config: { access: { permission: 'applications:metadata:write' } },
     schema: {
       params: idParams,
       body: {
@@ -100,6 +101,7 @@ export function registerProjectInfoRoutes(app: FastifyInstance, options: Project
       case 'not_found': throw new PublicHttpError(404, PROJECT_INFO_MESSAGES.notFound);
       case 'revision_conflict': throw new PublicHttpError(409, PROJECT_INFO_MESSAGES.conflict);
       case 'actor_revoked': throw new PublicHttpError(401, AUTH_MESSAGES.unauthenticated);
+      case 'forbidden': throw new PublicHttpError(403, AUTH_MESSAGES.forbidden);
     }
   });
 }

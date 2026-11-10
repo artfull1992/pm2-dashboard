@@ -200,7 +200,9 @@ function ApplicationsView() {
 
   // «Про проєкт»: the service of the selection while it may be shown (a process gone or no longer visible clears it).
   const projectTarget = selection && selected && presence.kind !== 'missing' && presence.kind !== 'revoked' ? { serverId: selected.serverId, serviceName: selected.name } : null;
-  const project = useProjectInfo(projectTarget, tab === 'overview', can('servers:manage'));
+  // Editing: admin and operator (applications:metadata:write) for the services they may see — the API checks the grant
+  // of the very service again; viewer reads only.
+  const project = useProjectInfo(projectTarget, tab === 'overview', can('applications:metadata:write'));
   const { discard: discardProject } = project;
   const leaving = project.guard.dirty || project.guard.pending;
   /** A change that would drop the draft (or stop waiting for its save) runs only after an explicit choice. */

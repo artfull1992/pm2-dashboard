@@ -164,13 +164,13 @@ flowchart LR
 
 ## Інформація про проєкт застосунку (ADR-036)
 
-Довідкові дані адміністратора про сервіс: GitHub, адреса проєкту, короткий опис. Зберігаються централізовано в PostgreSQL окремо від inventory Agent і нічого не запускають (PM2, Agent, deployment).
+Довідкові дані про сервіс (редагують admin і operator у межах grant): GitHub, адреса проєкту, короткий опис. Зберігаються централізовано в PostgreSQL окремо від inventory Agent і нічого не запускають (PM2, Agent, deployment).
 
 | Шлях | Відповідальність |
 |---|---|
 | `backend/migrations/1791900000010_application-project-info.sql` | `application_project_info`: PK `(server_id, service_name)`, nullable поля, `revision`, timestamps, `updated_by`; CHECK-межі |
 | `backend/src/servers/project-info.ts` | правила й нормалізація полів (ті самі, що в `frontend/src/components/projectInfoRules.ts`; спільні випадки `backend/test/fixtures/project-info-cases.json`) |
-| `backend/src/servers/project-info-store.ts`, `project-info-routes.ts` | `GET`/`PUT /api/servers/:id/project-info`: scope у SQL, порожній стан `revision 0` без запису, admin-збереження з `expectedRevision` і audit в одній транзакції; admin і його сесія утримуються `FOR SHARE` до COMMIT (`lockActorAdmin` у `auth/users-store.ts`), тож конкурентне відкликання серіалізується зі збереженням |
+| `backend/src/servers/project-info-store.ts`, `project-info-routes.ts` | `GET`/`PUT /api/servers/:id/project-info`: scope у SQL, порожній стан `revision 0` без запису; збереження з `applications:metadata:write` і `expectedRevision`, audit в одній транзакції; користувач, його сесія й для operator його grant цього сервісу утримуються `FOR SHARE` до COMMIT (`lockEditor`), тож конкурентне відкликання ролі, активності, сесії чи grant серіалізується зі збереженням |
 | `frontend/src/components/ProjectInfo.tsx` | `useProjectInfo` (стан на сторінці «Застосунки»: дані, чернетка, pending, recovery GET, прив'язка відповідей до сервісу й сесії) і `ProjectInfoPanel` (перегляд/редагування inline) |
 | `frontend/src/pages/ApplicationsPage.tsx`, `components/ApplicationDetail.tsx` | guard зміни сервісу/вкладки/закриття і data-router blocker; «Огляд» = «Про проєкт» + згортка «Параметри процесу» |
 
