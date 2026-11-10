@@ -1,5 +1,31 @@
 # Поточний стан проєкту
 
+## Production: Agent на центральному сервері ввімкнено (heartbeat), 2026-11-10, за прямим запитом користувача
+
+На сервері Central API/UI ввімкнено власний Agent, лише heartbeat: сервер «онлайн» і load average. PM2 на цьому сервері немає (процесів `God Daemon` і каталогів `.pm2` не знайдено), тому inventory й broker не вмикались. Ключ видав користувач в UI. Він передавався через stdin у файл `600 root`, після встановлення знищений `shred -u`. У журнали, argv і Git ключ не потрапив.
+
+**До змін.** Agent було встановлено раніше, але він був вимкнений і не зареєстрований:
+- реліз `2fe4d95`, unit `disabled` / `inactive` (від міграції шляхів);
+- `agent.env` немає;
+- installer `plan` зупинився до змін: інший активний реліз і інший unit.
+
+**Артефакт.** Agent-компонент `5df2f93` (`build-release.js --component agent` на одноразовій VM, Node 22.22.1), 52 файли, `sha256 438b76831520317a80765f350070a98c507c08ac7ce41ff8942b0b4697784fe9`. Код `agent/`, `installer/`, `scripts/deploy`, `deploy/systemd` між `7c35626` (працює на керованій ноді) і `5df2f93` не змінювався.
+
+**Процедура:**
+1. Передача в `/root/node-control-install`, `sha256sum -c` OK.
+2. Резервна копія unit Agent у `/root/node-control-recovery/`.
+3. `server-release.js prepare --base /opt/node-control-agent --no-install` і `activate`: current `5df2f93`, previous `2fe4d95`.
+4. Unit із релізу. Відмінність — запуск через `/opt/node-control-runtime/bin/node --use-system-ca`. Потім `systemd-analyze verify` і `daemon-reload`.
+5. Installer `plan`: 0 проблем. `apply` без `--pm2-*` і `--enable-control` змінив 2 кроки: `agent.env` і enable + start.
+
+**Після встановлення:**
+- Agent: enabled, active, `nodecontrol-agent`, `NRestarts=0`, вхідних портів немає.
+- `agent.env`: `600 nodecontrol-agent`, ключі `NC_AGENT_API_URL` і `NC_AGENT_TOKEN`.
+- Installer: «зв'язок Agent підтверджено»; heartbeat `accepted`, попереджень 0.
+- API: active, `NRestarts=0` (не перезапускався), health 200/200, попереджень 0. Failed units — 0.
+
+**Rollback:** `systemctl disable --now node-control-agent`; за потреби — відкликати ключ в UI. API, Nginx, PostgreSQL, інші ноди, PM2 і Slack не змінювались.
+
 ## Production: деплой `5df2f93` — редагування «Про проєкт» оператором у межах grant (2026-11-10, після APPROVED Codex і за прямим дозволом користувача)
 
 Активна code revision — `5df2f93`: review-commit APPROVED поверх `65969a4`; `0fa3a14` між ними змінював лише тести й документацію. Цей запис — пізніший docs-commit; він не розгортався. Деплоїлись лише Central API/UI; Agents, broker і exporter не оновлювались.
