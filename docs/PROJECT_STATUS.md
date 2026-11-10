@@ -1,5 +1,43 @@
 # Поточний стан проєкту
 
+## Production: деплой `5df2f93` — редагування «Про проєкт» оператором у межах grant (2026-11-10, після APPROVED Codex і за прямим дозволом користувача)
+
+Активна code revision — `5df2f93`: review-commit APPROVED поверх `65969a4`; `0fa3a14` між ними змінював лише тести й документацію. Цей запис — пізніший docs-commit; він не розгортався. Деплоїлись лише Central API/UI; Agents, broker і exporter не оновлювались.
+
+**До деплою (фактично перевірено).** current `eef5c24`, previous `0dda425`; runtime Node.js 22.23.2; API active, enabled, `NRestarts=0`, `nodecontrol`, лише `127.0.0.1:3100`; health 200/200; попереджень за 24 год — 0; міграції `applied=11 pending=0 unknown=0`; Nginx і PostgreSQL active, failed units — 0.
+
+**Артефакт.** `build-release.js --from-tree` з `git archive 5df2f93` у новому каталозі одноразової VM (Node 22.22.1). API `sha256 333716c1fb18e76dbd6c0d9a9125d22f3eb0c72f47ca3b9a99b01d56d5042384`, 91 файл; без `.map`, `.env`, дизайн-матеріалів.
+
+Порівняно з `eef5c24` (manifest) змінено лише:
+- `backend/dist/auth/rbac.js`, `backend/dist/auth/users-store.js`;
+- `backend/dist/servers/project-info-{routes,store}.js`;
+- `frontend/dist/index.html` і JS bundle.
+
+Міграцій, `package*.json`, `scripts/deploy`, `deploy/systemd` зміни не стосуються. Unit ідентичний — `daemon-reload` не виконувався; нових env-параметрів немає.
+
+**Fallback — `eef5c24`** (тепер previous): 91 файл, розбіжностей із manifest 0; схема та сама. Повернення — `server-release.js rollback` + restart лише `node-control-api`, без відновлення БД; operator знову лише читає, збережені ним дані лишаються.
+
+**Процедура.**
+1. Hostname → новий каталог передачі → checksum OK.
+2. Резервні копії `api.env` (600) і unit.
+3. Перевірка fallback.
+4. `prepare` → `config` («kept») → `migrate status` (`pending=0`; `up` не потрібен).
+5. `pg_dump -Fc node_control_db` (600, `pg_restore --list` OK) — для узгодженості з правилом backup перед деплоєм.
+6. `activate` → restart лише `node-control-api`. Приватний runbook — на сервері.
+
+**Після деплою.**
+- current `5df2f93`, previous `eef5c24`; active, enabled, `NRestarts=0`, `nodecontrol`, лише `127.0.0.1:3100`.
+- health 200/200 локально; `/nope` → 404; анонімний `PUT …/project-info` без Origin → 403. Попереджень за 10 хв — 0; Nginx і PostgreSQL active, failed units — 0. Файли релізу відповідають manifest.
+- HTTPS: `index.html` збігається з артефактом; `/`, `/applications`, `/servers`, `/login` → 200; JS і CSS → 200 з правильними типами; анонімний `/api/auth/me` → 401.
+- Анонімний браузерний smoke (1440 dark, 390 light, лише GET): редирект на `/login`, без переповнення й помилок консолі.
+
+**Не перевірено** (production-облікових даних немає; production-дані не читались і не змінювались). Перевірити оператору:
+- як operator з наданим сервісом: «Застосунки» → застосунок → «Огляд» → «Редагувати» є лише для наданих сервісів;
+- як viewer: кнопки немає;
+- після першого використання — `journalctl -u node-control-api -p warning`.
+
+**Не змінювались:** Agent, broker, exporter, PM2, Slack, користувачі й доступи, PostgreSQL/HBA/firewall, Nginx, runtime Node.js. Rollback не знадобився. Перехід broker `0fa3a14` окремого review ще не має; зауваження SECURITY_REVIEW і пункт `saveAccess` відкриті.
+
 ## Незалежний review Codex `65969a4` — APPROVED (2026-11-10)
 
 Перевірено diff від `0fa3a14`, код, тести й документацію Code → Docs / Docs → Code. Редагування «Про проєкт» оператором погоджено: окреме permission `applications:metadata:write` не дає адміністративних можливостей; транзакція повторно перевіряє роль/активність/сесію та grant конкретного сервісу. Admin зберігає глобальний доступ, operator all/selected — лише свої ресурси, viewer не редагує. `FOR SHARE` на користувачі, сесії та потрібних grant rows захищає авторизацію до завершення збереження; expectedRevision й атомарний аудит збережені. Перевірені чинні шляхи роль/активність/logout/пароль/saveAccess, межі grant, перше створення, пряме видалення grant rows, відмови без адміністративних прав та актуальне авторство аудиту. Нових блокувальних зауважень у межах завдання немає.
