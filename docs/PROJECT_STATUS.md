@@ -1,5 +1,36 @@
 # Поточний стан проєкту
 
+## Production: PM2 на центральному сервері й підключення до Node Control (inventory + керування auto), 2026-11-10, за прямим запитом користувача
+
+Користувач обрав: власник PM2 — новий користувач `deploy`; підключення — inventory і керування в режимі auto.
+
+**PM2:**
+- Користувач `deploy`: UID 1000, без sudo, `/home/deploy` 750.
+- `npm install -g pm2@7.0.4` через системний npm 10.9.8 і `/usr/bin/node`. Версія 7.0.4 — та, на якій проходять real-PM2 E2E broker; latest 7.1.2 не ставився.
+- Демон `PM2 v7.0.4: God Daemon (/home/deploy/.pm2)` запущено від `deploy`. Перша спроба з робочим каталогом `/root` дала `spawn EACCES`; повтор із `/home/deploy` успішний.
+- Автозапуск: `pm2 startup systemd -u deploy --hp /home/deploy`, unit `pm2-deploy.service` enabled. Зараз він inactive, бо демон запущено вручну; після reboot його запустить systemd.
+- Процесів немає, тож `pm2 save` нічого не зберіг. Після додавання застосунків виконати `pm2 save` від `deploy`.
+- `pm2 startup` від root створив порожній `/root/.pm2/logs`. Демона root немає.
+
+**Agent.** Installer `plan` (0 проблем) і `apply --pm2-owner deploy --pm2-home /home/deploy/.pm2 --enable-control` з тим самим артефактом `5df2f93`. Змінено 16 кроків:
+- групи `nc-pm2-inventory` і `nc-pm2-control`, членство `nodecontrol-agent`;
+- `/var/lib/node-control-pm2`, конфіги exporter і broker; broker у режимі `NC_BROKER_MODE=auto`;
+- units exporter і broker із релізу;
+- restart Agent; резервна копія `agent.env`.
+
+Результат installer: heartbeat і inventory `accepted`, стан `ok`.
+
+**Після встановлення:**
+- Agent, `broker@deploy` (`User=deploy`) і `exporter@deploy.timer` — enabled і active, `NRestarts=0`, попереджень 0.
+- API ready 200, не перезапускався. Failed units — 0.
+
+**Rollback:**
+- Керування: `systemctl disable --now node-control-pm2-broker@deploy`.
+- Inventory: `systemctl disable --now node-control-pm2-exporter@deploy.timer`, потім відновити `agent.env` із `.bak-*` і перезапустити Agent.
+- PM2: `pm2 unstartup systemd -u deploy` і `npm rm -g pm2`.
+
+API, Nginx, PostgreSQL, інші ноди й Slack не змінювались.
+
 ## Production: Agent на центральному сервері ввімкнено (heartbeat), 2026-11-10, за прямим запитом користувача
 
 На сервері Central API/UI ввімкнено власний Agent, лише heartbeat: сервер «онлайн» і load average. PM2 на цьому сервері немає (процесів `God Daemon` і каталогів `.pm2` не знайдено), тому inventory й broker не вмикались. Ключ видав користувач в UI. Він передавався через stdin у файл `600 root`, після встановлення знищений `shred -u`. У журнали, argv і Git ключ не потрапив.
